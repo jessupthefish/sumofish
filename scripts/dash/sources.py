@@ -196,6 +196,11 @@ class GameStream(threading.Thread):
         super().__init__(name="src-game", daemon=True)
         self.state = state
         self.current = None
+        # The furthest position published, and which game it belonged to.
+        # See the guard in `_stream`: this is what stops a reconnect's replay
+        # from rewinding the board on screen.
+        self.published_gid: str | None = None
+        self.published_ply = -1
 
     # Measured on a live rapid game: lichess sends the whole history the moment
     # you connect and then **nothing at all** until the next move -- no
@@ -270,6 +275,23 @@ class GameStream(threading.Thread):
                         board.push(mv)
                     else:
                         board = chess.Board(_full_fen(fen))
+                # Never publish a position earlier than one already shown for
+                # this game.
+                #
+                # lichess replays the entire history the moment you connect, so
+                # every reconnect walks the board from move one to the present
+                # again. A game ending closes the stream, so this fires exactly
+                # when a game is decided: the board would snap back to the
+                # opening and race forward, which is visible as a flicker
+                # through some other position and gone before it can be read.
+                #
+                # The replay is not wasted -- it is what rebuilds `moves` and
+                # the board object after a drop -- it just must not be shown.
+                if gid != self.published_gid:
+                    self.published_gid, self.published_ply = gid, -1
+                if board.ply() < self.published_ply:
+                    continue
+                self.published_ply = board.ply()
                 self.state.set("game", {
                     "id": gid,
                     "meta": meta,
