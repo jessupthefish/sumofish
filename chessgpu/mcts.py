@@ -64,6 +64,7 @@ plays into losses; it is the classic MCTS bug and it does not announce itself.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 import chess
@@ -109,6 +110,7 @@ class MCTS:
         policy=None,                  # NeuralPolicy: supplies move priors
         c_puct: float = 2.0,
         simulations: int = 400,
+        batch: int = 1,               # >1 uses virtual loss to fill GPU batches
         dirichlet_alpha: float = 0.3,
         dirichlet_weight: float = 0.0,
         fpu: float = -0.2,
@@ -117,6 +119,7 @@ class MCTS:
         self.policy = policy
         self.c_puct = c_puct
         self.simulations = simulations
+        self.batch = max(1, batch)
         # Root exploration noise. Essential for self-play RL (it forces variety
         # in the training data); harmful when actually trying to win, so it
         # defaults off.
@@ -220,7 +223,118 @@ class MCTS:
         for _ in range(undo):
             board.pop()
 
-    def search(self, board: chess.Board) -> tuple[Node, dict[chess.Move, int]]:
+    # ---- batched search --------------------------------------------------
+    #
+    # The unbatched loop above evaluates exactly one position per GPU call.
+    # Measured: 2.553 ms per position at batch 1, 0.219 ms at batch 64. Nearly
+    # all of that is per-call overhead, so the card spends its life waiting.
+    #
+    # The obstacle is that MCTS is sequential by construction: each walk is
+    # supposed to see the statistics left by the previous one. Walk down twice
+    # without evaluating in between and both walks take the identical path,
+    # because nothing changed. You get a batch of duplicates.
+    #
+    # VIRTUAL LOSS is the standard fix. On reaching a leaf, immediately back up
+    # a *pretend* result as if that line had lost, before knowing anything about
+    # it. The next walk sees the discouraged branch and goes somewhere else. Once
+    # the real value arrives, the pretend result is subtracted and the true one
+    # added.
+    #
+    # Sign note, following this file's convention: backing up 1.0 from the leaf
+    # raises the leaf's own Q, and the parent sees `1 - child.q`, so the parent's
+    # view of that branch DROPS. The flip then propagates the discouragement all
+    # the way to the root, which is exactly what is wanted.
+
+    def _descend(self, root: Node, board: chess.Board) -> tuple[list[Node], int]:
+        path, node, undo = [root], root, 0
+        while node.expanded and node.children:
+            move, node = self._select_child(node)
+            board.push(move)
+            undo += 1
+            path.append(node)
+        return path, undo
+
+    @staticmethod
+    def _backup(path: list[Node], value: float, sign: int = 1) -> None:
+        for n in reversed(path):
+            n.visits += sign
+            n.value_sum += sign * value
+            value = 1.0 - value
+
+    def _simulate_batch(self, root: Node, board: chess.Board, batch: int) -> None:
+        pending: list[tuple[list[Node], chess.Board]] = []
+
+        for _ in range(batch):
+            path, undo = self._descend(root, board)
+            leaf = path[-1]
+
+            if leaf.terminal_value is not None:
+                self._backup(path, leaf.terminal_value)
+                for _ in range(undo):
+                    board.pop()
+                continue
+
+            outcome = board.outcome(claim_draw=True)
+            if outcome is not None:
+                leaf.terminal_value = 0.0 if outcome.winner is not None else 0.5
+                self._backup(path, leaf.terminal_value)
+                for _ in range(undo):
+                    board.pop()
+                continue
+
+            pending.append((path, board.copy(stack=False)))
+            self._backup(path, 1.0)          # virtual loss, undone below
+            for _ in range(undo):
+                board.pop()
+
+        if not pending:
+            return
+
+        # One GPU call for priors, one for values, covering the whole batch.
+        boards = [b for _, b in pending]
+        priors = self._priors_batch(boards)
+        values, _ = self.value_policy.evaluate(boards)
+        self.evaluations += len(boards)
+
+        for (path, _), prior, value in zip(pending, priors, values, strict=True):
+            leaf = path[-1]
+            # Another walk in this same batch may have already expanded it.
+            if not leaf.children:
+                for move, p in prior.items():
+                    leaf.children[move] = Node(prior=p, to_move=not leaf.to_move)
+            self._backup(path, 1.0, sign=-1)  # remove the virtual loss
+            self._backup(path, float(value))  # add the real result
+
+    def _priors_batch(self, boards: list[chess.Board]) -> list[dict[chess.Move, float]]:
+        if self.policy is None:
+            return [
+                {m: 1.0 / max(1, len(list(b.legal_moves))) for m in b.legal_moves}
+                for b in boards
+            ]
+        from chessgpu.tokenizer import MOVE_TO_ACTION
+
+        rows = self.policy._logprobs(boards).cpu().numpy()
+        out = []
+        for row, b in zip(rows, boards, strict=True):
+            legal = list(b.legal_moves)
+            if not legal:
+                out.append({})
+                continue
+            s = np.array([row[MOVE_TO_ACTION[m.uci()]] if m.uci() in MOVE_TO_ACTION else -1e9
+                          for m in legal])
+            e = np.exp(s - s.max())
+            out.append(dict(zip(legal, (e / e.sum()).tolist(), strict=True)))
+        return out
+
+    def search(
+        self, board: chess.Board, deadline: float | None = None
+    ) -> tuple[Node, dict[chess.Move, int]]:
+        """Run simulations until the budget or `deadline` (a perf_counter time).
+
+        A real game gives you a clock, not a simulation count, so the deadline
+        wins when both are set. Batches are checked between groups rather than
+        mid-batch, so overshoot is bounded by one batch, which is ~15ms.
+        """
         root = Node(prior=1.0, to_move=board.turn)
         self.evaluations = 0
         self._expand(root, board)
@@ -230,15 +344,26 @@ class MCTS:
             for (move, child), n in zip(root.children.items(), noise, strict=True):
                 child.prior = (1 - self.dirichlet_weight) * child.prior + self.dirichlet_weight * n
 
-        for _ in range(self.simulations):
-            self._simulate(root, board)
+        if self.batch > 1:
+            done = 0
+            while done < self.simulations:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
+                n = min(self.batch, self.simulations - done)
+                self._simulate_batch(root, board, n)
+                done += n
+        else:
+            for i in range(self.simulations):
+                if deadline is not None and i % 16 == 0 and time.perf_counter() >= deadline:
+                    break
+                self._simulate(root, board)
 
         return root, {m: c.visits for m, c in root.children.items()}
 
     # ---- what the engine calls ------------------------------------------
 
-    def play(self, board: chess.Board) -> chess.Move:
-        root, visits = self.search(board)
+    def play(self, board: chess.Board, deadline: float | None = None) -> chess.Move:
+        root, visits = self.search(board, deadline=deadline)
         if not visits:
             raise ValueError(f"no legal moves in {board.fen()}")
         # Most-visited, not best-average. A child can luck into a high average

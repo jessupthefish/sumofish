@@ -8,7 +8,7 @@ url: "https://lichess.org/"
 
 engine:
   dir: "/home/nomad/chess-gpu/bin"
-  name: "sumofish"
+  name: "sumofish-search"
   working_dir: ""
   protocol: "uci"
   ponder: false                    # Nothing to ponder with; the engine is stateless.
@@ -70,16 +70,21 @@ challenge:
     - classical                    # well suited to bullet anyway.
   modes:
     - casual
-                                   # rated deliberately omitted until the engine
-                                   # is stable and actually tries to win. Playing
-                                   # rated with a random-move engine is sandbagging.
+    - rated                        # Now genuinely tries to win (search + a real
+                                   # evaluation), so rated is legitimate -- and it
+                                   # is the only way the rating ever corrects.
+                                   # Lichess starts every BOT at a placeholder
+                                   # 3000; casual games never move it, so
+                                   # matchmaking kept picking 2500-3500 engines
+                                   # and the bot went 1-19. Sandbagging means
+                                   # deliberately losing; being weak is not that.
   bullet_requires_increment: true
   max_simultaneous_games_per_user: 2
 
 greeting:
-  hello: "Hi, I'm {me}. I never look ahead. One neural net forward pass, zero search, ~10ms a move. Good luck!"
+  hello: "Hi, I'm {me}. Two neural nets: one picks candidate moves, one judges positions. I search between them. Good luck!"
   goodbye: "Good game!"
-  hello_spectators: "Hi, I'm {me}, a chess engine that evaluates positions with a neural net and never searches ahead."
+  hello_spectators: "Hi, I'm {me}. A policy net proposes moves, a value net scores positions, and MCTS searches between them."
   goodbye_spectators: "Thanks for watching!"
 
 pgn_directory: "/home/nomad/chess-gpu/logs/games"
@@ -104,6 +109,11 @@ matchmaking:
   challenge_increment:
     - 2
     - 3
+  opponent_max_rating: 2200        # Hard ceiling while the 3000 placeholder is
+                                   # still provisional. Without it, matchmaking
+                                   # reads 3000 as real and hunts 2500-3500.
+                                   # Raise or delete once ~30 rated games have
+                                   # let Glicko find the true number.
   opponent_rating_difference: 500
   rating_preference: "none"
   challenge_mode: "casual"
