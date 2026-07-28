@@ -1,0 +1,33 @@
+Fix lichess-bot #1184: a transient stream drop abandons a LIVE game.
+
+Upstream: https://github.com/lichess-bot-devs/lichess-bot/issues/1184
+Status: closed "not planned", no fix merged.
+
+On any stream exception the handler computes:
+
+    stopped = isinstance(e, StopIteration)
+    stay_in_game = not stopped and (move_attempted or game_is_active(li, game.id))
+
+When the stream ends (StopIteration), `not stopped` is False, so short-circuit
+evaluation means game_is_active() is NEVER CALLED -- precisely in the case
+where we most need to know. The bot leaves the game loop while the game is
+still live, the process stays up looking healthy, and it flags on time.
+
+This matters much more on WiFi than on ethernet. On this box the control
+stream was observed dropping ~3x per 20 minutes.
+
+game_is_active() already fails safe: if the API is unreachable it returns
+True, so the patched version keeps playing rather than abandoning on a
+network blip. `stopped` is assigned here and read nowhere else in the file,
+so dropping it from the condition has no other effect.
+
+--- a/lib/lichess_bot.py
++++ b/lib/lichess_bot.py
+@@
+-                    stopped = isinstance(e, StopIteration)
+-                    stay_in_game = not stopped and (move_attempted or game_is_active(li, game.id))
++                    # PATCHED (see patches/0001-lichess-bot-1184-stream-drop.patch):
++                    # upstream short-circuits game_is_active() away on
++                    # StopIteration and abandons live games on a network blip.
++                    # Always ask lichess whether the game is really over.
++                    stay_in_game = move_attempted or game_is_active(li, game.id)

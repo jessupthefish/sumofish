@@ -8,6 +8,7 @@ a random chooser; the neural engine drops into the same slot unchanged.
 from __future__ import annotations
 
 import sys
+import traceback
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -40,6 +41,12 @@ class Chooser(Protocol):
     def __call__(self, board: chess.Board, limits: Limits) -> chess.Move: ...
 
 
+def _warn(msg: str) -> None:
+    """Loud on stderr. lichess-bot surfaces engine stderr in its logs; a silent
+    failure here is indistinguishable from a bad model."""
+    print(f"[uci] {msg}", file=sys.stderr, flush=True)
+
+
 def _parse_go(tokens: list[str]) -> Limits:
     limits = Limits()
     int_fields = {
@@ -69,39 +76,55 @@ def _parse_go(tokens: list[str]) -> Limits:
     return limits
 
 
-def _apply_position(tokens: list[str]) -> chess.Board:
-    """Handle `position [startpos | fen <6 fields>] [moves ...]`."""
+def _apply_position(tokens: list[str]) -> chess.Board | None:
+    """Handle `position [startpos | fen <6 fields>] [moves ...]`.
+
+    Returns None if the position could not be reconstructed faithfully.
+
+    Silently substituting *a* board for *the* board is the worst failure mode
+    available here: the engine happily answers for a position the GUI is not
+    in, lichess rejects the move, the game is lost, and nothing is logged. So
+    every divergence is loud on stderr and returns None, and the caller
+    refuses to move rather than guessing.
+    """
     if not tokens:
-        return chess.Board()
+        _warn("empty `position` command")
+        return None
 
     if tokens[0] == "startpos":
         board = chess.Board()
         rest = tokens[1:]
     elif tokens[0] == "fen":
-        # A FEN is six space-separated fields, but be lenient: some GUIs omit
-        # the trailing counters. Take everything up to `moves`.
         try:
             cut = tokens.index("moves")
         except ValueError:
             cut = len(tokens)
-        board = chess.Board(" ".join(tokens[1:cut]))
+        fen = " ".join(tokens[1:cut])
+        try:
+            board = chess.Board(fen)
+        except ValueError as e:
+            _warn(f"unparseable FEN {fen!r}: {e}")
+            return None
         rest = tokens[cut:]
     else:
-        return chess.Board()
+        _warn(f"unrecognised `position` form: {tokens[0]!r}")
+        return None
 
     if rest and rest[0] == "moves":
-        for uci in rest[1:]:
+        for i, uci in enumerate(rest[1:]):
             try:
                 board.push_uci(uci)
-            except ValueError:
-                # A move we can't parse means our state has diverged from the
-                # GUI's. Nothing good comes from guessing past that point.
-                break
+            except ValueError as e:
+                _warn(f"illegal move {uci!r} at index {i} of the move list: {e}")
+                return None
+    elif rest:
+        _warn(f"expected `moves`, got {rest[0]!r}")
+        return None
     return board
 
 
 def run(chooser: Chooser, name: str, author: str) -> None:
-    board = chess.Board()
+    board: chess.Board | None = chess.Board()
 
     for raw in sys.stdin:
         line = raw.strip()
@@ -125,8 +148,25 @@ def run(chooser: Chooser, name: str, author: str) -> None:
             board = _apply_position(args)
 
         elif cmd == "go":
+            if board is None:
+                # We do not know the position. Answering would mean sending a
+                # move for a board the GUI is not on.
+                _warn("`go` with no valid position; refusing to move")
+                continue
             limits = _parse_go(args)
-            move = chooser(board=board, limits=limits)
+            try:
+                move = chooser(board=board, limits=limits)
+            except Exception:
+                # Anything at all: CUDA OOM, a driver reset, a tokenizer edge
+                # case. Dying here forfeits the game; a bad legal move does
+                # not. The engine must outlive its own bugs.
+                _warn("chooser raised, falling back to the first legal move")
+                traceback.print_exc(file=sys.stderr)
+                legal = list(board.legal_moves)
+                if not legal:
+                    _warn("no legal moves; nothing to send")
+                    continue
+                move = legal[0]
             print(f"bestmove {move.uci()}", flush=True)
 
         elif cmd in ("quit", "stop"):
