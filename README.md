@@ -1,130 +1,114 @@
 # SumoFish
 
-A chess engine that evaluates positions with a transformer and does not search.
+A neural network chess engine, built from scratch on one consumer GPU.
 
-Plays on lichess as [@SumoFish](https://lichess.org/@/SumoFish).
+Plays on lichess as **[@SumoFish](https://lichess.org/@/SumoFish)** ·
+watch it live at **[/tv](https://lichess.org/@/SumoFish/tv)**
 
-The premise comes from DeepMind's *Grandmaster-Level Chess Without Search*
-(Ruoss et al. 2024, [arXiv:2402.04494](https://arxiv.org/abs/2402.04494)): a
-decoder-only transformer trained on Stockfish-annotated positions plays strong
-chess with zero lookahead. Their 9M-parameter model reaches 2054 Lichess blitz.
-No alpha-beta, no quiescence, no transposition table. One forward pass per move.
+---
 
-The point of this project is that the GPU is the engine, not a trainer that runs
-for forty minutes every few weeks.
+It started as an engine that **never looked ahead**. One neural network forward
+pass per move, no search of any kind, ~10 ms a move. That premise comes from
+DeepMind's *Grandmaster-Level Chess Without Search*
+([arXiv:2402.04494](https://arxiv.org/abs/2402.04494)): a transformer trained on
+Stockfish-annotated positions plays strong chess with zero lookahead.
 
-**Goals, in order: understand every layer, be fun to play, last for years.**
-Not strength for its own sake. See [PHILOSOPHY.md](PHILOSOPHY.md) — in
-particular why this will never be a weakened strong engine.
+It now searches too. A policy network proposes candidate moves, a value network
+scores the positions they lead to, and MCTS explores between them — AlphaZero's
+arrangement, as two separate networks rather than one with two heads.
 
-## Status
+Everything here was trained on a single RTX 5070 Ti.
 
-First model trained. 8.55 h, 307M positions, **40.9% puzzle accuracy**.
+## Results
 
-| Phase | What | State |
-|---|---|---|
-| 0 | Random-move engine, lichess-bot, systemd, watchdog | done, live |
-| 1 | ChessBench data + tokenizer, verified vs upstream | done |
-| 2 | Transformer, behavioral cloning | done, 40.9% |
-| 3 | Neural engine replaces the random one | ready, not promoted |
-| 4 | Action-value target, scale, MCTS, custom CUDA | next |
-
-### Read the reference numbers carefully
-
-The paper's headline figures (88.9% puzzles, 2054/2895 Elo) belong to the
-**action-value** models. This repo currently trains **behavioral cloning**,
-which is a different and weaker target. Their own Table 2 ablation, at fixed
-architecture:
-
-| prediction target | puzzle accuracy |
+| | |
 |---|---|
-| action-value | 83.3% |
-| state-value | 77.5% |
-| behavioral cloning | 65.7% |
+| Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
+| State-value model | 57.4% at 12% trained, warm-started from the above |
+| Search vs no search | **7 wins, 17 draws, 0 losses** (value net only 3% trained) |
+| Move latency | ~10 ms searchless, clock-bound with search |
 
-So 65.7% is the ceiling for what we are training, not 88.9%. Conflating the two
-made a healthy run look broken here once already.
+For scale, the reference implementation trained on **81.9 billion** positions.
+This is roughly 0.4% of that compute.
 
-Scale is the other half of the gap: the paper trains 20M steps at batch 4096,
-i.e. **81.9B positions**. Our run was 307M, **1/267th**. Matching it on one
-5070 Ti would take ~93 days of continuous training.
-
-40.9% is therefore ~62% of the achievable ceiling on 0.375% of the compute, and
-the accuracy curve had flattened (.404, .409, .409, .405) with the LR decayed to
-10%. More behavioral-cloning training is the wrong lever; **changing prediction
-target is worth ~18 points at identical size and cost.**
-
-## Layout
+## How it works
 
 ```
-chessgpu/
-  uci.py                  UCI protocol loop; engines supply a `chooser`
-  engines/random_engine.py  Phase 0 placeholder
-bin/random-engine         wrapper lichess-bot invokes
-scripts/watchdog.py       detects silently-stalled games
-systemd/                  --user units, symlinked into ~/.config/systemd/user
-lichess-bot/              cloned, not vendored; config.yml is ours
-logs/games/               PGN archive of everything the bot plays
+FEN ──► 77 tokens ──► 8-layer transformer ──► 1968 move logits  (policy)
+                                          └─► 64 value buckets  (value)
+                                                    │
+                                              MCTS explores
 ```
 
-## Environment
+A position becomes exactly 77 tokens over a 31-character vocabulary: 64 board
+squares, side to move, castling rights, en passant, and the move counters.
+Castling and en passant are in there because chess is *not* a pure function of
+piece placement — whether you may castle depends on history the board does not
+show.
 
-Python 3.12 (not 3.14: the ML wheels aren't there yet). PyTorch 2.13.0+cu132,
-verified with a real transformer forward and backward pass on `sm_120`:
+The model is a LLaMA-shaped decoder: pre-norm, SwiGLU MLPs, no biases except
+the output projection. 8.9M parameters, of which 71% are the MLPs.
 
-```
-arch list : ['sm_75', 'sm_80', 'sm_86', 'sm_90', 'sm_100', 'sm_120']
-capability: (12, 0)
-```
+## Things worth reading the code for
 
-Blackwell needed no special handling. `uv pip install torch --torch-backend=auto`
-resolved the right wheel first try.
+**`chessgpu/mcts.py`** — MCTS with virtual loss. The naive version evaluates one
+position per GPU call, which wastes almost all of the card. Batching leaf
+evaluations made it **19x faster with no CUDA involved**, and the trick that
+makes it possible (back up a pretend loss so the next walk explores elsewhere,
+then subtract it when the real answer arrives) is more interesting than any
+kernel.
+
+**`chessgpu/hlgauss.py`** — the value head predicts a *distribution* over win
+probability, not a number. Cross-entropy against a Gaussian smeared across bins
+beats regression measurably (Farebrother et al.,
+[arXiv:2403.03950](https://arxiv.org/abs/2403.03950)), and it means the engine
+knows how uncertain it is.
+
+**`chessgpu/bagz.py`** — the training data format is Apache Beam `TupleCoder`
+output with no public spec. This was reverse-engineered from raw bytes and
+verified by decoding 12,000 records and checking every move was legal.
+
+**`research/`** — a port of [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+for chess: fixed 5-minute experiments, held-out bits-per-move as the metric, and
+a harness that reverts anything failing to beat the measured noise floor. Which
+matters, because the first thing it proved was that my best hypothesis
+(bidirectional attention) was **wrong by 4.7 sigma**.
 
 ## Running it
 
-The OAuth token is never in this repo. It lives in
-`~/.config/chess-gpu/bot.env` (chmod 600), and lichess-bot reads
-`LICHESS_BOT_TOKEN` from the environment, overriding the placeholder in
-`config.yml`.
-
 ```sh
-systemctl --user start chess-gpu-bot
-systemctl --user enable --now chess-gpu-watchdog.timer   # only once a token exists
-journalctl --user -u chess-gpu-bot -f
+uv venv --python 3.12 && uv pip install torch --torch-backend=auto
+uv pip install -e . && uv pip install numpy pandas tqdm
+
+scripts/fetch_data.sh                    # ChessBench, ~70 GB
+tests/verify_data.py                     # tokenizer verified against upstream
+
+python train.py --target state_value --init-from <policy.pt>
 ```
 
-## Deployment notes
+Training data is [ChessBench](https://github.com/google-deepmind/searchless_chess)
+(10M games annotated by Stockfish 16). Checkpoints are not in this repo.
 
-Two lichess-bot bugs are relevant and both are closed without a fix:
+## Design notes
 
-- [#1184](https://github.com/lichess-bot-devs/lichess-bot/issues/1184) — a
-  transient stream drop makes the bot exit the game loop while the game is still
-  live. The process stays up and looks healthy; it has just stopped playing, and
-  flags on time.
-- [#1101](https://github.com/lichess-bot-devs/lichess-bot/issues/1101) — after a
-  restart, in-progress games are not all picked back up.
+`PHILOSOPHY.md` covers why the project is shaped the way it is. The short
+version: it is built to be understood by the person building it, to be enjoyable
+to play against rather than merely strong, and to still be interesting in a
+year. Difficulty will never come from a strong engine told to play badly —
+handicapped engines play twelve perfect moves and then hang a queen for no
+reason, and nobody enjoys that.
 
-Neither is visible from process state, so `scripts/watchdog.py` asks lichess
-instead: if it has been our turn for over two minutes, the bot is stuck and the
-unit gets restarted. Restarts are rate-limited to one per ten minutes so a
-genuinely broken bot doesn't loop.
+`CLAUDE.md` has an operational guide and a "what not to do" log of every dead
+end hit along the way, which is the most reusable thing here.
 
-Mitigations in `config.yml`: `concurrency: 1`, `move_overhead: 3000`, no bullet,
-`quit_after_all_games_finish: true`.
+## Credits
 
-Casual games only until the engine actually tries to win. Playing rated with a
-random-move engine is sandbagging under lichess ToS.
+- DeepMind's [searchless_chess](https://github.com/google-deepmind/searchless_chess)
+  (Apache 2.0) for the approach, the dataset, and reference implementations that
+  this project's tokenizer and model were verified byte-exact against.
+- [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) for the lichess
+  bridge, plus a local patch for
+  [#1184](https://github.com/lichess-bot-devs/lichess-bot/issues/1184).
+- [python-chess](https://github.com/niklasf/python-chess) for move generation.
 
-## Why not the obvious things
-
-**AlphaZero from zero** is a documented dead end on one consumer GPU. No solo
-developer was found who got past ~1400 Elo. Zeta36's `chess-alpha-zero`, the
-most-forked repo in the space, says it plainly: *"we found the self-play is too
-much costed for an only machine"*. KataGo needed 1.4 GPU-years to reach strong
-Go using the most compute-efficient self-play method known.
-
-**NNUE + alpha-beta** is the strongest solo path by a wide margin, and it leaves
-the GPU idle. It is a search-engineering project wearing an ML hat.
-
-Self-play RL is still in the plan, at Phase 4, as fine-tuning on top of a
-supervised net. That is the form of the idea that actually works alone.
+MIT licensed. See `LICENSE`.
