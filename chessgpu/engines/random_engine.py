@@ -23,7 +23,7 @@ def choose(board: chess.Board, limits: Limits) -> chess.Move:
 
 
 def main() -> None:
-    run(choose, name="chess-gpu random", author="Jessupthefish")
+    run(choose, name="SumoFish (random)", author="Jessupthefish")
 
 
 if __name__ == "__main__":

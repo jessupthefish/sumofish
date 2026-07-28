@@ -75,9 +75,9 @@ challenge:
   max_simultaneous_games_per_user: 2
 
 greeting:
-  hello: "Hi! I'm {me}. I'm a work in progress and currently play at random. Good luck."
+  hello: "Hi, I'm {me}. I'm a transformer that doesn't search at all: one forward pass, zero moves of lookahead. Still under construction, so right now I play at random. Good luck."
   goodbye: "Good game!"
-  hello_spectators: "Hi! I'm {me}, an in-development neural chess engine."
+  hello_spectators: "Hi, I'm {me}, a chess engine that evaluates positions with a neural net and never searches ahead."
   goodbye_spectators: "Thanks for watching!"
 
 pgn_directory: "/home/nomad/chess-gpu/logs/games"

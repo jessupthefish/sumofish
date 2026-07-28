@@ -1,6 +1,8 @@
-# chess-gpu
+# SumoFish
 
 A chess engine that evaluates positions with a transformer and does not search.
+
+Plays on lichess as [@SumoFish](https://lichess.org/@/SumoFish).
 
 The premise comes from DeepMind's *Grandmaster-Level Chess Without Search*
 (Ruoss et al. 2024, [arXiv:2402.04494](https://arxiv.org/abs/2402.04494)): a
