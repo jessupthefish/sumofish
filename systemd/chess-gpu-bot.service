@@ -1,8 +1,12 @@
 [Unit]
-Description=chess-gpu lichess bot
+Description=SumoFish lichess bot
 Documentation=https://github.com/lichess-bot-devs/lichess-bot
 After=network-online.target
 Wants=network-online.target
+# A crash loop that reconnects every 10s would burn through lichess rate limits.
+# These are [Unit] keys, not [Service] keys.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -16,9 +20,6 @@ ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
 
 Restart=always
 RestartSec=10
-# A crash loop that reconnects every 10s would burn through lichess rate limits.
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 StandardOutput=journal
 StandardError=journal
@@ -28,7 +29,11 @@ SyslogIdentifier=chess-gpu-bot
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
-ReadWritePaths=/home/nomad/chess-gpu/logs /home/nomad/.local/state/chess-gpu
+# lichess-bot writes lichess_bot_auto_logs/ into its working directory, which
+# also holds per-game takeback state, so the whole dir has to be writable.
+ReadWritePaths=/home/nomad/chess-gpu/lichess-bot
+ReadWritePaths=/home/nomad/chess-gpu/logs
+ReadWritePaths=/home/nomad/.local/state/chess-gpu
 
 [Install]
 WantedBy=default.target
