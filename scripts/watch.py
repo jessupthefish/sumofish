@@ -73,6 +73,14 @@ BOARD_SHARE = 0.42
 # until it squeezes the tape out entirely.
 TAPE_ROWS = 7
 
+# Columns either side of the board image. The left gutter is one of padding,
+# two of eval bar and one of gap; the right one is pure margin, and it has to
+# be stated rather than left at zero, because the image's width is derived from
+# the column width and without it the picture ends flush against the panel
+# beside it with no breathing room at all.
+BOARD_GUTTER_L = 4
+BOARD_GUTTER_R = 3
+
 
 def load_token() -> str | None:
     token = os.environ.get("LICHESS_BOT_TOKEN")
@@ -168,7 +176,7 @@ class Plan:
             # the only constraint is staying square. Two rows go to the player
             # lines, two to the panel border, one to the margin.
             self.scale = "sixel"
-            cell_cols = budget_w - 4 - sixel.MARGIN_CELLS
+            cell_cols = budget_w - BOARD_GUTTER_L - BOARD_GUTTER_R
             # Leave room for the tape underneath: a board that fills the
             # column to the last row looks better in a screenshot and is worse
             # to watch, because the log of what happened while you looked away
@@ -177,13 +185,13 @@ class Plan:
             self.image_px = int(min(cell_cols * self.caps.cell_w,
                                     cell_rows * self.caps.cell_h))
             self.image_rows = max(1, int(self.image_px / self.caps.cell_h) + 1)
-            self.board_w = int(self.image_px / self.caps.cell_w) + 5
+            image_cols = int(self.image_px / self.caps.cell_w)
+            self.board_w = BOARD_GUTTER_L + image_cols + BOARD_GUTTER_R
             self.board_h = self.image_rows + 4
             # 1-based screen cell of the image's top-left corner.
-            # Rows: 3 for the header panel, 1 for this panel's top border,
-            # 1 for the top player line, so the blank area starts at 6.
-            # Cols: 1 border + 1 padding + 2 eval bar + 1 gap.
-            self.image_at = (6, 6)
+            # Rows: 3 header panel, 1 label line, 1 top player line.
+            # Cols: the left gutter, so the first image column is the one after.
+            self.image_at = (6, BOARD_GUTTER_L + 1)
         else:
             self.scale = board.pick_scale(budget_w - 3, budget_h)
             bw, bh = board.board_size(self.scale)
