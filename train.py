@@ -8,7 +8,12 @@ the position, at the final sequence position only. Everything else in the 77
 tokens is context, never a prediction target.
 
 Progress is measured on puzzle accuracy, not loss, because loss is not
-comparable to anything published and 88.9% for the 9M model is.
+comparable to anything published and puzzle accuracy is.
+
+Compare against the right reference: the paper's ablation at fixed architecture
+gives 83.3% for action-value, 77.5% for state-value, and 65.7% for behavioral
+cloning. This script trains behavioral cloning, so 65.7% is the ceiling, not the
+88.9%/2054 Elo figures, which belong to the action-value lineage.
 """
 
 from __future__ import annotations
@@ -224,7 +229,7 @@ def main() -> None:
             eval_model = build(args.preset, causal=bool(args.causal))
             ema.copy_into(eval_model)
             result = evaluate_puzzles(NeuralPolicy(eval_model, device=device), puzzles)
-            print(f"  [eval] step {step+1:,}  puzzles {result}  (target 0.889 for 9M)")
+            print(f"  [eval] step {step+1:,}  puzzles {result}  (BC ceiling ~0.657; 0.889 is the action-value model)")
             with log_path.open("a") as f:
                 f.write(json.dumps({"step": step + 1, "puzzle_acc": result.accuracy}) + "\n")
             if result.accuracy > best:

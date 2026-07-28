@@ -15,17 +15,40 @@ for forty minutes every few weeks.
 
 ## Status
 
-**Phase 0 complete.** A random-move engine plays over UCI and the full lichess
-deployment path is built and validated. No model yet, by design: the ops surface
-gets debugged while nothing is at stake.
+First model trained. 8.55 h, 307M positions, **40.9% puzzle accuracy**.
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Random-move engine, lichess-bot, systemd, watchdog | done, awaiting token |
-| 1 | ChessBench data + tokenizer | next |
-| 2 | Transformer, trained to ~88.9% puzzle accuracy | |
-| 3 | Neural engine replaces the random one | |
-| 4 | Scale, state-value, MCTS, custom CUDA, RL fine-tune | ongoing |
+| 0 | Random-move engine, lichess-bot, systemd, watchdog | done, live |
+| 1 | ChessBench data + tokenizer, verified vs upstream | done |
+| 2 | Transformer, behavioral cloning | done, 40.9% |
+| 3 | Neural engine replaces the random one | ready, not promoted |
+| 4 | Action-value target, scale, MCTS, custom CUDA | next |
+
+### Read the reference numbers carefully
+
+The paper's headline figures (88.9% puzzles, 2054/2895 Elo) belong to the
+**action-value** models. This repo currently trains **behavioral cloning**,
+which is a different and weaker target. Their own Table 2 ablation, at fixed
+architecture:
+
+| prediction target | puzzle accuracy |
+|---|---|
+| action-value | 83.3% |
+| state-value | 77.5% |
+| behavioral cloning | 65.7% |
+
+So 65.7% is the ceiling for what we are training, not 88.9%. Conflating the two
+made a healthy run look broken here once already.
+
+Scale is the other half of the gap: the paper trains 20M steps at batch 4096,
+i.e. **81.9B positions**. Our run was 307M, **1/267th**. Matching it on one
+5070 Ti would take ~93 days of continuous training.
+
+40.9% is therefore ~62% of the achievable ceiling on 0.375% of the compute, and
+the accuracy curve had flattened (.404, .409, .409, .405) with the LR decayed to
+10%. More behavioral-cloning training is the wrong lever; **changing prediction
+target is worth ~18 points at identical size and cost.**
 
 ## Layout
 

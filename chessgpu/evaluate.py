@@ -8,8 +8,19 @@ sometimes admit a faster mate than the recorded line.
 Board starts at the end of the puzzle's PGN. Even-indexed moves in `Moves` are
 the opponent's and get pushed; odd-indexed moves are ours and get predicted.
 
-Reference numbers from the paper, so a port that is silently wrong is visible:
-    9M -> 88.9%   136M -> 94.5%   270M -> 95.4%
+Reference numbers from the paper, so a port that is silently wrong is visible.
+Note WHICH prediction target each belongs to, because they are not comparable:
+
+    action-value       83.3%      <- the headline 88.9%/2054/2895 lineage
+    state-value        77.5%
+    behavioral cloning 65.7%      <- what SumoFish currently trains
+
+Those are the paper's own Table 2 ablation at fixed architecture. Comparing a
+behavioral-cloning model against the action-value number is an apples-to-oranges
+error that makes a healthy run look broken; it was made here once already.
+
+Scale matters as much as target: the paper trains 20M steps at batch 4096, i.e.
+81.9B positions. A 300k-step run at batch 1024 is 307M, or 1/267th of that.
 """
 
 from __future__ import annotations
