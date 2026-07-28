@@ -47,7 +47,7 @@ engine:
   engine_options:
 
 challenge:
-  concurrency: 1                   # One game at a time. lichess-bot #1101 (restart
+  concurrency: 2                   # Two at once, for throughput. #1101 (restart
                                    # loses in-progress games) gets much worse with
                                    # high concurrency, and it is closed unfixed.
   games_reserved_for_humans: 0
@@ -95,7 +95,7 @@ matchmaking:
                                    # challenges. With this off SumoFish waited
                                    # for a human to find it and played exactly
                                    # zero games.
-  allow_during_games: false
+  allow_during_games: true         # Keep the queue full; do not idle between games.
   challenge_variant: "random"
   challenge_timeout: 1             # Minutes idle before challenging another bot.
                                    # 30 was the default and meant the first
@@ -103,12 +103,14 @@ matchmaking:
                                    # minimum; raise it once games are flowing,
                                    # since aggressive matchmaking can draw
                                    # lichess rate limiting.
-  challenge_initial_time:
-    - 180
-    - 300
-  challenge_increment:
-    - 2
-    - 3
+  challenge_initial_time:          # 1+0 / 2+1 / 3+2. Short on purpose: lichess
+    - 60                           # caps bot-vs-bot at 100 games/day, so the
+    - 120                          # budget should buy 100 fast games rather
+    - 180                          # than 100 slow ones. Faster games -> faster
+  challenge_increment:             # rating convergence and more signal per
+    - 0                            # tweak. The engine is clock-bound, so a
+    - 1                            # short control just means fewer simulations,
+    - 2                            # never a timeout.
   opponent_max_rating: 2200        # Hard ceiling while the 3000 placeholder is
                                    # still provisional. Without it, matchmaking
                                    # reads 3000 as real and hunts 2500-3500.

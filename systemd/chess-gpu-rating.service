@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample SumoFish's lichess rating
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nomad/chess-gpu
+ExecStart=/home/nomad/chess-gpu/.venv/bin/python /home/nomad/chess-gpu/scripts/rating_log.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chess-gpu-rating
