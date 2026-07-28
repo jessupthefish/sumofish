@@ -189,7 +189,6 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         ebar = evalbar(wp_white, image_rows, width=2)
         for i in range(image_rows):
             row = Text(no_wrap=True)
-            row.append(" ", style=f"on {BG}")
             row.append_text(ebar[i])
             rows.append(row)
         rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))

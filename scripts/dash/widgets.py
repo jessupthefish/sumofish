@@ -85,8 +85,11 @@ def evalbar(win_prob_white: float | None, height: int, width: int = 2) -> list[T
 
     rows: list[Text] = []
     if win_prob_white is None:
+        # Unstyled, not a dark fill. With no evaluation to show there is
+        # nothing to draw, and a styled blank reads as a black bar down the
+        # side of the board rather than as an absent gauge.
         for _ in range(height):
-            rows.append(Text(" " * width, style=f"on {BG}"))
+            rows.append(Text(" " * width))
         return rows
     p = max(0.0, min(1.0, win_prob_white))
     white_halves = p * height * 2
