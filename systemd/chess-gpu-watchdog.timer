@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the chess-gpu bot watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=chess-gpu-watchdog.service
+
+[Install]
+WantedBy=timers.target

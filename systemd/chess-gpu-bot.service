@@ -1,0 +1,34 @@
+[Unit]
+Description=chess-gpu lichess bot
+Documentation=https://github.com/lichess-bot-devs/lichess-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nomad/chess-gpu/lichess-bot
+
+# The OAuth token lives here, chmod 600, outside the repo and outside git.
+# lichess-bot reads LICHESS_BOT_TOKEN and overrides the config.yml placeholder.
+EnvironmentFile=/home/nomad/.config/chess-gpu/bot.env
+
+ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
+
+Restart=always
+RestartSec=10
+# A crash loop that reconnects every 10s would burn through lichess rate limits.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chess-gpu-bot
+
+# Modest hardening. No sudo on this box, so this is all user-space.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=/home/nomad/chess-gpu/logs /home/nomad/.local/state/chess-gpu
+
+[Install]
+WantedBy=default.target

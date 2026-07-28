@@ -1,0 +1,23 @@
+# Secrets. Never commit these.
+.env
+.env.*
+*.token
+
+# Environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Data and checkpoints are large and reproducible.
+data/
+checkpoints/
+*.bag
+*.pt
+*.safetensors
+
+# Third-party, cloned not vendored.
+lichess-bot/
+
+# Runtime
+logs/
+*.pgn
