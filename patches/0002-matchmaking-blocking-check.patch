@@ -1,0 +1,17 @@
+Make the matchmaking block-list check non-fatal.
+
+lib/matchmaking.py:choose_opponent() calls /api/user/{name} on the candidate
+purely to notice that they have blocked us. That endpoint has a small per-IP
+budget which lichess-bot is already spending elsewhere, so it answers 429
+readily. Upstream has the call inside the same try as the opponent choice, so
+one 429 aborts the challenge entirely: the bot logs "No challenge will be
+created" and sits idle. Observed here as forty minutes without a single
+outgoing challenge, and it does not self-recover, because every retry against
+a 429 renews the penalty.
+
+The check is a courtesy rather than a requirement -- lichess declines a
+challenge from an account that blocked you without our help. So give the call
+its own try/except and treat an unavailable profile as "not blocked".
+
+Applied by patches/apply.sh, which is idempotent. Re-run after pulling
+lichess-bot.

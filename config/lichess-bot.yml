@@ -97,19 +97,23 @@ matchmaking:
                                    # zero games.
   allow_during_games: true         # Keep the queue full; do not idle between games.
   challenge_variant: "random"
-  challenge_timeout: 5             # Minutes idle before challenging another bot.
-                                   # 30 was the default and meant the first game
-                                   # was half an hour away. 1 was the minimum and
-                                   # it did exactly what the note here warned it
-                                   # might: matchmaking calls /api/user/{name} to
-                                   # size up each candidate, that endpoint has a
-                                   # small per-IP budget, and once a minute is
-                                   # enough to keep it pinned at 429 forever.
-                                   # Every retry against a 429 renews the penalty,
-                                   # so the bot sat unable to create a single
-                                   # challenge for 40 minutes. 5 recovers, still
-                                   # finds games, and leaves headroom for the
-                                   # rating timer to use the same budget.
+  challenge_timeout: 1             # Minutes idle before challenging another bot.
+                                   # The minimum, and now safe to run at.
+                                   #
+                                   # It was not before. Matchmaking calls
+                                   # /api/user/{name} on the candidate purely to
+                                   # notice that they have blocked us, and
+                                   # upstream lets a failure there abort the
+                                   # whole challenge. That endpoint has a small
+                                   # per-IP budget, so it 429s readily, and the
+                                   # bot went 40 minutes without issuing a single
+                                   # challenge. patches/0002 gives that lookup
+                                   # its own try/except and treats an
+                                   # unavailable profile as "not blocked", so a
+                                   # throttled courtesy call no longer costs a
+                                   # game. Note lichess caps bot-vs-bot at ~100
+                                   # games a day; at this rate that is the real
+                                   # ceiling, not matchmaking.
   challenge_initial_time:          # 1+0 / 2+1 / 3+2. Short on purpose: lichess
     - 60                           # caps bot-vs-bot at 100 games/day, so the
     - 120                          # budget should buy 100 fast games rather

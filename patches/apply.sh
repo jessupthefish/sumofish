@@ -24,3 +24,24 @@ p.write_text(t.replace(old, new))
 print("0001 (#1184 stream drop): applied")
 PY
 fi
+
+if grep -q "PATCHED (see patches/0002" lib/matchmaking.py; then
+  echo "0002 (matchmaking blocking check): already applied"
+else
+  python3 - <<'PY2'
+import pathlib
+p = pathlib.Path("lib/matchmaking.py"); t = p.read_text()
+old = """            bot_profile = self.li.get_public_data(bot["username"])
+            if bot_profile.get("blocking"):"""
+new = """            # PATCHED (see patches/0002-matchmaking-blocking-check.patch):
+            # a 429 on this courtesy lookup must not abort the challenge.
+            try:
+                bot_profile = self.li.get_public_data(bot["username"])
+            except Exception:
+                bot_profile = {}
+            if bot_profile.get("blocking"):"""
+assert old in t, "0002: anchor not found"
+p.write_text(t.replace(old, new))
+PY2
+  echo "0002 (matchmaking blocking check): applied"
+fi
