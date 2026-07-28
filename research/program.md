@@ -109,4 +109,12 @@ steps in the same 5 minutes.
 Append findings here as you go. Negative results are as valuable as positive
 ones and stop the next run from repeating them.
 
-- (nothing yet)
+- **2026-07-28. CAUSAL=False is WORSE. 4.74429 vs baseline 4.72111, +0.023 bits,
+  ~4.7 sigma. Rejected.** This was the top-ranked hypothesis in this file and the
+  reasoning behind it was wrong. `is_causal=True` lets flash attention skip half
+  the attention matrix, so the causal model simply runs faster and completes more
+  steps in the same wall clock. The extra context bidirectional attention buys
+  does not pay for the throughput it costs. Do not retry this without also
+  attacking the speed side, e.g. bidirectional plus a compensating throughput win.
+  Corollary: the BOS token and shift-right stay, since they only exist to serve
+  the causal formulation.
