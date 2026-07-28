@@ -82,7 +82,15 @@ def unit_active() -> bool:
 
 
 def restart() -> None:
-    log(f"restarting {UNIT}")
+    """Hard restart.
+
+    The unit now stops with SIGINT and a 180s drain so ordinary restarts do not
+    abandon live games. That is exactly wrong here: this path only runs when the
+    game loop is already dead, so a graceful drain would block for the full
+    timeout while the clock runs. Kill it and let Restart=always bring it back.
+    """
+    log(f"restarting {UNIT} (SIGKILL: the game loop is already dead)")
+    subprocess.run(["systemctl", "--user", "kill", "-s", "SIGKILL", UNIT], check=False)
     subprocess.run(["systemctl", "--user", "restart", UNIT], check=False)
 
 

@@ -23,7 +23,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LOG = ROOT / "runs" / "9M-causal" / "log.jsonl"
+# NEVER hardcode a run directory here. This was `runs/9M-causal/log.jsonl`, so
+# the first run started under a different --run name would have read a stale,
+# frozen log, concluded the step counter was not moving, and restarted a
+# perfectly healthy process every 30 minutes forever -- while the journal
+# showed a run being dutifully supervised. train.py publishes runs/active.json
+# at startup; that is the only source of truth for which run is live.
+ACTIVE = ROOT / "runs" / "active.json"
 UNIT = "chess-gpu-train.service"
 STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "chess-gpu/train_watchdog.json"
 
@@ -43,8 +49,36 @@ def unit_active() -> bool:
     ).returncode == 0
 
 
+def active_log() -> Path | None:
+    """Log file of the currently-live run, or None if we cannot be sure.
+
+    Returning None makes the caller do nothing. That is the correct bias: a
+    watchdog that is unsure must never act, because its only action is
+    destructive.
+    """
+    try:
+        info = json.loads(ACTIVE.read_text())
+    except (OSError, ValueError):
+        return None
+    log = Path(info.get("log", ""))
+    if not log.exists():
+        return None
+    # Guard against a stale active.json left by a previous run: the PID it
+    # names must still be the unit's live main process.
+    main_pid = subprocess.run(
+        ["systemctl", "--user", "show", UNIT, "-p", "MainPID", "--value"],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if main_pid.isdigit() and int(main_pid) > 0 and info.get("pid") != int(main_pid):
+        log_msg = f"active.json names pid {info.get('pid')} but unit MainPID is {main_pid}"
+        print(f"[train-watchdog] stale: {log_msg}; declining to act", flush=True)
+        return None
+    return log
+
+
 def last_step() -> int | None:
-    if not LOG.exists():
+    LOG = active_log()
+    if LOG is None or not LOG.exists():
         return None
     step = None
     with LOG.open() as f:

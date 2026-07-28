@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import math
 import signal
 import time
@@ -102,6 +103,13 @@ def main() -> None:
     out = ROOT / "runs" / run
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps(vars(args), indent=2))
+    # The stall watchdog must know WHICH run is live. It used to hardcode
+    # 'runs/9M-causal/log.jsonl', which meant the first run with a different
+    # --run name would read a stale, frozen log and restart a perfectly healthy
+    # process every 30 minutes forever.
+    (ROOT / "runs" / "active.json").write_text(
+        json.dumps({"run": run, "log": str(out / "log.jsonl"), "pid": os.getpid()})
+    )
 
     device = "cuda:0"
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -114,6 +122,7 @@ def main() -> None:
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
     ema = EMA(model, decay=args.ema_decay)
     start_step = 0
+    best = 0.0
 
     if args.auto_resume and not args.resume:
         candidate = out / "latest.pt"
@@ -129,7 +138,9 @@ def main() -> None:
         opt.load_state_dict(ckpt["opt"])
         ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
         start_step = ckpt["step"]
-        print(f"resumed from {args.resume} at step {start_step:,}")
+        # Older checkpoints predate this field; 0.0 is the old (buggy) behaviour.
+        best = ckpt.get("best", 0.0)
+        print(f"resumed from {args.resume} at step {start_step:,}, best={best:.4f}")
 
     train_step = model
     if args.compile:
@@ -157,7 +168,16 @@ def main() -> None:
     signal.signal(signal.SIGTERM, on_signal)
 
     def save(step: int, tag: str = "latest") -> Path:
+        """Atomic checkpoint write.
+
+        A torn 136MB write is unrecoverable: --auto-resume torch.loads it,
+        raises, systemd retries, trips StartLimitBurst, and the unit lands in
+        `failed` where the stall watchdog explicitly declines to look. Write to
+        a temp file and os.replace, which is atomic on one filesystem and also
+        means a concurrent reader keeps the old inode open.
+        """
         path = out / f"{tag}.pt"
+        tmp = out / f"{tag}.pt.tmp"
         torch.save(
             {
                 "step": step,
@@ -166,16 +186,19 @@ def main() -> None:
                 "opt": opt.state_dict(),
                 "cfg": asdict(model.cfg),
                 "args": vars(args),
+                # Must round-trip, or a resume resets it to 0.0 and the next
+                # eval unconditionally overwrites best.pt with a worse model.
+                "best": best,
             },
-            path,
+            tmp,
         )
+        os.replace(tmp, path)
         return path
 
     log_path = out / "log.jsonl"
     running = 0.0
     seen = 0
     t0 = time.perf_counter()
-    best = 0.0
 
     for step in range(start_step, args.steps):
         lr = lr_at(step, base_lr=args.lr, warmup=args.warmup, total=args.steps)
@@ -247,7 +270,8 @@ def main() -> None:
             print(f"stopped at step {step+1:,}")
             break
 
-    save(args.steps, "final")
+    if not stopping:
+        save(args.steps, "final")
     print("done")
 
 

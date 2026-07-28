@@ -21,6 +21,20 @@ ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
 Restart=always
 RestartSec=10
 
+# lichess-bot installs a handler for SIGINT ONLY (lib/lichess_bot.py:100).
+# There is no SIGTERM handler, so the default systemd stop signal killed it
+# outright and `quit_after_all_games_finish: true` was inert -- every restart,
+# including every scripts/promote.py run, abandoned whatever game was live.
+# The user manager's default TimeoutStopSec is 10s, which is also far too
+# short to drain a game, so both are set explicitly.
+KillSignal=SIGINT
+TimeoutStopSec=180
+
+# Make the bot the last thing the kernel OOM-kills. Training peaks near 15.7G
+# on a 31G box, and losing the live bot to reclaim memory for a batch is the
+# wrong trade.
+OOMScoreAdjust=-500
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=chess-gpu-bot

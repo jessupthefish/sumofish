@@ -26,3 +26,5 @@ research/attempts/
 research/best.py
 runs/
 runs-*.log
+bot.env
+*.env
