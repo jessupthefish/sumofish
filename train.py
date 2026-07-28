@@ -107,6 +107,15 @@ def main() -> None:
     ap.add_argument("--compile", type=int, default=1)
     ap.add_argument("--resume", default=None)
     ap.add_argument(
+        "--init-from",
+        default=None,
+        help="warm start: copy every shape-compatible layer from another "
+        "checkpoint, leaving the rest at random init. Changing the prediction "
+        "target only changes the output layer -- 91 of 93 tensors are identical "
+        "in shape between the 1968-way move head and the 64-bin value head -- so "
+        "the entire transformer body transfers and does not need relearning.",
+    )
+    ap.add_argument(
         "--auto-resume",
         action="store_true",
         help="resume from runs/<run>/latest.pt if it exists; makes the process "
@@ -168,6 +177,22 @@ def main() -> None:
         # Older checkpoints predate this field; 0.0 is the old (buggy) behaviour.
         best = ckpt.get("best", 0.0)
         print(f"resumed from {args.resume} at step {start_step:,}, best={best:.4f}")
+
+    if args.init_from and not args.resume:
+        donor = torch.load(args.init_from, map_location=device, weights_only=False)
+        src = donor.get("ema") or donor["model"]
+        own = model.state_dict()
+        taken, skipped = [], []
+        for k, v in src.items():
+            if k in own and own[k].shape == v.shape:
+                own[k] = v.to(own[k].dtype)
+                taken.append(k)
+            else:
+                skipped.append(k)
+        model.load_state_dict(own)
+        ema = EMA(model, decay=args.ema_decay)   # rebuild around the new weights
+        print(f"warm start from {args.init_from} (step {donor.get('step')}): "
+              f"{len(taken)} tensors copied, {len(skipped)} left random {skipped}")
 
     train_step = model
     if args.compile:
