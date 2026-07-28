@@ -95,14 +95,19 @@ matchmaking:
                                    # zero games.
   allow_during_games: false
   challenge_variant: "random"
-  challenge_timeout: 30
+  challenge_timeout: 1             # Minutes idle before challenging another bot.
+                                   # 30 was the default and meant the first
+                                   # game was half an hour away. 1 is the
+                                   # minimum; raise it once games are flowing,
+                                   # since aggressive matchmaking can draw
+                                   # lichess rate limiting.
   challenge_initial_time:
     - 180
     - 300
   challenge_increment:
     - 2
     - 3
-  opponent_rating_difference: 300
+  opponent_rating_difference: 500
   rating_preference: "none"
   challenge_mode: "casual"
   challenge_filter: "fine"
