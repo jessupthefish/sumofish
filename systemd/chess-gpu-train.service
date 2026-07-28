@@ -1,5 +1,5 @@
 [Unit]
-Description=SumoFish training run (9M, behavioral cloning)
+Description=SumoFish training run (9M, state value + HL-Gauss)
 After=network-online.target
 # A genuinely broken config would otherwise restart forever and look healthy.
 StartLimitIntervalSec=1800
@@ -17,10 +17,11 @@ ExecStart=/usr/bin/systemd-inhibit \
     --who=chess-gpu \
     --why="training run in progress" \
     /home/nomad/chess-gpu/.venv/bin/python train.py \
+        --target state_value --value-bins 64 \
         --preset 9M --steps 300000 --batch-size 1024 --workers 10 \
         --lr 3e-4 --warmup 2000 \
         --log-every 200 --eval-every 10000 --eval-puzzles 1000 --ckpt-every 5000 \
-        --compile 1 --run 9M-causal --auto-resume
+        --compile 1 --run 9M-sv --auto-resume
 
 # on-failure, not always: train.py exits 0 when it finishes, and restarting a
 # completed run would silently begin a second one.

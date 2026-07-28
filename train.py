@@ -31,9 +31,12 @@ import torch
 import torch.nn.functional as F
 
 from chessgpu.data import make_loader
+from chessgpu.hlgauss import HLGauss
+from chessgpu.hlgauss import loss as hl_loss
 from chessgpu.evaluate import evaluate_puzzles, load_puzzles
 from chessgpu.model import PRESETS, ChessTransformer, build
 from chessgpu.policy import NeuralPolicy
+from chessgpu.value_policy import ValuePolicy
 
 ROOT = Path(__file__).resolve().parent
 
@@ -74,7 +77,19 @@ class EMA:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset", default="9M", choices=list(PRESETS))
-    ap.add_argument("--data", default=str(ROOT / "data/train/behavioral_cloning_data.bag"))
+    ap.add_argument(
+        "--target",
+        default="behavioral_cloning",
+        choices=["behavioral_cloning", "state_value"],
+        help="what the model predicts. behavioral_cloning = which move Stockfish "
+        "played (1968-way softmax). state_value = P(side to move wins), as an "
+        "HL-Gauss histogram. The paper's ablation at identical architecture puts "
+        "state-value at 77.5%% puzzle accuracy vs 65.7%% for behavioral cloning.",
+    )
+    ap.add_argument("--value-bins", type=int, default=64,
+                    help="HL-Gauss bins; the paper's ablation is flat above 32")
+    ap.add_argument("--data", default=None,
+                    help="defaults to the bag matching --target")
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
@@ -99,7 +114,11 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    run = args.run or f"{args.preset}-{'causal' if args.causal else 'bidir'}"
+    is_value = args.target == "state_value"
+    if args.data is None:
+        args.data = str(ROOT / f"data/train/{args.target}_data.bag")
+
+    run = args.run or f"{args.preset}-{'sv' if is_value else 'bc'}"
     out = ROOT / "runs" / run
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps(vars(args), indent=2))
@@ -115,7 +134,15 @@ def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    model = build(args.preset, causal=bool(args.causal)).to(device)
+    # The only architectural difference between the two targets is the width of
+    # the output layer: 1968 moves, or `--value-bins` histogram buckets.
+    out_size = args.value_bins if is_value else None
+    build_kwargs = {"causal": bool(args.causal)}
+    if out_size:
+        build_kwargs["output_size"] = out_size
+    model = build(args.preset, **build_kwargs).to(device)
+
+    hl = HLGauss(bins=args.value_bins, device=device) if is_value else None
     print(f"run {run}: {model.num_parameters():,} parameters")
     print(f"config: {asdict(model.cfg)}")
 
@@ -148,7 +175,7 @@ def main() -> None:
 
     loader = make_loader(
         args.data,
-        policy="behavioral_cloning",
+        policy=args.target,
         batch_size=args.batch_size,
         num_workers=args.workers,
         seed=1234 + start_step,
@@ -213,9 +240,16 @@ def main() -> None:
             actions = actions.to(device, non_blocking=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits = train_step(tokens)
-            # cross_entropy on raw logits, not nll_loss on log_softmax: same
-            # value, fused, and it avoids materializing an fp32 [B, 1968].
-            loss = F.cross_entropy(logits.float(), actions) / args.accum
+            if is_value:
+                # Soft cross-entropy against a Gaussian smeared over the bins.
+                # Not MSE: Farebrother et al. measure HL-Gauss > C51 > MSE, and
+                # plain two-hot binning as WORSE than MSE, so the choice of
+                # binning scheme is load-bearing.
+                loss = hl_loss(logits.float(), hl.targets(actions)) / args.accum
+            else:
+                # cross_entropy on raw logits, not nll_loss on log_softmax: same
+                # value, fused, and it avoids materializing an fp32 [B, 1968].
+                loss = F.cross_entropy(logits.float(), actions) / args.accum
             loss.backward()
             total_loss += loss.item()
             seen += tokens.shape[0]
@@ -249,9 +283,14 @@ def main() -> None:
             t0 = time.perf_counter()
 
         if (step + 1) % args.eval_every == 0 or stopping:
-            eval_model = build(args.preset, causal=bool(args.causal))
+            eval_model = build(args.preset, **build_kwargs)
             ema.copy_into(eval_model)
-            result = evaluate_puzzles(NeuralPolicy(eval_model, device=device), puzzles)
+            evaluator = (
+                ValuePolicy(eval_model, HLGauss(bins=args.value_bins), device=device)
+                if is_value
+                else NeuralPolicy(eval_model, device=device)
+            )
+            result = evaluate_puzzles(evaluator, puzzles)
             print(f"  [eval] step {step+1:,}  puzzles {result}  (BC ceiling ~0.657; 0.889 is the action-value model)")
             with log_path.open("a") as f:
                 f.write(json.dumps({"step": step + 1, "puzzle_acc": result.accuracy}) + "\n")

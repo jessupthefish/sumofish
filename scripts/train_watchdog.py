@@ -63,15 +63,17 @@ def active_log() -> Path | None:
     log = Path(info.get("log", ""))
     if not log.exists():
         return None
-    # Guard against a stale active.json left by a previous run: the PID it
-    # names must still be the unit's live main process.
-    main_pid = subprocess.run(
-        ["systemctl", "--user", "show", UNIT, "-p", "MainPID", "--value"],
-        capture_output=True, text=True, check=False,
-    ).stdout.strip()
-    if main_pid.isdigit() and int(main_pid) > 0 and info.get("pid") != int(main_pid):
-        log_msg = f"active.json names pid {info.get('pid')} but unit MainPID is {main_pid}"
-        print(f"[train-watchdog] stale: {log_msg}; declining to act", flush=True)
+    # Guard against a stale active.json left by a previous run: the pid it
+    # names must still be alive.
+    #
+    # Do NOT compare against the unit's MainPID. ExecStart runs python under
+    # systemd-inhibit, so MainPID is the WRAPPER and never equals the trainer's
+    # own getpid(). Comparing them made this return None on every check, which
+    # disables the watchdog entirely -- a fix that quietly removed the
+    # supervision it was meant to repair.
+    pid = info.get("pid")
+    if not isinstance(pid, int) or not Path(f"/proc/{pid}").exists():
+        print(f"[train-watchdog] active.json names dead pid {pid}; declining to act", flush=True)
         return None
     return log
 
