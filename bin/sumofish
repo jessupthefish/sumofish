@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# UCI wrapper for the neural engine, invoked by lichess-bot.
+set -euo pipefail
+ROOT=/home/nomad/chess-gpu
+exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -m chessgpu.engines.neural_engine "$@"
