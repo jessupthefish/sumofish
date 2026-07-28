@@ -21,3 +21,4 @@ lichess-bot/
 # Runtime
 logs/
 *.pgn
+reference/
