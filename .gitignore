@@ -22,3 +22,7 @@ lichess-bot/
 logs/
 *.pgn
 reference/
+research/attempts/
+research/best.py
+runs/
+runs-*.log
