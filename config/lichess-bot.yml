@@ -8,7 +8,7 @@ url: "https://lichess.org/"
 
 engine:
   dir: "/home/nomad/chess-gpu/bin"
-  name: "random-engine"
+  name: "sumofish"
   working_dir: ""
   protocol: "uci"
   ponder: false                    # Nothing to ponder with; the engine is stateless.
@@ -75,7 +75,7 @@ challenge:
   max_simultaneous_games_per_user: 2
 
 greeting:
-  hello: "Hi, I'm {me}. I'm a transformer that doesn't search at all: one forward pass, zero moves of lookahead. Still under construction, so right now I play at random. Good luck."
+  hello: "Hi, I'm {me}. I'm a 9M-parameter transformer that does not search at all: one forward pass, zero moves of lookahead, ~10ms a move. Good luck."
   goodbye: "Good game!"
   hello_spectators: "Hi, I'm {me}, a chess engine that evaluates positions with a neural net and never searches ahead."
   goodbye_spectators: "Thanks for watching!"
