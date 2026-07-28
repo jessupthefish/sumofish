@@ -65,7 +65,9 @@ BOARD_COLS = 74             # 8x8 pixel squares + rank labels + eval bar + chrom
 
 # The most of the terminal's width the board may take. Everything to the right
 # of it is text, and text does not get more readable when the board grows.
-BOARD_SHARE = 0.52
+# Override per-run with --board; the image is square, so this ends up
+# governing its height as well whenever width is the binding constraint.
+BOARD_SHARE = 0.42
 
 # Rows kept under the board for the event tape, so the picture cannot grow
 # until it squeezes the tape out entirely.
@@ -118,9 +120,11 @@ class Plan:
     and passing them down keeps the two from disagreeing.
     """
 
-    def __init__(self, console: Console, small: bool, caps=None) -> None:
+    def __init__(self, console: Console, small: bool, caps=None,
+                 share: float = BOARD_SHARE) -> None:
         cols, rows = console.size
         self.cols, self.rows = cols, rows
+        self.share = share
         self.caps = caps
         self.image_rows = 0
         self.image_px = 0
@@ -157,7 +161,7 @@ class Plan:
         # alone it takes a 40x20 square and swallows the screen.
         #
         # So: never more than the share of the width below, whatever fits.
-        budget_w = min(self.cols - 52, int(self.cols * BOARD_SHARE))
+        budget_w = min(self.cols - 52, int(self.cols * self.share))
         budget_h = self.main_h - 4          # panel chrome + two player lines
         if self.caps:
             # A picture has no cell grid to satisfy, so it takes the space and
@@ -394,6 +398,9 @@ def main() -> None:
     ap.add_argument("--demo", action="store_true",
                     help="seed a sample game so the layout can be checked "
                          "without waiting for one")
+    ap.add_argument("--board", type=float, default=BOARD_SHARE, metavar="FRACTION",
+                    help=f"share of the terminal width the board may take "
+                         f"(default {BOARD_SHARE})")
     ap.add_argument("--no-image", action="store_true",
                     help="never draw the board as a sixel image, even if the "
                          "terminal supports it")
@@ -416,7 +423,7 @@ def main() -> None:
         seed_demo(state)
         original = None if args.no_resize else request_resize(console)
         caps = None if args.no_image else sixel.probe(*console.size)
-        plan = Plan(console, args.small, caps)
+        plan = Plan(console, args.small, caps, args.board)
         painted = None
         try:
             with Live(console=console, refresh_per_second=2, screen=True) as live:
@@ -463,7 +470,7 @@ def main() -> None:
                     # Rebuild rather than stretch: which panels exist at all
                     # depends on the size, so a reflow is a different layout,
                     # not the same one resized.
-                    plan = Plan(console, args.small, caps)
+                    plan = Plan(console, args.small, caps, args.board)
                     last_size, painted = size, None
                 draw(plan, state)
                 live.update(plan.layout)
