@@ -44,6 +44,11 @@ PYTHON = ROOT / ".venv/bin/python"
 # about to report is worse than waiting.
 OVERHEAD_S = 420
 
+# Measured 2026-07-28 from three identical baseline runs: spread 0.00961,
+# stdev 0.00483 bits. A result must beat the incumbent by more than this to be
+# believed. Re-measure if the hardware or the time budget changes.
+NOISE_FLOOR = 0.015
+
 
 def budget_from_train_py() -> int:
     m = re.search(r"^TIME_BUDGET_S\s*=\s*(\d+)", TRAIN.read_text(), re.M)
@@ -126,7 +131,18 @@ def run_once(note: str = "") -> dict:
         verdict, delta = "FIRST", None
     else:
         delta = payload["bpm"] - prior["bpm"]
-        verdict = "KEEP" if delta < 0 else "REVERT"
+        # Must beat the incumbent by more than the measured noise floor, not
+        # merely by any amount. Identical code re-run scores +-0.005 bits, so
+        # `delta < 0` promotes coin flips. Over a night of experiments that
+        # ratchets on randomness: best.py accumulates meaningless edits, the
+        # leaderboard shows steady progress, and the model is no better.
+        # This already happened once (exp 5 promoted on a 0.00026 delta).
+        if delta < -NOISE_FLOOR:
+            verdict = "KEEP"
+        elif delta < 0:
+            verdict = "NOISE"
+        else:
+            verdict = "REVERT"
 
     record["verdict"] = verdict
     record["delta"] = round(delta, 5) if delta is not None else None
@@ -141,10 +157,13 @@ def run_once(note: str = "") -> dict:
 
     if verdict in ("FIRST", "KEEP"):
         shutil.copy2(TRAIN, BEST)
-        print(f"    new best, promoted to best.py")
+        print("    new best, promoted to best.py")
     else:
         shutil.copy2(BEST, TRAIN)
-        print(f"    reverted train.py to best.py")
+        if verdict == "NOISE":
+            print(f"    better but within noise (|{delta:.5f}| < {NOISE_FLOOR}); reverted")
+        else:
+            print("    reverted train.py to best.py")
 
     return record
 
