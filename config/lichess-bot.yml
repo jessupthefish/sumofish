@@ -97,12 +97,19 @@ matchmaking:
                                    # zero games.
   allow_during_games: true         # Keep the queue full; do not idle between games.
   challenge_variant: "random"
-  challenge_timeout: 1             # Minutes idle before challenging another bot.
-                                   # 30 was the default and meant the first
-                                   # game was half an hour away. 1 is the
-                                   # minimum; raise it once games are flowing,
-                                   # since aggressive matchmaking can draw
-                                   # lichess rate limiting.
+  challenge_timeout: 5             # Minutes idle before challenging another bot.
+                                   # 30 was the default and meant the first game
+                                   # was half an hour away. 1 was the minimum and
+                                   # it did exactly what the note here warned it
+                                   # might: matchmaking calls /api/user/{name} to
+                                   # size up each candidate, that endpoint has a
+                                   # small per-IP budget, and once a minute is
+                                   # enough to keep it pinned at 429 forever.
+                                   # Every retry against a 429 renews the penalty,
+                                   # so the bot sat unable to create a single
+                                   # challenge for 40 minutes. 5 recovers, still
+                                   # finds games, and leaves headroom for the
+                                   # rating timer to use the same budget.
   challenge_initial_time:          # 1+0 / 2+1 / 3+2. Short on purpose: lichess
     - 60                           # caps bot-vs-bot at 100 games/day, so the
     - 120                          # budget should buy 100 fast games rather
