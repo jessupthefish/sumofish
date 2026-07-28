@@ -13,6 +13,10 @@ No alpha-beta, no quiescence, no transposition table. One forward pass per move.
 The point of this project is that the GPU is the engine, not a trainer that runs
 for forty minutes every few weeks.
 
+**Goals, in order: understand every layer, be fun to play, last for years.**
+Not strength for its own sake. See [PHILOSOPHY.md](PHILOSOPHY.md) — in
+particular why this will never be a weakened strong engine.
+
 ## Status
 
 First model trained. 8.55 h, 307M positions, **40.9% puzzle accuracy**.
