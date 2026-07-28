@@ -28,3 +28,7 @@ runs/
 runs-*.log
 bot.env
 *.env
+
+# Local working notes, deliberately not published (see commit "Drop
+# references to removed internal docs"). Kept on disk for future sessions.
+CLAUDE.md
