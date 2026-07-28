@@ -327,13 +327,24 @@ class MCTS:
         return out
 
     def search(
-        self, board: chess.Board, deadline: float | None = None
+        self,
+        board: chess.Board,
+        deadline: float | None = None,
+        on_progress=None,
+        progress_every: float = 0.15,
     ) -> tuple[Node, dict[chess.Move, int]]:
         """Run simulations until the budget or `deadline` (a perf_counter time).
 
         A real game gives you a clock, not a simulation count, so the deadline
         wins when both are set. Batches are checked between groups rather than
         mid-batch, so overshoot is bounded by one batch, which is ~15ms.
+
+        `on_progress(root, done)` is called between batches, no more often than
+        `progress_every` seconds, so an observer can watch the tree develop
+        rather than only seeing the conclusion. It runs on this thread and
+        therefore on the clock, which is why it is rate limited and why
+        anything it raises is swallowed: a spectator must never be able to cost
+        the engine a move. It defaults to None and off.
         """
         root = Node(prior=1.0, to_move=board.turn)
         self.evaluations = 0
@@ -344,6 +355,19 @@ class MCTS:
             for (move, child), n in zip(root.children.items(), noise, strict=True):
                 child.prior = (1 - self.dirichlet_weight) * child.prior + self.dirichlet_weight * n
 
+        next_report = time.perf_counter() + progress_every
+
+        def report(done: int) -> None:
+            nonlocal next_report
+            now = time.perf_counter()
+            if now < next_report:
+                return
+            next_report = now + progress_every
+            try:
+                on_progress(root, done)
+            except Exception:
+                pass
+
         if self.batch > 1:
             done = 0
             while done < self.simulations:
@@ -352,11 +376,15 @@ class MCTS:
                 n = min(self.batch, self.simulations - done)
                 self._simulate_batch(root, board, n)
                 done += n
+                if on_progress is not None:
+                    report(done)
         else:
             for i in range(self.simulations):
                 if deadline is not None and i % 16 == 0 and time.perf_counter() >= deadline:
                     break
                 self._simulate(root, board)
+                if on_progress is not None and i % 16 == 0:
+                    report(i)
 
         return root, {m: c.visits for m, c in root.children.items()}
 
@@ -374,16 +402,32 @@ class MCTS:
     def play_batch(self, boards: list[chess.Board]) -> list[chess.Move]:
         return [self.play(b) for b in boards]
 
-    def analyse(self, board: chess.Board) -> dict:
-        """Search plus a human-readable account of what it concluded."""
-        root, visits = self.search(board)
+    def report(
+        self, root: Node, board: chess.Board, top_n: int = 5, pv_max: int = 12
+    ) -> dict:
+        """A human-readable account of what a searched tree currently believes.
+
+        Split out from `analyse` because the same account is worth having
+        *during* the search as well as at the end of it, and because SAN is not
+        free -- python-chess generates legal moves to work out disambiguation --
+        so a caller on a running clock wants to bound how much of it happens.
+        Hence `top_n` and `pv_max`.
+
+        `win_prob` is root Q, which is the probability that **the side to move**
+        wins. Anything that stores or plots it across plies has to convert to a
+        fixed frame first or it sawtooths; see `chessgpu.telemetry.perspective`.
+        """
         ranked = sorted(root.children.items(), key=lambda kv: -kv[1].visits)
-        best = ranked[0][0]
+        if not ranked:
+            return {"move": None, "win_prob": root.q, "evaluations": self.evaluations,
+                    "pv": [], "top": [], "mate": board.is_checkmate()}
 
         # Principal variation: the line the search actually believes in, read
-        # off by following most-visited children down from the root.
+        # off by following most-visited children down from the root. SAN has to
+        # be taken *before* the push, because disambiguation depends on the
+        # position the move is played from.
         pv, node, tmp = [], root, board.copy()
-        while node.children:
+        while node.children and len(pv) < pv_max:
             move = max(node.children.items(), key=lambda kv: kv[1].visits)[0]
             if node.children[move].visits == 0:
                 break
@@ -392,12 +436,23 @@ class MCTS:
             node = node.children[move]
 
         return {
-            "move": best,
+            "move": ranked[0][0],
             "win_prob": root.q,
             "evaluations": self.evaluations,
             "pv": pv,
+            # Reported as visit share of the total, because that is what the
+            # search actually spent, and it is what the move choice is made on.
             "top": [
                 (board.san(m), c.visits, round(c.q, 3), round(c.prior, 3))
-                for m, c in ranked[:5]
+                for m, c in ranked[:top_n]
             ],
+            # An honest mate flag: does the line the search believes in end in
+            # checkmate. There is no mate-distance score anywhere in this
+            # engine, so nothing here pretends to be UCI's `score mate N`.
+            "mate": tmp.is_checkmate(),
         }
+
+    def analyse(self, board: chess.Board) -> dict:
+        """Search plus a human-readable account of what it concluded."""
+        root, _visits = self.search(board)
+        return self.report(root, board)
