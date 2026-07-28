@@ -85,6 +85,12 @@ def main() -> None:
     ap.add_argument("--run", default=None, help="run name; defaults to preset+causal")
     ap.add_argument("--compile", type=int, default=1)
     ap.add_argument("--resume", default=None)
+    ap.add_argument(
+        "--auto-resume",
+        action="store_true",
+        help="resume from runs/<run>/latest.pt if it exists; makes the process "
+        "restartable by a supervisor without losing the run",
+    )
     args = ap.parse_args()
 
     run = args.run or f"{args.preset}-{'causal' if args.causal else 'bidir'}"
@@ -104,8 +110,16 @@ def main() -> None:
     ema = EMA(model, decay=args.ema_decay)
     start_step = 0
 
+    if args.auto_resume and not args.resume:
+        candidate = out / "latest.pt"
+        if candidate.exists():
+            args.resume = str(candidate)
+            print(f"auto-resume: found {candidate}")
+        else:
+            print("auto-resume: no checkpoint yet, starting fresh")
+
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
         opt.load_state_dict(ckpt["opt"])
         ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
