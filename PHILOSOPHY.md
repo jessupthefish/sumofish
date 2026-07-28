@@ -1,7 +1,7 @@
 # What SumoFish is for
 
-Read this before proposing anything. It is the objective function. Everything
-in `CLAUDE.md` is *how*; this is *why*, and when the two conflict, this wins.
+Read this before proposing anything. It is the objective function: not *how*
+the engine is built, but *why*, and when the two conflict, this wins.
 
 SumoFish is a hobby project. It is not built for a portfolio, a benchmark, or a
 rating list. It is built to be understood by the person building it, to be
@@ -129,8 +129,7 @@ Ordered by how interesting each part is to build, which is the correct ordering.
 Steps 2 and 3 are the spine: everything else hangs off them.
 
 1. **Understand what exists.** Tokenizer, transformer, training loop, data
-   format. Built and documented; the Lab Notes in `CLAUDE.md` are part of the
-   value.
+   format. Built and documented.
 2. **The value head.** *In progress.* Turns a move-guesser into a position
    evaluator. This is the prerequisite for everything below and the reason it
    comes first, not a detour.

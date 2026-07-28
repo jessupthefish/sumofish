@@ -98,9 +98,6 @@ year. Difficulty will never come from a strong engine told to play badly —
 handicapped engines play twelve perfect moves and then hang a queen for no
 reason, and nobody enjoys that.
 
-`CLAUDE.md` has an operational guide and a "what not to do" log of every dead
-end hit along the way, which is the most reusable thing here.
-
 ## Credits
 
 - DeepMind's [searchless_chess](https://github.com/google-deepmind/searchless_chess)
