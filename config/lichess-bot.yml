@@ -55,22 +55,19 @@ challenge:
   preference: "none"
   accept_bot: true
   only_bot: false
-  max_increment: 60
+  max_increment: 180              # lichess maximum
   min_increment: 0
-  max_base: 1800
+  max_base: 10800                # lichess maximum (3h). 1800 declined a 105+10.
   min_base: 60                     # Refuse absurdly short games from a home connection.
   max_days: 14
   min_days: 1
   variants:
     - standard
   time_controls:
-    - blitz
-    - rapid
-    - classical
-                                   # bullet deliberately omitted: a residential
-                                   # connection plus lichess-bot #1184 (drops a
-                                   # live game on a transient stream blip) makes
-                                   # flagging likely. Revisit once stable.
+    - bullet                       # Re-enabled: #1184 is patched locally and
+    - blitz                        # WiFi powersave is off, which were the two
+    - rapid                        # reasons to avoid it. A 10ms engine is
+    - classical                    # well suited to bullet anyway.
   modes:
     - casual
                                    # rated deliberately omitted until the engine
