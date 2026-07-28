@@ -53,6 +53,8 @@ def _ring(px: tuple[int, int], width: int, height: int) -> bool:
 # For the bitmap scales the sprite is cells_wide x cells_tall*2 pixels, which
 # has to be a size `make_sprites.py` generated: 8, 16 or 24.
 SCALES = {
+    "pixel5": (40, 20, 5, True),
+    "pixel4": (32, 16, 5, True),
     "pixel3": (24, 12, 4, True),
     "pixel2": (16, 8, 4, True),
     "pixel1": (12, 6, 4, True),
@@ -60,7 +62,8 @@ SCALES = {
     "glyph2": (4, 2, 3, False),
     "glyph1": (2, 1, 2, False),
 }
-ORDER = ("pixel3", "pixel2", "pixel1", "glyph3", "glyph2", "glyph1")
+ORDER = ("pixel5", "pixel4", "pixel3", "pixel2", "pixel1",
+         "glyph3", "glyph2", "glyph1")
 
 FIGURES = {"K": "♚", "Q": "♛", "R": "♜", "B": "♝", "N": "♞", "P": "♟"}
 

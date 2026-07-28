@@ -136,7 +136,15 @@ def _rating_history(state) -> dict[str, list[float]]:
 
 # ---- the board ------------------------------------------------------------
 
-def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"):
+def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2",
+                image_rows: int = 0):
+    """The board, and the two player lines that frame it.
+
+    `image_rows` is non-zero when the board is being drawn as a sixel image by
+    the caller. In that case this reserves exactly that many blank rows and
+    draws nothing into them: the image lives underneath, and the region has to
+    render identically every frame or `rich` will repaint over the picture.
+    """
     game = state.get("game")
     playing = state.get("playing", []) or []
 
@@ -152,9 +160,6 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     we = _our_colour(players, user, playing)
     flip = we == "black"
 
-    art = boardmod.render(board, flip=flip, last=game.get("last"), scale=scale)
-    bw, bh = boardmod.board_size(scale)
-
     wc, bc = live_clocks(game)
     top_clock = bc if not flip else wc
     bottom_clock = wc if not flip else bc
@@ -162,17 +167,46 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
 
     eng = state.get("engine") or {}
     wp_white = eng.get("wp_white") if _engine_matches(eng, board) else None
-    ebar = evalbar(wp_white, bh - 1, width=2)
+
+    if image_rows:
+        # The image region has to be *unstyled*, not merely blank.
+        #
+        # `rich` skips writing cells that carry no style, which is what lets a
+        # picture underneath survive a redraw. The moment those cells have a
+        # background -- from a Panel, or from a console-wide style -- rich
+        # writes them on every frame and the image is erased between one frame
+        # and the next. Measured both ways: with a Panel the board never
+        # appears at all, bare it survives indefinitely.
+        #
+        # So no Panel here, and the only styled thing on these rows is the
+        # eval bar in the first two columns, which sits to the left of the
+        # image and is therefore safe to repaint.
+        head = Text(no_wrap=True)
+        head.append("board ", style=f"{FG} on {BG}")
+        head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
+        rows = [head]
+        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK)))
+        ebar = evalbar(wp_white, image_rows, width=2)
+        for i in range(image_rows):
+            row = Text(no_wrap=True)
+            row.append(" ", style=f"on {BG}")
+            row.append_text(ebar[i])
+            rows.append(row)
+        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))
+        return Group(*rows)
 
     rows = []
     rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK)))
-    art_lines = art.split("\n")
-    for i, line in enumerate(art_lines):
-        row = Text(no_wrap=True)
-        row.append_text(ebar[i] if i < len(ebar) else Text("  ", style=f"on {BG}"))
-        row.append(" ", style=f"on {BG}")
-        row.append_text(line)
-        rows.append(row)
+    if True:
+        art = boardmod.render(board, flip=flip, last=game.get("last"), scale=scale)
+        _bw, bh = boardmod.board_size(scale)
+        ebar = evalbar(wp_white, bh - 1, width=2)
+        for i, line in enumerate(art.split("\n")):
+            row = Text(no_wrap=True)
+            row.append_text(ebar[i] if i < len(ebar) else Text("  ", style=f"on {BG}"))
+            row.append(" ", style=f"on {BG}")
+            row.append_text(line)
+            rows.append(row)
     rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))
 
     sub = f"[{FAINT}]lichess.org/{game['id']}[/]"

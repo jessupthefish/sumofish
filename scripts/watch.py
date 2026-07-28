@@ -44,9 +44,8 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 
-from dash import board, panels, sources
+from dash import board, panels, sixel, sources
 from dash.state import State
-from dash.theme import BG
 
 ROOT = Path(__file__).resolve().parent.parent
 USER = "SumoFish"
@@ -63,6 +62,14 @@ FPS = 8
 # spare than height.
 WANT_COLS, WANT_ROWS = 150, 44
 BOARD_COLS = 74             # 8x8 pixel squares + rank labels + eval bar + chrome
+
+# The most of the terminal's width the board may take. Everything to the right
+# of it is text, and text does not get more readable when the board grows.
+BOARD_SHARE = 0.52
+
+# Rows kept under the board for the event tape, so the picture cannot grow
+# until it squeezes the tape out entirely.
+TAPE_ROWS = 7
 
 
 def load_token() -> str | None:
@@ -111,9 +118,13 @@ class Plan:
     and passing them down keeps the two from disagreeing.
     """
 
-    def __init__(self, console: Console, small: bool) -> None:
+    def __init__(self, console: Console, small: bool, caps=None) -> None:
         cols, rows = console.size
         self.cols, self.rows = cols, rows
+        self.caps = caps
+        self.image_rows = 0
+        self.image_px = 0
+        self.image_at = (0, 0)
         self.wide = not small and cols >= WANT_COLS and rows >= WANT_ROWS - 6
 
         self.layout = Layout()
@@ -136,13 +147,44 @@ class Plan:
         than being left as dead space -- which is what the old fixed-size
         layout produced and what the screenshot of it made obvious.
         """
-        # Reserve enough width for the mind panel's ladder to stay readable.
-        budget_w = self.cols - 52
+        # Two separate limits, and both matter.
+        #
+        # Piece detail is measured in *cells*, so a smaller font buys a finer
+        # board: at Hack 10 a 16px piece is drawn in 8px blocks and looks like
+        # Atari art, at Hack 8 a 24px piece is drawn in 6px blocks and looks
+        # like a chess piece. But the same change shrinks the text, so the
+        # board must not then expand to fill the cells it just gained -- left
+        # alone it takes a 40x20 square and swallows the screen.
+        #
+        # So: never more than the share of the width below, whatever fits.
+        budget_w = min(self.cols - 52, int(self.cols * BOARD_SHARE))
         budget_h = self.main_h - 4          # panel chrome + two player lines
-        self.scale = board.pick_scale(budget_w - 3, budget_h)
-        bw, bh = board.board_size(self.scale)
-        self.board_w = min(self.cols - 52, bw + 3 + 4)     # eval bar, gap, chrome
-        self.board_h = bh + 4
+        if self.caps:
+            # A picture has no cell grid to satisfy, so it takes the space and
+            # the only constraint is staying square. Two rows go to the player
+            # lines, two to the panel border, one to the margin.
+            self.scale = "sixel"
+            cell_cols = budget_w - 4 - sixel.MARGIN_CELLS
+            # Leave room for the tape underneath: a board that fills the
+            # column to the last row looks better in a screenshot and is worse
+            # to watch, because the log of what happened while you looked away
+            # is the thing that gets squeezed out.
+            cell_rows = self.main_h - 5 - sixel.MARGIN_CELLS - TAPE_ROWS
+            self.image_px = int(min(cell_cols * self.caps.cell_w,
+                                    cell_rows * self.caps.cell_h))
+            self.image_rows = max(1, int(self.image_px / self.caps.cell_h) + 1)
+            self.board_w = int(self.image_px / self.caps.cell_w) + 5
+            self.board_h = self.image_rows + 4
+            # 1-based screen cell of the image's top-left corner.
+            # Rows: 3 for the header panel, 1 for this panel's top border,
+            # 1 for the top player line, so the blank area starts at 6.
+            # Cols: 1 border + 1 padding + 2 eval bar + 1 gap.
+            self.image_at = (6, 6)
+        else:
+            self.scale = board.pick_scale(budget_w - 3, budget_h)
+            bw, bh = board.board_size(self.scale)
+            self.board_w = min(budget_w + 7, bw + 3 + 4)  # eval bar, gap, chrome
+            self.board_h = bh + 4
         self.right_w = self.cols - self.board_w
 
         self.layout["main"].split_row(
@@ -233,7 +275,7 @@ def draw(plan: Plan, state: State) -> None:
     L = plan.layout
     L["head"].update(panels.header(state, USER, plan.cols))
     L["board"].update(panels.board_panel(
-        state, USER, plan.board_w, plan.board_h, plan.scale))
+        state, USER, plan.board_w, plan.board_h, plan.scale, plan.image_rows))
     L["mind"].update(panels.mind_panel(state, plan.right_w, plan.mind_h))
     L["moves"].update(panels.moves_panel(state, plan.moves_w, plan.moves_h))
     if plan.curve_h:
@@ -310,6 +352,40 @@ def seed_demo(state: State) -> None:
     state.note("move", "Kb1  wp 0.601  5104n in 2.02s")
 
 
+def _image_key(plan, state):
+    """What the board picture would depend on, without rendering it."""
+    game = state.get("game")
+    if not game:
+        return None
+    players = game.get("meta", {}).get("players", {})
+    flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
+    last = game.get("last")
+    return (game["board"].fen(), flip, last.uci() if last else None, plan.image_px)
+
+
+def paint_board_image(plan, state) -> object:
+    """Re-emit the sixel board, and report what it drew.
+
+    The caller keeps the returned key and only calls again when it changes.
+    `rich` leaves the region alone as long as it renders identically, so the
+    image persists between moves and the expensive path runs about once a
+    second rather than eight times.
+    """
+    game = state.get("game")
+    if not game:
+        return None
+    board_obj = game["board"]
+    players = game.get("meta", {}).get("players", {})
+    flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
+    last = game.get("last")
+    key = _image_key(plan, state)
+    data = sixel.render(board_obj, flip, last, plan.image_px)
+    if data is None:
+        return None
+    sixel.emit(plan.image_at[0], plan.image_at[1], data)
+    return key
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="live SumoFish dashboard")
     ap.add_argument("--no-resize", action="store_true",
@@ -318,6 +394,9 @@ def main() -> None:
     ap.add_argument("--demo", action="store_true",
                     help="seed a sample game so the layout can be checked "
                          "without waiting for one")
+    ap.add_argument("--no-image", action="store_true",
+                    help="never draw the board as a sixel image, even if the "
+                         "terminal supports it")
     ap.add_argument("--user", default=USER)
     args = ap.parse_args()
 
@@ -325,19 +404,30 @@ def main() -> None:
     if not token:
         sys.exit("LICHESS_BOT_TOKEN not set (see ~/.config/chess-gpu/bot.env)")
 
-    console = Console(style=f"on {BG}")
+    # No console-wide background. It would style every cell on the screen,
+    # including the ones the board image sits under, and rich rewrites styled
+    # cells on every frame. Each panel sets its own background instead, and
+    # the terminal's own scheme shows through the gaps.
+    console = Console()
     state = State()
     state.note("engine", "watch started")
 
     if args.demo:
         seed_demo(state)
         original = None if args.no_resize else request_resize(console)
-        plan = Plan(console, args.small)
+        caps = None if args.no_image else sixel.probe(*console.size)
+        plan = Plan(console, args.small, caps)
+        painted = None
         try:
             with Live(console=console, refresh_per_second=2, screen=True) as live:
                 while True:
                     draw(plan, state)
                     live.update(plan.layout)
+                    if plan.image_px:
+                        key = _image_key(plan, state)
+                        if key is not None and key != painted:
+                            live.refresh()
+                            painted = paint_board_image(plan, state) or painted
                     time.sleep(0.5)
         except KeyboardInterrupt:
             pass
@@ -361,7 +451,10 @@ def main() -> None:
         thread.start()
 
     original = None if args.no_resize else request_resize(console)
-    last_size, plan = None, None
+    # Probed once, before Live takes the screen: the query needs the tty in raw
+    # mode and writes an escape sequence, neither of which is safe mid-render.
+    caps = None if args.no_image else sixel.probe(*console.size)
+    last_size, plan, painted = None, None, None
     try:
         with Live(console=console, refresh_per_second=FPS, screen=True) as live:
             while True:
@@ -370,10 +463,20 @@ def main() -> None:
                     # Rebuild rather than stretch: which panels exist at all
                     # depends on the size, so a reflow is a different layout,
                     # not the same one resized.
-                    plan = Plan(console, args.small)
-                    last_size = size
+                    plan = Plan(console, args.small, caps)
+                    last_size, painted = size, None
                 draw(plan, state)
                 live.update(plan.layout)
+                # Only when the picture would actually differ, and never on a
+                # timer. Re-emitting an unchanged image makes the board blink
+                # at the frame rate, which is far worse than any board it
+                # could be replacing. `rich` leaves the region alone between
+                # moves because it renders identically, so once is enough.
+                if plan.image_px:
+                    key = _image_key(plan, state)
+                    if key is not None and key != painted:
+                        live.refresh()
+                        painted = paint_board_image(plan, state) or painted
                 time.sleep(1.0 / FPS)
     except KeyboardInterrupt:
         pass

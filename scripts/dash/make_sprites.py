@@ -44,7 +44,7 @@ import chess.svg
 # Below 12 pixels cburnett stops being legible -- the king and queen
 # collapse into two blobs -- so smaller boards use font glyphs instead
 # and there is no point generating sprites they will never ask for.
-SIZES = (12, 16, 24)
+SIZES = (12, 16, 24, 32, 40)
 SYMBOLS = "KQRBNPkqrbnp"
 VIEWBOX = 45          # cburnett's own coordinate system
 

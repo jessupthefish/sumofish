@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -196,6 +197,18 @@ class GameStream(threading.Thread):
         self.state = state
         self.current = None
 
+    # Measured on a live rapid game: lichess sends the whole history the moment
+    # you connect and then **nothing at all** until the next move -- no
+    # keepalive, 35 seconds of silence observed. So the socket timeout is not a
+    # health check here, it is a stopwatch on how long a player is allowed to
+    # think. At 20s it fired between every pair of moves in anything slower
+    # than bullet, and since reconnecting replays the entire game, a slow game
+    # turned into a reconnect loop that hammered the endpoint.
+    #
+    # 180s is longer than any single move this bot faces at the time controls
+    # it accepts, while still bounding a genuinely dead socket.
+    READ_TIMEOUT = 180.0
+
     def run(self) -> None:
         while True:
             games = self.state.get("playing", [])
@@ -206,10 +219,21 @@ class GameStream(threading.Thread):
             self.current = gid
             try:
                 self._stream(gid)
+                delay = 1.0
+            except (TimeoutError, socket.timeout):
+                # Expected on a quiet board. Reconnect without saying anything:
+                # the replay rebuilds the same state, and calling it a fault
+                # every time a player thinks would make the tape useless.
+                delay = 1.0
+            except urllib.error.HTTPError as exc:
+                delay = 60.0 if exc.code == 429 else 5.0
+                self.state.fail("game", f"lichess {exc.code}")
+                self.state.note("warn", f"game stream: lichess {exc.code}")
             except Exception as exc:                     # noqa: BLE001
+                delay = 5.0
                 self.state.fail("game", f"{type(exc).__name__}: {exc}")
                 self.state.note("warn", f"game stream dropped: {type(exc).__name__}")
-            time.sleep(1.0)
+            time.sleep(delay)
 
     def _stream(self, gid: str) -> None:
         req = urllib.request.Request(
@@ -219,7 +243,7 @@ class GameStream(threading.Thread):
         board = chess.Board()
         moves: list[dict] = []
         meta: dict = {}
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=self.READ_TIMEOUT) as r:
             for raw in r:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line:
