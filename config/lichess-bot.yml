@@ -116,7 +116,10 @@ matchmaking:
                                    # let Glicko find the true number.
   opponent_rating_difference: 500
   rating_preference: "none"
-  challenge_mode: "casual"
+  challenge_mode: "rated"          # Outgoing challenges must be RATED too, or
+                                   # the bot accepts rated games but only ever
+                                   # issues casual ones, and its own matchmaking
+                                   # contributes nothing to finding its rating.
   challenge_filter: "fine"
 
 abort_time: 30
