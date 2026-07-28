@@ -41,6 +41,26 @@ class Chooser(Protocol):
     def __call__(self, board: chess.Board, limits: Limits) -> chess.Move: ...
 
 
+class OptionHandler(Protocol):
+    """Receives `setoption name <n> value <v>`. Returns False for unknown names."""
+
+    def __call__(self, name: str, value: str) -> bool: ...
+
+
+def _parse_setoption(tokens: list[str]) -> tuple[str, str] | None:
+    """`setoption name Some Name value 0.15` -> ("Some Name", "0.15").
+
+    Names may contain spaces, which is why this is not a simple split.
+    """
+    if "name" not in tokens:
+        return None
+    i = tokens.index("name") + 1
+    if "value" in tokens:
+        j = tokens.index("value")
+        return " ".join(tokens[i:j]), " ".join(tokens[j + 1 :])
+    return " ".join(tokens[i:]), ""
+
+
 def _warn(msg: str) -> None:
     """Loud on stderr. lichess-bot surfaces engine stderr in its logs; a silent
     failure here is indistinguishable from a bad model."""
@@ -123,7 +143,14 @@ def _apply_position(tokens: list[str]) -> chess.Board | None:
     return board
 
 
-def run(chooser: Chooser, name: str, author: str) -> None:
+def run(
+    chooser: Chooser,
+    name: str,
+    author: str,
+    options: list[tuple[str, str]] | None = None,
+    on_option: OptionHandler | None = None,
+) -> None:
+    """`options` is a list of (uci_option_declaration, ...) lines to advertise."""
     board: chess.Board | None = chess.Board()
 
     for raw in sys.stdin:
@@ -136,6 +163,8 @@ def run(chooser: Chooser, name: str, author: str) -> None:
         if cmd == "uci":
             print(f"id name {name}", flush=True)
             print(f"id author {author}", flush=True)
+            for decl, _ in options or []:
+                print(decl, flush=True)
             print("uciok", flush=True)
 
         elif cmd == "isready":
@@ -174,4 +203,8 @@ def run(chooser: Chooser, name: str, author: str) -> None:
                 return
 
         elif cmd == "setoption":
-            pass  # No options yet.
+            parsed = _parse_setoption(args)
+            if parsed is None:
+                _warn(f"malformed setoption: {line!r}")
+            elif on_option is None or not on_option(*parsed):
+                _warn(f"ignoring unknown option {parsed[0]!r}")

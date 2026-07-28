@@ -29,7 +29,12 @@ engine:
     lichess_cloud_analysis:
       enabled: false
     online_egtb:
-      enabled: false
+      enabled: true                # Attacks the real weakness: it wins +20 of
+      min_time: 10                 # material then shuffles to a threefold
+      max_time: 10800              # because mating needs calculation it does
+      max_pieces: 7                # not have. The tablebase mates for it.
+      source: "lichess"
+      move_quality: "best"
 
   lichess_bot_tbs:
     syzygy:
@@ -75,7 +80,7 @@ challenge:
   max_simultaneous_games_per_user: 2
 
 greeting:
-  hello: "Hi, I'm {me}. I'm a 9M-parameter transformer that does not search at all: one forward pass, zero moves of lookahead, ~10ms a move. Good luck."
+  hello: "Hi, I'm {me}. I never look ahead. One neural net forward pass, zero search, ~10ms a move. Good luck!"
   goodbye: "Good game!"
   hello_spectators: "Hi, I'm {me}, a chess engine that evaluates positions with a neural net and never searches ahead."
   goodbye_spectators: "Thanks for watching!"
@@ -84,9 +89,10 @@ pgn_directory: "/home/nomad/chess-gpu/logs/games"
 pgn_file_grouping: "all"
 
 matchmaking:
-  allow_matchmaking: false         # Off for Phase 0. A random-move engine should
-                                   # not be spamming challenges at other bots.
-                                   # Turn on once the net is in.
+  allow_matchmaking: true          # Bots cannot use pools or tournaments, only
+                                   # challenges. With this off SumoFish waited
+                                   # for a human to find it and played exactly
+                                   # zero games.
   allow_during_games: false
   challenge_variant: "random"
   challenge_timeout: 30

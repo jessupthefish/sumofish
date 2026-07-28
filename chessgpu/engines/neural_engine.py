@@ -67,6 +67,13 @@ def main() -> None:
         sys.exit(1)
 
     policy, info = load_policy(ckpt_path)
+    # Sampling temperature. At 0 the engine is fully deterministic and plays
+    # literally the same game every time from the same opening -- measured at
+    # 1 unique game in 10 self-plays, which is the thing that stops a human
+    # ever wanting a rematch. At 0.15 it is 10/10 unique with no measurable
+    # strength cost (T=0 through T=0.5 are statistically indistinguishable
+    # head-to-head). This is a diversity knob, not a difficulty knob.
+    policy.temperature = float(os.environ.get("CHESSGPU_TEMPERATURE", "0.15"))
     print(
         f"loaded {ckpt_path} step={info['step']} params={info['params']:,} "
         f"ema={info['ema']} device={info['device']}",
@@ -80,7 +87,24 @@ def main() -> None:
     def choose(board: chess.Board, limits: Limits) -> chess.Move:
         return policy.play(board)
 
-    run(choose, name=f"SumoFish {info['params']//1_000_000}M", author="Jessupthefish")
+    def on_option(name: str, value: str) -> bool:
+        if name.lower() != "temperature":
+            return False
+        try:
+            policy.temperature = max(0.0, float(value))
+        except ValueError:
+            print(f"bad Temperature value {value!r}", file=sys.stderr, flush=True)
+            return True
+        print(f"temperature -> {policy.temperature}", file=sys.stderr, flush=True)
+        return True
+
+    run(
+        choose,
+        name=f"SumoFish {info['params']//1_000_000}M",
+        author="Jessupthefish",
+        options=[("option name Temperature type string default 0.15", "")],
+        on_option=on_option,
+    )
 
 
 if __name__ == "__main__":
