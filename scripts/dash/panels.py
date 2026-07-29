@@ -600,7 +600,6 @@ def moves_panel(state, width: int, height: int):
         b = moves[i + 1] if i + 1 < len(moves) else None
         pairs.append((i // 2 + 1, w, b))
 
-    with_eval = {ply: ours(state, v) for ply, v in state.curve_items()}
     # Stockfish's verdict on each move, ours and theirs. Only the bad ones are
     # marked: annotating every accurate move would be a column of noise, and
     # the eye is looking for where a game went wrong.
@@ -613,22 +612,19 @@ def moves_panel(state, width: int, height: int):
             (grades.get(mv["ply"]) or {}).get("grade", ""), ("  ", FAINT))
         line.append(f"{mark:<2}", style=f"bold {style} on {BG}")
 
+    # The engine's own win probability used to sit at the end of each row. It
+    # is gone: the sparkline above the list already carries the same series and
+    # carries it better, as a shape rather than forty separate decimals, and a
+    # column of numbers next to a column of marks made the marks hard to find.
+    # The marks are the point -- they are the only outside opinion in the panel.
     for n, w, b in pairs[-max(1, rows):]:
         line = Text(no_wrap=True)
         line.append(f"{n:>3}. ", style=f"{FAINT} on {BG}")
-        line.append(f"{w['san']:<7}", style=f"{FG} on {BG}")
+        line.append(f"{w['san']:<8}", style=f"{FG} on {BG}")
         annotate(line, w)
-        line.append(f"{b['san']:<7}" if b else " " * 7, style=f"{FG} on {BG}")
+        line.append(f"  {b['san']:<8}" if b else " " * 10, style=f"{FG} on {BG}")
         if b:
             annotate(line, b)
-        else:
-            line.append("  ", style=f"{FAINT} on {BG}")
-        # Whichever of the pair we actually played is the one we have a number
-        # for; annotate it and leave the other blank rather than guessing.
-        for mv in (w, b):
-            if mv and mv["ply"] in with_eval:
-                line.append(f"{with_eval[mv['ply']]:.2f}", style=f"{PLUM} on {BG}")
-                break
         body.append(line)
     return _panel(Group(*body), "moves",
                   )
