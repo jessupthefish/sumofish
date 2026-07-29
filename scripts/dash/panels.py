@@ -264,6 +264,20 @@ def _engine_matches(eng: dict, board: chess.Board) -> bool:
         eng.get("ply") in (board.ply(), board.ply() - 1)
 
 
+def ours(state, wp_white: float | None) -> float | None:
+    """Convert a White-framed probability to our side's.
+
+    The single place this conversion happens. It used to be done at each call
+    site and one of them was missed, so with SumoFish playing Black and being
+    mated the move list read 0.97 while the chart read 0.03 -- both correct in
+    their own frame, and the panel that happened to be in White's frame said
+    we were winning. One function, so the frames cannot drift apart again.
+    """
+    if wp_white is None:
+        return None
+    return 1.0 - wp_white if _we_are_black(state) else wp_white
+
+
 def _we_are_black(state) -> bool:
     """Which way round the evaluation should read, for this game."""
     game = state.get("game")
@@ -469,7 +483,7 @@ def moves_panel(state, width: int, height: int):
     thought at each of its own turns.
     """
     game = state.get("game")
-    curve = state.curve_series()
+    curve = [ours(state, v) for v in state.curve_series()]
     rows = height - 4 - (1 if curve else 0)
     if not game or not game.get("moves"):
         body = [Text("no moves yet", style=f"{DIM} on {BG}")]
@@ -491,7 +505,7 @@ def moves_panel(state, width: int, height: int):
         b = moves[i + 1] if i + 1 < len(moves) else None
         pairs.append((i // 2 + 1, w, b))
 
-    with_eval = state.curve
+    with_eval = {ply: ours(state, v) for ply, v in state.curve.items()}
     for n, w, b in pairs[-max(1, rows):]:
         line = Text(no_wrap=True)
         line.append(f"{n:>3}. ", style=f"{FAINT} on {BG}")
@@ -505,8 +519,8 @@ def moves_panel(state, width: int, height: int):
                 break
         body.append(line)
     return _panel(Group(*body), "moves",
-                  subtitle=f"[{FAINT}]{len(moves)} half-moves \u00b7 number is the "
-                           f"engine's win estimate after its move[/]")
+                  subtitle=f"[{FAINT}]{len(moves)} half-moves \u00b7 number is "
+                           f"SumoFish's chance of winning after that move[/]")
 
 
 # ---- training, machine, tape ---------------------------------------------
@@ -526,8 +540,7 @@ def curve_panel(state, width: int, height: int):
     usual way a chart of this kind lies.
     """
     inner_h = max(3, height - 4)
-    flip = _we_are_black(state)
-    series = [(1.0 - v) if flip else v for v in state.curve_series()]
+    series = [ours(state, v) for v in state.curve_series()]
 
     gauge = evalbar(state.eval_smooth.value, inner_h, width=GAUGE_W)
     chart_w = max(8, width - GAUGE_W - 10)

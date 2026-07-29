@@ -55,10 +55,16 @@ LIVE    = GOOD
 COAST   = ACCENT
 LOST    = BAD
 
-# The eval bar. Chess convention: White's share at the bottom, Black's at the
-# top, so "the bar is going up" means the same thing here as on lichess.
-EVAL_WHITE = "#f9f5d7"   # further apart than fg/bg, so the boundary is crisp
-EVAL_BLACK = "#1d2021"
+# The evaluation gauge. Deliberately NOT white-and-black ink.
+#
+# It measures our side's chance, not White's, and white/black ink carries chess
+# meaning that contradicts that: playing Black and losing gives a mostly-dark
+# bar, which reads as "Black is winning" to anyone who has ever seen an
+# evaluation bar. Green-for-us against a neutral ground says only what it
+# means, and matches the colour the history line already uses when we are
+# ahead.
+EVAL_WHITE = "#b8bb26"   # our share
+EVAL_BLACK = "#32302f"   # theirs: a ground, not an opposing colour
 EVAL_MID   = "#7c6f64"   # the level line: must read against both of the above
 EVAL_EDGE  = "#504945"   # the bar's own outline, so it is a gauge not a smear
 
