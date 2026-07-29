@@ -76,6 +76,39 @@ def bar(fraction: float, width: int, fg: str, bg: str = BG) -> Text:
 
 # Bottom-aligned partial blocks: one cell in nine states rather than two.
 EIGHTHS = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+# Left-aligned partial blocks, for a gauge that fills sideways.
+EIGHTHS_H = " \u258f\u258e\u258d\u258c\u258b\u258a\u2589\u2588"
+
+
+def evalbar_h(value: float | None, width: int) -> Text:
+    """A horizontal evaluation gauge, filling from the left for our side.
+
+    Horizontal because it has to live on its own row. The board is a sixel
+    image and `rich` diffs by line: any styled cell sharing a row with the
+    picture means the whole line gets rewritten when it changes, and the
+    unstyled padding written over the image erases it a row at a time. A
+    gauge that animates does that on every frame, which is what turned the
+    board to confetti between moves.
+
+    Eighths again, so a one percent change moves the edge instead of landing
+    on the same cell as the last one.
+    """
+    from .theme import EVAL_BLACK, EVAL_WHITE
+
+    line = Text(no_wrap=True)
+    if value is None:
+        return line
+    total = width * 8
+    filled = int(round(max(0.0, min(1.0, value)) * total))
+    for c in range(width):
+        k = max(0, min(8, filled - c * 8))
+        if k == 8:
+            line.append(" ", style=f"on {EVAL_WHITE}")
+        elif k == 0:
+            line.append(" ", style=f"on {EVAL_BLACK}")
+        else:
+            line.append(EIGHTHS_H[k], style=f"{EVAL_WHITE} on {EVAL_BLACK}")
+    return line
 
 
 def evalbar(value: float | None, height: int, width: int = 2) -> list[Text]:
@@ -116,66 +149,93 @@ def evalbar(value: float | None, height: int, width: int = 2) -> list[Text]:
     return rows
 
 
+# Braille gives one cell a 2x4 grid of dots, so a chart drawn in it has four
+# times the vertical resolution of half-blocks and twice the horizontal. The
+# cost is colour: a braille cell has one foreground, so a cell cannot hold two
+# differently coloured dots.
+BRAILLE_BASE = 0x2800
+BRAILLE_DOTS = ((0x01, 0x02, 0x04, 0x40), (0x08, 0x10, 0x20, 0x80))
+
+
+def _catmull_rom(points: list[float], samples: int) -> list[float]:
+    """Resample a series through a smooth curve rather than straight segments.
+
+    With twenty moves stretched across two hundred columns, linear
+    interpolation is visibly a run of straight lines meeting at corners, and
+    the corners read as features of the evaluation that are not there.
+    Catmull-Rom passes through every real point -- it invents shape between
+    them, never at them -- which is the honest kind of smoothing for this:
+    no data point is moved.
+    """
+    n = len(points)
+    if n < 2 or samples < 2:
+        return points[:]
+    out = []
+    for i in range(samples):
+        t = i * (n - 1) / (samples - 1)
+        k = min(int(t), n - 2)
+        u = t - k
+        p0 = points[max(0, k - 1)]
+        p1, p2 = points[k], points[k + 1]
+        p3 = points[min(n - 1, k + 2)]
+        out.append(0.5 * ((2 * p1)
+                          + (-p0 + p2) * u
+                          + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u
+                          + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u))
+    return out
+
+
 def curve_chart(values, width: int, height: int, mid: float = 0.5) -> list[Text]:
-    """The evaluation over a whole game, as a line rather than a sparkline.
+    """The evaluation over a whole game, as a smooth line.
 
-    A sparkline compresses to one row and answers "is it going up". Given real
-    vertical room the useful question is different: how far from level, how
-    suddenly, and around which moves. So this keeps a fixed 0..1 scale with the
-    drawn midline, which means the height of a swing is comparable between
-    games rather than being renormalised to whatever happened in this one.
-
-    Half-blocks give two vertical samples per row, so a ten-row chart resolves
-    to twenty levels rather than ten.
+    Fixed 0..1 scale, never auto-scaled to the game's own range: renormalising
+    makes a dead-level draw look as dramatic as a collapse, which is the
+    standard way an evaluation chart lies. The drawn midline is 0.50 and
+    vertical distance from it means the same thing in every game.
     """
     from .theme import EVAL_MID, GOOD as G, BAD as B
 
     src = [v for v in values if v is not None]
-    depth = height * 2
-    rows = [[None] * width for _ in range(depth)]
-    mid_level = int(round((1.0 - mid) * (depth - 1)))
+    px_w, px_h = width * 2, height * 4
+    if len(src) < 2:
+        return [Text("", no_wrap=True) for _ in range(height)]
 
-    def level_at(col: int) -> int:
-        """Linearly interpolate the series across the full panel width.
+    ys = _catmull_rom(src, px_w)
+    cells: dict[tuple[int, int], int] = {}
+    colours: dict[tuple[int, int], str] = {}
 
-        Drawing one column per data point would leave a ten-move game as a
-        stub in the corner of a hundred-column panel. Stretching means the
-        chart always reads as a chart, and the point count is printed in the
-        subtitle so the resolution is never implied to be better than it is.
-        """
-        if len(src) == 1:
-            v = src[0]
-        else:
-            pos = col * (len(src) - 1) / max(1, width - 1)
-            i = min(int(pos), len(src) - 2)
-            v = src[i] + (src[i + 1] - src[i]) * (pos - i)
-        return int(round((1.0 - max(0.0, min(1.0, v))) * (depth - 1))), v
+    def plot(x: int, y: int, colour: str) -> None:
+        y = max(0, min(px_h - 1, y))
+        cx, cy = x // 2, y // 4
+        cells[(cx, cy)] = cells.get((cx, cy), 0) | BRAILLE_DOTS[x % 2][y % 4]
+        # Last writer wins the cell's colour. The trace crosses level rarely,
+        # so the only cells this can misreport are the crossing ones.
+        colours[(cx, cy)] = colour
 
-    if len(src) >= 2:
-        prev = None
-        for x in range(width):
-            level, v = level_at(x)
-            colour = G if v >= mid else B
-            # Fill between the previous level and this one, so a sharp swing
-            # draws as a connected line rather than two detached dots.
-            lo, hi = (level, level) if prev is None else (min(prev, level), max(prev, level))
-            for y in range(lo, hi + 1):
-                rows[y][x] = colour
-            prev = level
+    prev = None
+    for x, v in enumerate(ys):
+        y = int(round((1.0 - max(0.0, min(1.0, v))) * (px_h - 1)))
+        colour = G if v >= mid else B
+        lo, hi = (y, y) if prev is None else (min(prev, y), max(prev, y))
+        for yy in range(lo, hi + 1):        # join consecutive samples
+            plot(x, yy, colour)
+        prev = y
 
+    mid_y = int(round((1.0 - mid) * (px_h - 1)))
     out: list[Text] = []
-    for r in range(height):
+    for cy in range(height):
         line = Text(no_wrap=True)
-        top_row, bot_row = rows[r * 2], rows[r * 2 + 1]
-        for x in range(width):
-            top = top_row[x] or (EVAL_MID if r * 2 == mid_level else None)
-            bot = bot_row[x] or (EVAL_MID if r * 2 + 1 == mid_level else None)
-            if top and bot:
-                line.append("▀", style=f"{top} on {bot}")
-            elif top:
-                line.append("▀", style=f"{top} on {BG}")
-            elif bot:
-                line.append("▄", style=f"{bot} on {BG}")
+        for cx in range(width):
+            bits = cells.get((cx, cy), 0)
+            if bits:
+                line.append(chr(BRAILLE_BASE | bits),
+                            style=f"{colours[(cx, cy)]} on {BG}")
+            elif cy == mid_y // 4:
+                # Level, drawn only where the trace is not: a braille cell has
+                # one colour, so the two cannot share.
+                line.append(chr(BRAILLE_BASE | BRAILLE_DOTS[0][mid_y % 4]
+                                | BRAILLE_DOTS[1][mid_y % 4]),
+                            style=f"{EVAL_MID} on {BG}")
             else:
                 line.append(" ", style=f"on {BG}")
         out.append(line)

@@ -27,7 +27,7 @@ from .sources import GATE
 from .theme import (
     ACCENT, BAD, BG, COOL, DIM, FAINT, FG, GAUGE_MAX, GOOD, INFO, PLUM, WARM,
 )
-from .widgets import bar, curve_chart, evalbar, ladder, sparkline, track_tag
+from .widgets import bar, curve_chart, evalbar_h, ladder, sparkline, track_tag
 
 # Columns for the evaluation gauge beside the board.
 EVAL_WIDTH = 2
@@ -153,7 +153,7 @@ def _rating_history(state) -> dict[str, list[float]]:
 # ---- the board ------------------------------------------------------------
 
 def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2",
-                image_rows: int = 0):
+                image_rows: int = 0, image_cols: int = 0):
     """The board, and the two player lines that frame it.
 
     `image_rows` is non-zero when the board is being drawn as a sixel image by
@@ -217,15 +217,12 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
                     "\u00b7 engine's win estimate", style=f"{FAINT} on {BG}")
         rows = [head]
         rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
-        # Two columns, and only when there is something to show. It has to be
-        # to the *left* of the picture: rich writes the cells it is given in
-        # order, so a styled run anywhere right of the image means writing the
-        # cells in between, which erases it.
-        ebar = evalbar(state.eval_smooth.value, image_rows, width=EVAL_WIDTH)
-        for i in range(image_rows):
-            row = Text(no_wrap=True)
-            row.append_text(ebar[i])
-            rows.append(row)
+        # Nothing styled on these rows at all. The picture is underneath and
+        # rich rewrites a whole line when any cell in it changes, so a styled
+        # gauge here erases the board a row at a time as it animates.
+        for _ in range(image_rows):
+            rows.append(Text(""))
+        rows.append(evalbar_h(state.eval_smooth.value, image_cols))
         rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
         return Group(*rows)
 
@@ -234,13 +231,9 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     if True:
         art = boardmod.render(board, flip=flip, last=last_move, scale=scale)
         _bw, bh = boardmod.board_size(scale)
-        ebar = evalbar(state.eval_smooth.value, bh - 1, width=EVAL_WIDTH)
-        for i, line in enumerate(art.split("\n")):
-            row = Text(no_wrap=True)
-            row.append_text(ebar[i] if i < len(ebar) else Text(" " * EVAL_WIDTH))
-            row.append(" ")
-            row.append_text(line)
-            rows.append(row)
+        for line in art.split("\n"):
+            rows.append(line)
+        rows.append(evalbar_h(state.eval_smooth.value, _bw))
     rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
 
     # Same shape as the image path above: a label line rather than a panel, so

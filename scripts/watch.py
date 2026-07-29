@@ -85,7 +85,7 @@ TAPE_ROWS = 7
 # hairline and one of gap on the left, pure margin on the right. The right one has to be stated rather
 # than left at zero, because the image's width is derived from the column
 # width and without it the picture ends flush against the panel beside it.
-BOARD_GUTTER_L = 3        # 2 for the evaluation gauge, 1 gap
+BOARD_GUTTER_L = 1        # pure margin: the gauge sits under the board
 BOARD_GUTTER_R = 3
 
 
@@ -142,6 +142,7 @@ class Plan:
         self.share = share
         self.caps = caps
         self.image_rows = 0
+        self.image_cols = 0
         self.image_px = 0
         self.image_at = (0, 0)
         self.wide = not small and cols >= WANT_COLS and rows >= WANT_ROWS - 6
@@ -192,7 +193,7 @@ class Plan:
             self.image_px = int(min(cell_cols * self.caps.cell_w,
                                     cell_rows * self.caps.cell_h))
             self.image_rows = max(1, int(self.image_px / self.caps.cell_h) + 1)
-            image_cols = int(self.image_px / self.caps.cell_w)
+            image_cols = self.image_cols = int(self.image_px / self.caps.cell_w)
             self.board_w = BOARD_GUTTER_L + image_cols + BOARD_GUTTER_R
             self.board_h = self.image_rows + 4
             # 1-based screen cell of the image's top-left corner.
@@ -300,7 +301,8 @@ def draw(plan: Plan, state: State) -> None:
     L = plan.layout
     L["head"].update(panels.header(state, USER, plan.cols))
     L["board"].update(panels.board_panel(
-        state, USER, plan.board_w, plan.board_h, plan.scale, plan.image_rows))
+        state, USER, plan.board_w, plan.board_h, plan.scale, plan.image_rows,
+        plan.image_cols))
     L["mind"].update(panels.mind_panel(state, plan.right_w, plan.mind_h))
     L["moves"].update(panels.moves_panel(state, plan.moves_w, plan.moves_h))
     if plan.curve_h:
