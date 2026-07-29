@@ -415,15 +415,31 @@ class Keys:
         return ""
 
 
-def _image_key(plan, state):
-    """What the board picture would depend on, without rendering it."""
+def _live_position(state):
+    """The freshest position, and the move that produced it.
+
+    Same rule as the board panel: the engine's own view beats the stream,
+    which measures about nine seconds behind. Kept in one place so the picture
+    and the panel around it cannot disagree about what is on the board.
+    """
     game = state.get("game")
     if not game:
+        return None, None
+    eb = state.get("engine_board")
+    if eb and eb["ply"] >= game["board"].ply():
+        return eb["board"], eb["last"]
+    return game["board"], game.get("last")
+
+
+def _image_key(plan, state):
+    """What the board picture would depend on, without rendering it."""
+    board, last = _live_position(state)
+    if board is None:
         return None
+    game = state.get("game")
     players = game.get("meta", {}).get("players", {})
     flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
-    last = game.get("last")
-    return (game["board"].fen(), flip, last.uci() if last else None, plan.image_px)
+    return (board.fen(), flip, last.uci() if last else None, plan.image_px)
 
 
 def board_image_tick(plan, state, renderer, painted):
@@ -440,9 +456,10 @@ def board_image_tick(plan, state, renderer, painted):
         return painted
     players = game.get("meta", {}).get("players", {})
     flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
+    board, last = _live_position(state)
     key = _image_key(plan, state)
-    if key is not None:
-        renderer.want(key, game["board"], flip, game.get("last"), plan.image_px)
+    if key is not None and board is not None:
+        renderer.want(key, board, flip, last, plan.image_px)
     if renderer.ready_key is not None and renderer.ready_key != painted:
         sixel.emit(plan.image_at[0], plan.image_at[1], renderer.ready_data)
         return renderer.ready_key

@@ -51,6 +51,8 @@ from pathlib import Path
 
 import chess
 
+from . import fusion
+
 USER_AGENT = "sumofish-watch (local dashboard, read-only)"
 
 # Minimum gap between two API calls, from any source. Our natural rate is well
@@ -462,6 +464,9 @@ class EngineTail(Source):
         super().__init__(state)
         self.tail = Tailer(path)
         self.last_ply = None
+        # The board as the engine sees it, which is ~9s ahead of the public
+        # stream. See dash/fusion.py for the measurement.
+        self.eboard = fusion.EngineBoard()
 
     def tick(self) -> None:
         for line in self.tail.lines():
@@ -473,6 +478,10 @@ class EngineTail(Source):
                 self.state.note("engine", "engine restarted")
                 continue
             self.state.set(self.field, rec)
+            self.eboard.update(rec)
+            snap = self.eboard.snapshot()
+            if snap:
+                self.state.set("engine_board", snap)
             if rec.get("ev") == "move" and rec.get("ply") != self.last_ply:
                 self.last_ply = rec.get("ply")
                 if rec.get("wp_white") is not None:

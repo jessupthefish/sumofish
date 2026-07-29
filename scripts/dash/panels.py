@@ -158,7 +158,17 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
             "board", border=FAINT,
         )
 
-    board: chess.Board = game["board"]
+    # The stream is the authoritative record but it runs about nine seconds
+    # behind (measured; see dash/fusion.py). The engine's own view of the
+    # position is local and instant, so it wins whenever it is ahead -- which
+    # is nearly always, and is why the mind panel used to be showing a
+    # position the board had not reached.
+    stream_board: chess.Board = game["board"]
+    eb = state.get("engine_board")
+    if eb and eb["ply"] >= stream_board.ply():
+        board, last_move = eb["board"], eb["last"]
+    else:
+        board, last_move = stream_board, game.get("last")
     meta = game.get("meta", {})
     players = meta.get("players", {})
     we = _our_colour(players, user, playing)
@@ -206,7 +216,7 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     rows = []
     rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
     if True:
-        art = boardmod.render(board, flip=flip, last=game.get("last"), scale=scale)
+        art = boardmod.render(board, flip=flip, last=last_move, scale=scale)
         _bw, bh = boardmod.board_size(scale)
         for line in art.split("\n"):
             rows.append(line)

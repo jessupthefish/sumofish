@@ -133,6 +133,7 @@ class State:
             # Written at ~6Hz *while searching* and not at all between moves,
             # so the gap is however long the opponent takes.
             ("engine", 30.0),
+            ("engine_board", 30.0),   # the position, from that same feed
             ("train", 20.0),        # training run log
             ("rating_log", 120.0),  # local rating samples with deploy markers
             ("gpu", 3.0),
