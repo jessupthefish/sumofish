@@ -269,12 +269,15 @@ def decide_scale(facts: dict) -> dict:
     `bench_search.py`. A plan that skips this commits its largest resource to
     its least-examined assumption.
     """
+    # Ordered low to high. Each entry is one doubling of simulations, so each
+    # Elo is directly "what the next doubling was worth" at that budget.
+    ladder = [("sims-400-vs-200", 300), ("sims-800-vs-400", 600),
+              ("sims-1600-vs-800", 1200), ("sims-3200-vs-1600", 2400)]
     doublings = []
-    for name, ratio in (("sims-800-vs-400", 1.0), ("sims-1600-vs-800", 1.0),
-                        ("sims-400-vs-200", 1.0)):
+    for name, midpoint in ladder:
         st = match_verdict(name)
         if st["pairs"] >= MIN_DECISIVE_PAIRS:
-            doublings.append(st["elo"] / ratio)
+            doublings.append((midpoint, st["elo"]))
     bench = ROOT / "runs/lab/forward-bench.json"
     m = json.loads(bench.read_text())["ratio"] if bench.exists() else None
 
@@ -285,7 +288,12 @@ def decide_scale(facts: dict) -> dict:
                 "fixed-TIME match decides"}
 
     import math
-    D = sum(doublings) / len(doublings)
+    # The TOP rung, not the average of the ladder. What matters is the slope at
+    # the budget the bot plays at, and this curve is expected to decay: a
+    # doubling is worth far more at 200 simulations than at 60,000. Averaging
+    # the ladder would import the cheap early rungs into a number that is meant
+    # to describe the expensive end, and overstate what more search is worth.
+    D = doublings[-1][1]
     bar = D * math.log2(m)
     # Reports, does not gate. Compute is not the constraint here, so there is
     # no reason to let arithmetic veto an experiment that a match can settle
@@ -296,7 +304,7 @@ def decide_scale(facts: dict) -> dict:
     # simulation count.
     return {"scale_D": round(D, 1), "scale_m": round(m, 2),
             "scale_bar": round(bar, 1), "scale_why":
-            f"a doubling of search is worth {D:.0f} Elo and 136M costs "
+            f"a doubling of search is worth {D:.0f} Elo at the top of the measured ladder ({doublings[-1][0]} sims) and 136M costs "
             f"{m:.2f}x per node in the search, so it must be {bar:.0f} Elo "
             f"better at equal simulations to break even on a clock. Running it "
             f"regardless and letting the fixed-time match decide"}
@@ -403,6 +411,10 @@ PLAN: list[Job] = [
         argv=lambda f: match_argv("sims-1600-vs-800", "--a-sims", "1600",
                                   "--b-sims", "800", "--no-sprt", budget=()),
         probe=lambda: match_progress("sims-1600-vs-800"), timeout=8 * HOUR),
+    Job(id="sims-3200-1600", what="1600 -> 3200 simulations, the top of the affordable ladder",
+        argv=lambda f: match_argv("sims-3200-vs-1600", "--a-sims", "3200",
+                                  "--b-sims", "1600", "--no-sprt", budget=()),
+        probe=lambda: match_progress("sims-3200-vs-1600"), timeout=10 * HOUR),
     Job(id="forward-bench", what="how much dearer is a 136M forward pass, in the search loop",
         argv=lambda f: python(str(ROOT / "scripts/bench_search.py"),
                               "--preset", "136M",
@@ -410,7 +422,8 @@ PLAN: list[Job] = [
         timeout=1 * HOUR),
     Job(id="scale", what="is 136M worth 35 hours, given the exchange rate",
         decide=decide_scale,
-        needs=["sims-400-200", "sims-800-400", "sims-1600-800", "forward-bench"]),
+        needs=["sims-400-200", "sims-800-400", "sims-1600-800",
+               "sims-3200-1600", "forward-bench"]),
 
     # The three c_puct / FPU matches that stood here are GONE, and the reason
     # is worth keeping. They were specified when the bot played bullet at ~400
