@@ -50,6 +50,49 @@ OVERHEAD_S = 420
 NOISE_FLOOR = 0.015
 
 
+# The FROZEN block of train.py, byte for byte. `program.md` rule 3 forbids
+# touching it and nothing enforced that, which made the rule a suggestion: an
+# agent could lengthen TIME_BUDGET_S, widen the eval, or repoint the bags, and
+# every number afterwards would be incomparable to every number before with no
+# record that the yardstick had moved. Moving the yardstick to make the metric
+# improve is the exact failure this whole harness exists to prevent, so it is
+# checked rather than asked for.
+FROZEN_MARKER = "# EDITABLE. Everything below here is fair game."
+
+
+def frozen_region(text: str) -> str:
+    """Everything above the EDITABLE marker."""
+    head, sep, _tail = text.partition(FROZEN_MARKER)
+    if not sep:
+        raise SystemExit("research/train.py has lost its EDITABLE marker; refusing to run")
+    return head
+
+
+def check_frozen() -> str:
+    """Abort unless train.py's frozen half matches best.py's.
+
+    Compared against `best.py` rather than a hardcoded hash, because best.py is
+    the last thing the harness itself promoted and therefore the last frozen
+    block it has already vouched for. That makes the check self-maintaining: a
+    deliberate change to the frozen block is made once, promoted once, and then
+    becomes the new reference, while an undeclared edit between runs is caught.
+    """
+    current = hashlib.sha256(frozen_region(TRAIN.read_text()).encode()).hexdigest()[:12]
+    if not BEST.exists():
+        return current
+    reference = hashlib.sha256(frozen_region(BEST.read_text()).encode()).hexdigest()[:12]
+    if current != reference:
+        raise SystemExit(
+            "research/train.py's FROZEN block differs from best.py's.\n"
+            f"  train.py {current}   best.py {reference}\n"
+            "Rule 3: TIME_BUDGET_S, SEED, EVAL_BATCHES, evaluate() and the bag\n"
+            "paths are the yardstick. Changing them makes every past number\n"
+            "incomparable. Revert them, or if the change is deliberate, say so\n"
+            "in a note and reset the leaderboard on purpose."
+        )
+    return current
+
+
 def budget_from_train_py() -> int:
     m = re.search(r"^TIME_BUDGET_S\s*=\s*(\d+)", TRAIN.read_text(), re.M)
     return int(m.group(1)) if m else 300
@@ -62,12 +105,27 @@ def load_results() -> list[dict]:
 
 
 def best_so_far(results: list[dict]) -> dict | None:
-    ok = [r for r in results if r.get("ok")]
-    return min(ok, key=lambda r: r["bpm"]) if ok else None
+    """The score of whatever is actually in `best.py`, not the global minimum.
+
+    This returned `min(ok, key=bpm)` over every run ever made, which is a
+    different thing and a self-sealing one. A run that scores below the
+    incumbent but not by more than NOISE_FLOOR is correctly NOT promoted -- the
+    file on disk does not change -- but under the old rule its bpm still became
+    the bar. So the bar drifts down to a number no promoted file ever achieved,
+    and after a few lucky rolls nothing can be promoted again, forever. The
+    leaderboard then shows a long tail of REVERT verdicts that look like
+    hypotheses failing when they are the harness having locked itself.
+
+    The incumbent is the last run whose verdict actually moved `best.py`.
+    """
+    promoted = [r for r in results
+                if r.get("ok") and r.get("verdict") in ("FIRST", "KEEP")]
+    return promoted[-1] if promoted else None
 
 
 def run_once(note: str = "") -> dict:
     ATTEMPTS.mkdir(exist_ok=True)
+    check_frozen()
     source = TRAIN.read_text()
     digest = hashlib.sha256(source.encode()).hexdigest()[:12]
     results = load_results()

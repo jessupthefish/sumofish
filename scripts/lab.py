@@ -270,8 +270,8 @@ def decide_scale(facts: dict) -> dict:
     its least-examined assumption.
     """
     doublings = []
-    for name, ratio in (("lab-sims-800-400", 1.0), ("lab-sims-1600-800", 1.0),
-                        ("lab-sims-400-200", 1.0)):
+    for name, ratio in (("sims-800-vs-400", 1.0), ("sims-1600-vs-800", 1.0),
+                        ("sims-400-vs-200", 1.0)):
         st = match_verdict(name)
         if st["pairs"] >= MIN_DECISIVE_PAIRS:
             doublings.append(st["elo"] / ratio)
@@ -292,6 +292,34 @@ def decide_scale(facts: dict) -> dict:
             f"a doubling of search is worth {D:.0f} Elo and 136M costs "
             f"{m:.1f}x per pass, so it must win by {bar:.0f} Elo at equal sims "
             f"just to tie on the clock -- {'proceeding' if go else 'declined'}"}
+
+
+def decide_tuning(facts: dict) -> dict:
+    """Read the three tuning matches and say what to set, or that nothing moved.
+
+    Reports rather than applies: these are defaults in `search_engine.py` and
+    `mcts.py`, and the lab does not edit code. It also records the values it was
+    measured against, because the Coroner's ledger is explicit that a tuned
+    constant is valid only for the (policy, value) pair it was tuned on -- swap
+    the net and it has to be re-measured.
+    """
+    out, wins = {}, []
+    for job, name, param, tried, base in (
+        ("cpuct-high", "cpuct-3.0-vs-2.0", "c_puct", "3.0", "2.0"),
+        ("cpuct-low", "cpuct-1.25-vs-2.0", "c_puct", "1.25", "2.0"),
+        ("fpu", "fpu-0.5-vs-0.2", "fpu", "-0.5", "-0.2"),
+    ):
+        st = match_verdict(name)
+        out[job] = {"elo": round(st["elo"], 1), "err": round(st["err"], 1),
+                    "pairs": st["pairs"], "decisive": st["decisive"]}
+        if st["decisive"] and st["elo"] > 0:
+            wins.append(f"{param}={tried} beats {base} by {st['elo']:+.0f} "
+                        f"+-{st['err']:.0f} Elo")
+
+    return {"tuning": out, "tuning_why": (
+        "; ".join(wins) if wins else
+        "no tuning change was decisive at 1200 sims; leave c_puct=2.0, fpu=-0.2"
+    ) + " (measured against the 9M value net; re-measure after any net change)"}
 
 
 def decide_stage(facts: dict) -> dict:
@@ -334,9 +362,9 @@ def decide_stage(facts: dict) -> dict:
 def write_report(facts: dict) -> dict:
     lines = ["# Lab report", ""]
     for name, title in (
-        ("lab-sims-400-200", "200 -> 400 simulations"),
-        ("lab-sims-800-400", "400 -> 800 simulations"),
-        ("lab-sims-1600-800", "800 -> 1600 simulations"),
+        ("sims-400-vs-200", "200 -> 400 simulations"),
+        ("sims-800-vs-400", "400 -> 800 simulations"),
+        ("sims-1600-vs-800", "800 -> 1600 simulations"),
         ("lab-136m-vs-current", "136M vs the live 9M, equal simulations"),
     ):
         st = match_verdict(name)
@@ -374,17 +402,17 @@ PLAN: list[Job] = [
     # every argument for more throughput -- kernels included -- is a bet on
     # its slope, and it is what makes the 136M question arithmetic.
     Job(id="sims-400-200", what="200 -> 400 simulations: what is a doubling worth?",
-        argv=lambda f: match_argv("lab-sims-400-200", "--a-sims", "400",
+        argv=lambda f: match_argv("sims-400-vs-200", "--a-sims", "400",
                                   "--b-sims", "200", "--no-sprt", budget=()),
-        probe=lambda: match_progress("lab-sims-400-200"), timeout=4 * HOUR),
+        probe=lambda: match_progress("sims-400-vs-200"), timeout=4 * HOUR),
     Job(id="sims-800-400", what="400 -> 800 simulations",
-        argv=lambda f: match_argv("lab-sims-800-400", "--a-sims", "800",
+        argv=lambda f: match_argv("sims-800-vs-400", "--a-sims", "800",
                                   "--b-sims", "400", "--no-sprt", budget=()),
-        probe=lambda: match_progress("lab-sims-800-400"), timeout=6 * HOUR),
+        probe=lambda: match_progress("sims-800-vs-400"), timeout=6 * HOUR),
     Job(id="sims-1600-800", what="800 -> 1600 simulations",
-        argv=lambda f: match_argv("lab-sims-1600-800", "--a-sims", "1600",
+        argv=lambda f: match_argv("sims-1600-vs-800", "--a-sims", "1600",
                                   "--b-sims", "800", "--no-sprt", budget=()),
-        probe=lambda: match_progress("lab-sims-1600-800"), timeout=8 * HOUR),
+        probe=lambda: match_progress("sims-1600-vs-800"), timeout=8 * HOUR),
     Job(id="forward-bench", what="how much dearer is a 136M forward pass, in the search loop",
         argv=lambda f: python(str(ROOT / "scripts/bench_search.py"),
                               "--preset", "136M",
@@ -393,6 +421,44 @@ PLAN: list[Job] = [
     Job(id="scale", what="is 136M worth 35 hours, given the exchange rate",
         decide=decide_scale,
         needs=["sims-400-200", "sims-800-400", "sims-1600-800", "forward-bench"]),
+
+    # Search constants, tuned at a budget the bot actually plays at.
+    #
+    # A Council audit cut these, on the grounds that a node able to estimate a
+    # child before visiting it deletes FPU rather than tunes it. That argument
+    # is right and it is weeks away; these are hours away and they apply to
+    # whatever net is deployed in the meantime. Reinstated deliberately, with
+    # the objective changed to Elo.
+    #
+    # What the audit got right, and is fixed here: the old jobs measured at 400
+    # simulations while the bot is clock-bound at roughly 2,400. Optimal c_puct
+    # grows with visit count -- the exploration term decays as
+    # sqrt(N_parent)/(1+N_child), so the balance point moves -- and a constant
+    # tuned at 400 is tuned for a search that never ships.
+    #
+    # Three points per parameter, not two: two points cannot tell you the sign
+    # of the curvature, so if 3.0 loses to 2.0 you still do not know whether
+    # 1.25 wins.
+    Job(id="cpuct-high", what="c_puct 3.0 vs 2.0 at a deployment-like budget",
+        argv=lambda f: match_argv("cpuct-3.0-vs-2.0", "--a-cpuct", "3.0",
+                                  "--b-cpuct", "2.0", "--a-label", "cpuct3",
+                                  "--b-label", "cpuct2", games=200,
+                                  budget=("--sims", "1200")),
+        probe=lambda: match_progress("cpuct-3.0-vs-2.0"), timeout=6 * HOUR),
+    Job(id="cpuct-low", what="c_puct 1.25 vs 2.0, the other side of the curve",
+        argv=lambda f: match_argv("cpuct-1.25-vs-2.0", "--a-cpuct", "1.25",
+                                  "--b-cpuct", "2.0", "--a-label", "cpuct125",
+                                  "--b-label", "cpuct2", games=200,
+                                  budget=("--sims", "1200")),
+        probe=lambda: match_progress("cpuct-1.25-vs-2.0"), timeout=6 * HOUR),
+    Job(id="fpu", what="first-play urgency -0.5 vs -0.2, same budget",
+        argv=lambda f: match_argv("fpu-0.5-vs-0.2", "--a-fpu", "-0.5",
+                                  "--b-fpu", "-0.2", "--a-label", "fpu05",
+                                  "--b-label", "fpu02", games=200,
+                                  budget=("--sims", "1200")),
+        probe=lambda: match_progress("fpu-0.5-vs-0.2"), timeout=6 * HOUR),
+    Job(id="tuning", what="what the search constants should be set to",
+        decide=decide_tuning, needs=["cpuct-high", "cpuct-low", "fpu"]),
 
     Job(id="train-136m", what="the 136M state-value run, only if `scale` said so",
         argv=lambda f: python(
@@ -419,7 +485,11 @@ PLAN: list[Job] = [
             "--val-batches", "32", "--compile", "1",
             "--run", "136M-sv", "--auto-resume"),
         probe=lambda: train_progress("136M-sv"),
-        timeout=50 * HOUR, truncation_is_failure=True, needs=["scale"]),
+        timeout=50 * HOUR, truncation_is_failure=True,
+        # After the tuning matches, deliberately. They are six hours and
+        # certain to produce a usable number; this is thirty-five and
+        # gated on arithmetic. Cheap certain Elo first.
+        needs=["scale", "tuning"]),
 
     Job(id="match-136m", what="the trained 136M against the live 9M",
         argv=lambda f: match_argv("lab-136m-vs-current",
