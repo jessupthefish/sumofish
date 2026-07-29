@@ -136,27 +136,19 @@ def header(state, user: str, width: int):
     # The control we play gets the detail; the ones we no longer play get the
     # number and nothing else. A deviation, a game count and a sparkline on a
     # rating that cannot move again is width spent on history.
-    ordering = sorted(("bullet", "blitz", "rapid", "classical"),
-                      key=lambda tc: tc not in live)
-    for tc in ordering:
+    for tc in ("bullet", "blitz", "rapid", "classical"):
         p = perfs.get(tc)
         if not p or not p.get("games"):
             continue
         shown += 1
         left.append("   ")
         if tc not in live:
-            # History, and the first thing to give up its space. The wide
-            # layout starts at 100 columns and at that size the record on the
-            # right plus the live rating already fill the row -- keeping these
-            # would push the blitz number off the end, which is worse than not
-            # showing it. The verbose "34 won / 8 drawn" on the right is a
-            # deliberate readability choice by whoever wrote it, so it is not
-            # the thing to compress.
-            if width < 120:
-                shown -= 1
-                continue
-            left.append(f"{tc} ", style=f"{FAINT} on {BG}")
-            left.append(f"{p['rating']}", style=f"{DIM} on {BG}")
+            # Not shown at all. The bot plays one control and the others are
+            # frozen history that cannot move again; carrying them here made
+            # the row read as four numbers of equal weight when only one is
+            # live. `sumofish-games` still prints every rating, which is the
+            # right place for a number you look up rather than watch.
+            shown -= 1
             continue
         left.append(f"{tc} ", style=f"{DIM} on {BG}")
         left.append(f"{p['rating']}", style=f"bold {ACCENT} on {BG}")

@@ -231,9 +231,11 @@ for _w in range(watch.MIN_WIDE_COLS, 181, 5):
     _line = next(l for l in _cap.get().splitlines() if "SUMOFISH" in l)
     # The live control and the heartbeat must always survive; the frozen
     # ratings are allowed to drop out below 120, which is deliberate.
-    _need = ["rapid 2394", "lichess"] + (
-        ["bullet 1950", "blitz 1844"] if _w >= 120 else [])
-    if not all(x in _line for x in _need):
+    # Only the live control appears; bullet and blitz are frozen history and
+    # were removed from the header deliberately, so their ABSENCE is the check.
+    if not all(x in _line for x in ("rapid 2394", "lichess")):
+        _clipped.append(_w)
+    if "bullet" in _line or "blitz" in _line:
         _clipped.append(_w)
 
 check(f"widths {watch.MIN_WIDE_COLS}-180 keep the live rating and the record",
