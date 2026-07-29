@@ -186,7 +186,15 @@ class Player:
                 policy=load_prior(spec.policy, device),
                 c_puct=spec.c_puct,
                 fpu=spec.fpu,
-                simulations=spec.sims,
+                # `--time` means the CLOCK decides, so the simulation count
+                # must not also bind. It did: `simulations=spec.sims` with a
+                # 400 default meant `--time 3.0` ran min(400 sims, 3s) ~= 0.12s,
+                # and the deadline never applied. Both matches feeding the lab's
+                # promotion gate were equal-simulation matches while the gate
+                # applied an equal-TIME bar. `smoke.py` and `bench_search.py`
+                # already write 10**9 for exactly this reason; this was the one
+                # place that forgot.
+                simulations=10**9 if spec.movetime else spec.sims,
                 batch=spec.batch,
                 reuse=spec.reuse,
                 terminal=terminal_value_legacy if spec.legacy_draws else terminal_value,
@@ -272,6 +280,88 @@ def code_fingerprint() -> str:
 # one game
 
 
+class Arbiter:
+    """A third party that decides adjudicated games, instead of the players.
+
+    # Why this exists
+    #
+    # Adjudication was decided by the win probability of the engines UNDER TEST,
+    # and it ended 22-34% of every match in this project's archive. Both arms
+    # share the value net, so a position the net is jointly and wrongly confident
+    # about -- a fortress, opposite-coloured bishops, a drawn rook ending --
+    # adjudicated as a win for whoever was materially ahead. Re-scoring those
+    # games as draws moved the exchange-rate ladder's rungs by +113 to +148 Elo.
+    #
+    # That is not a bias to correct with more games. It is a sensor wired inside
+    # the system it measures, and the only fix is a reference that cannot share
+    # the fault.
+    #
+    # # Fixed NODES, full strength
+    #
+    # Not `Skill Level`, which is full-strength Stockfish with randomised move
+    # degradation: it would reward punishing random blunders, which is the exact
+    # pathology PHILOSOPHY rejects when BUILDING difficulty and would be silly to
+    # invite back in when measuring. Not fixed depth either, which is not
+    # reproducible under CPU contention.
+    #
+    # A reference may be degraded along the same axis as the article's own
+    # allowance -- nodes -- never in its judgement.
+    #
+    # # It reduces bias, it does not eliminate it
+    #
+    # Stockfish at a modest node budget is itself unreliable in fortresses and
+    # opposite-coloured-bishop endings, which is the same class that broke
+    # self-adjudication. This is a smaller, INDEPENDENT error in place of a
+    # larger, correlated one. Do not report it as an elimination.
+    """
+
+    def __init__(self, path: str | None, nodes: int):
+        self.nodes = nodes
+        self.engine = None
+        self.path = path
+        if path:
+            try:
+                import chess.engine
+
+                self.engine = chess.engine.SimpleEngine.popen_uci(path)
+            except Exception as exc:
+                print(f"arbiter unavailable ({exc}); adjudication disabled",
+                      file=sys.stderr)
+                self.engine = None
+
+    def agrees(self, board: chess.Board, white_winning: bool) -> bool:
+        """Does the arbiter agree the game is decided in that direction?
+
+        Returns False when it cannot tell, so an unavailable or uncertain arbiter
+        means the game keeps playing rather than being adjudicated on the word of
+        the engine under test. Playing on costs time; a wrong adjudication costs
+        the result.
+        """
+        if self.engine is None:
+            return False
+        try:
+            import chess.engine
+
+            info = self.engine.analyse(
+                board, chess.engine.Limit(nodes=self.nodes)
+            )
+        except Exception:
+            return False
+        score = info.get("score")
+        if score is None:
+            return False
+        # White's frame, so the two sides are symmetric.
+        wp = score.white().wdl(model="sf12").expectation()
+        return wp >= 0.97 if white_winning else wp <= 0.03
+
+    def close(self) -> None:
+        if self.engine is not None:
+            try:
+                self.engine.quit()
+            except Exception:
+                pass
+
+
 def play_game(
     white: Player,
     black: Player,
@@ -279,6 +369,8 @@ def play_game(
     max_plies: int,
     adj_wp: float,
     adj_plies: int,
+    arbiter: "Arbiter | None" = None,
+    arbiter_id: str | None = None,
 ) -> dict:
     """Play one game from a book position and return how it ended.
 
@@ -312,12 +404,23 @@ def play_game(
             break
         if len(curve) >= adj_plies:
             tail = curve[-adj_plies:]
+            # The engines' own curve only PROPOSES. A third party decides, and
+            # if there is no third party the game plays on: adjudicating on the
+            # word of the engine under test is what corrupted the archive.
             if all(p >= adj_wp for p in tail):
-                result, reason = "1-0", "adjudicated"
-                break
+                if arbiter is None:
+                    result, reason = "1-0", "adjudicated"
+                    break
+                if arbiter.agrees(board, white_winning=True):
+                    result, reason = "1-0", "adjudicated-arbiter"
+                    break
             if all(p <= 1.0 - adj_wp for p in tail):
-                result, reason = "0-1", "adjudicated"
-                break
+                if arbiter is None:
+                    result, reason = "0-1", "adjudicated"
+                    break
+                if arbiter.agrees(board, white_winning=False):
+                    result, reason = "0-1", "adjudicated-arbiter"
+                    break
 
         player = white if board.turn == chess.WHITE else black
         move, wp = player.move(board)
@@ -413,6 +516,21 @@ def main() -> None:
     ap.add_argument("--adjudicate-wp", type=float, default=0.97)
     ap.add_argument("--adjudicate-plies", type=int, default=10)
     ap.add_argument("--no-adjudicate", action="store_true")
+    ap.add_argument(
+        "--arbiter",
+        default=str(ROOT / "tools/stockfish/stockfish-ubuntu-x86-64-bmi2"),
+        help="third party that must AGREE before a game is adjudicated. "
+             "The engines under test share a value net, so letting them decide "
+             "ended 22-34%% of every match in this project's archive on their own "
+             "word. Pass --arbiter '' to disable and adjudicate as before.",
+    )
+    ap.add_argument(
+        "--arbiter-nodes", type=int, default=200_000,
+        help="fixed NODES for the arbiter. Fixed nodes rather than depth so it "
+             "reproduces under CPU contention, and full strength rather than a "
+             "Skill Level, because a reference may be degraded in its allowance "
+             "and never in its judgement.",
+    )
     ap.add_argument("--elo0", type=float, default=0.0, help="SPRT null hypothesis")
     ap.add_argument("--elo1", type=float, default=20.0, help="SPRT alternative")
     ap.add_argument("--alpha", type=float, default=0.05)
@@ -453,8 +571,75 @@ def main() -> None:
     outdir = ROOT / "runs" / "matches" / name
     outdir.mkdir(parents=True, exist_ok=True)
     log_path, pgn_path = outdir / "games.jsonl", outdir / "games.pgn"
-    (outdir / "config.json").write_text(
-        json.dumps({"a": a.__dict__, "b": b.__dict__, "args": vars(args)}, indent=2)
+
+    # ---- the resume fingerprint ----
+    #
+    # On 2026-07-29 all four rungs of the exchange-rate ladder were found to be
+    # REPLAYS. Resume keyed on `rec["game"]` alone, so a job with different code,
+    # a different checkpoint and a different budget landed on an existing
+    # directory, skipped every game as "already played", and reported the old
+    # numbers as its own -- in 5 seconds, against hours of logged play. Worse,
+    # `config.json` was then rewritten with the NEW spec over the OLD games, so
+    # the directory actively asserted a provenance it never had.
+    #
+    # The fix has two halves. This one refuses to resume across a spec change.
+    # The other is `scripts/verify_replays.py`, which finds the damage already
+    # done via `sum(game.seconds) <= job.seconds` -- an inequality that cannot
+    # be violated legitimately.
+    #
+    # Deliberately excluded from the hash: `games` and `name`, so extending a
+    # match from 300 to 400 games still resumes, which is the one case resume is
+    # actually for. Everything that changes what a GAME is, is included.
+    fp_args = {
+        k: v for k, v in vars(args).items()
+        if k not in ("games", "name", "device", "quiet")
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"a": a.__dict__, "b": b.__dict__, "args": fp_args,
+             "code": code_fingerprint()},
+            sort_keys=True, default=str,
+        ).encode()
+    ).hexdigest()[:16]
+
+    cfg_path = outdir / "config.json"
+    # Keyed on the GAMES existing, not on the config existing. A directory with a
+    # log and no config is the unprovenanced case, and requiring the config to be
+    # present in order to check it would wave through exactly the state this is
+    # meant to catch.
+    if log_path.exists() and log_path.stat().st_size > 0:
+        prior = None
+        if cfg_path.exists():
+            try:
+                prior = json.loads(cfg_path.read_text()).get("fingerprint")
+            except Exception:
+                prior = None
+        if prior is None:
+            print(
+                f"REFUSING to resume {outdir}: it has games but no fingerprint, so\n"
+                f"it predates this check and its provenance cannot be established.\n"
+                f"Run `scripts/verify_replays.py` to audit it, then use a new --name.",
+                file=sys.stderr,
+            )
+            return 2
+        if prior != fingerprint:
+            print(
+                f"REFUSING to resume {outdir}: spec fingerprint differs.\n"
+                f"  on disk: {prior}\n"
+                f"  now:     {fingerprint}\n"
+                f"Those games were played by a different configuration. Resuming\n"
+                f"would report them as this one's -- which is how the exchange-rate\n"
+                f"ladder came to be four replays. Use a new --name.",
+                file=sys.stderr,
+            )
+            return 2
+
+    cfg_path.write_text(
+        json.dumps(
+            {"fingerprint": fingerprint, "code": code_fingerprint(),
+             "a": a.__dict__, "b": b.__dict__, "args": vars(args)},
+            indent=2, default=str,
+        )
     )
 
     print(f"A: {a.label}  {a.describe()}")
@@ -479,6 +664,20 @@ def main() -> None:
                 done[rec["game"]] = rec
         if done:
             print(f"resuming: {len(done)} games already played\n")
+
+    arbiter_path = args.arbiter or None
+    if arbiter_path and not Path(arbiter_path).exists():
+        print(f"arbiter not found at {arbiter_path}; adjudication will be "
+              f"disabled, so decided games play to a natural finish",
+              file=sys.stderr)
+        arbiter_path = None
+    arbiter = Arbiter(arbiter_path, args.arbiter_nodes) if arbiter_path else None
+    arbiter_id = (
+        f"stockfish@{args.arbiter_nodes}nodes" if arbiter and arbiter.engine else None
+    )
+    if arbiter is not None and arbiter.engine is None:
+        arbiter = None
+    print(f"arbiter: {arbiter_id or 'none (games play to a natural finish)'}")
 
     players = {"a": Player(a, args.device), "b": Player(b, args.device)}
     # Warm the kernels before the first timed move, so a --time match does not
@@ -507,6 +706,7 @@ def main() -> None:
                 rec = play_game(
                     white, black, openings[pair],
                     args.max_plies, args.adjudicate_wp, args.adjudicate_plies,
+                    arbiter, arbiter_id,
                 )
                 # Score from A's point of view, which is what everything below
                 # counts. This is the one place the colour swap is undone.
@@ -556,6 +756,10 @@ def main() -> None:
     finally:
         log_fh.close()
         pgn_fh.close()
+        # The arbiter is a subprocess; a match that ends by SPRT, by Ctrl-C or by
+        # exception must not leave a Stockfish behind holding a core.
+        if arbiter is not None:
+            arbiter.close()
 
     w, d, l = tally(records)
     sums = pair_sums(records)
@@ -576,4 +780,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit(main()), NOT main(). The refusal paths above return a non-zero
+    # code, and `lab.py` gates on `exit 0`. Calling main() bare discards the
+    # return value, so a match that REFUSED to run would report success to the
+    # automation and the job would be marked completed. Caught by deliberately
+    # inducing the refusal and checking $?, which is the only way this class of
+    # bug is ever found.
+    sys.exit(main())
