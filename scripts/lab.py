@@ -26,17 +26,26 @@ State is in `runs/lab/state.json`. Restarting resumes rather than starting over.
 
 ## What it is allowed to do on its own: nothing outward-facing
 
-**It stages, it does not promote.** A winning checkpoint is copied to
-`runs/value.pt.candidate` with a provenance sidecar, and the report says what
-it won by. Swapping the live bot stays a human command (`scripts/promote.py`).
+**It promotes, behind two gates rather than one.** A Council audit took the
+original single gate apart, and it was right: a statistical result answers one
+question and no other. It does not check that the checkpoint loads, that its
+throughput survives the clock the bot plays on, or that it never returns
+something illegal. Every one of those failures happens outside the game record,
+so no number of games can see them -- and this session took the live bot down
+for ninety minutes with a NameError in the value loader, which no match would
+ever have caught.
 
-That is a change from the first version of this file, which promoted
-automatically behind a statistical gate. A Council audit took the gate apart:
-the gate answers one question and no other. It does not check that the
-checkpoint loads, that its nps survives a bullet clock, that its value head is
-calibrated rather than saturated, or that the result is fun to play, which
-PHILOSOPHY.md ranks above strength. The queue's value is that thirty-five hours
-of training happened while you slept. It was never that the last file copy did.
+So the answer is a second gate, not a human. `scripts/smoke.py` boots the real
+engine entry point on the candidate, reaches `uciok`, measures nodes per second
+at the deployed budget against a floor, and plays a handful of positions
+checking every move is legal and none overruns the clock. A candidate that
+wins its match AND passes that is copied over `runs/value.pt`, with the
+previous checkpoint kept beside it and a provenance sidecar recording what it
+won by. The bot picks it up on its next game; nothing restarts.
+
+What is still not automated is the judgement PHILOSOPHY ranks above strength:
+whether the thing is fun to play. `scripts/acceptance.py` needs a human by
+construction and nothing here substitutes for it.
 
 ## Three outcomes, not two
 
@@ -310,8 +319,8 @@ def decide_scale(facts: dict) -> dict:
             f"regardless and letting the fixed-time match decide"}
 
 
-def decide_stage(facts: dict) -> dict:
-    """Stage a winning checkpoint. Never swap the live one.
+def decide_promote(facts: dict) -> dict:
+    """Deploy a winning checkpoint, if it also survives the smoke gate.
 
     Writes a provenance sidecar because in eighteen months `runs/value.pt` is
     an untracked binary of unknown origin, and "which run was this, measured
@@ -331,30 +340,53 @@ def decide_stage(facts: dict) -> dict:
         verdict, candidate, which = contenders[0][0], contenders[0][1], "136M"
 
     if not verdict["decisive"]:
-        return {"staged": False, "stage_why":
-                f"not staged: {verdict['n']} games in {verdict['pairs']} pairs, "
+        return {"promoted": False, "promote_why":
+                f"not promoted: {verdict['n']} games in {verdict['pairs']} pairs, "
                 f"elo {verdict['elo']:+.1f} +-{verdict['err']:.1f}, "
                 f"LLR {verdict['llr']:+.2f}. Needs the sequential test to "
                 f"conclude or the interval to clear zero, on >= "
                 f"{MIN_DECISIVE_PAIRS} pairs"}
     if not candidate.exists():
-        return {"staged": False, "stage_why": f"no candidate at {candidate}"}
+        return {"promoted": False, "promote_why": f"no candidate at {candidate}"}
 
-    staged = ROOT / "runs/value.pt.candidate"
+    # The second gate. A match says "stronger"; this says "works".
+    smoke = subprocess.run(
+        [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/smoke.py"),
+         str(candidate), "--seconds", "3"],
+        cwd=ROOT, capture_output=True, text=True, timeout=1800)
+    (LAB / "smoke.log").write_text(smoke.stdout + smoke.stderr)
+    if smoke.returncode != 0:
+        reason = next((line for line in smoke.stdout.splitlines()
+                       if line.startswith("FAIL")), "smoke test failed")
+        return {"promoted": False, "promote_why":
+                f"NOT promoted despite winning by {verdict['elo']:+.1f} Elo: "
+                f"{reason}. See runs/lab/smoke.log"}
+
+    live = ROOT / "runs/value.pt"
+    if live.exists():
+        # Keep the outgoing one. One deep is thin -- eight small promotions
+        # each passing at the detection threshold add up to a net nobody chose
+        # -- but a rollback that exists beats one that does not.
+        shutil.copyfile(live, ROOT / "runs/value.pt.previous")
+    staged = ROOT / "runs/value.pt.staged"
     shutil.copyfile(candidate, staged)
-    (ROOT / "runs/value.pt.candidate.json").write_text(json.dumps({
+    # Atomic. A game starting mid-copy would otherwise read a torn file.
+    os.replace(staged, live)
+    (ROOT / "runs/value.pt.json").write_text(json.dumps({
         "source": str(candidate),
         "match": which,
         "elo": round(verdict["elo"], 1), "err": round(verdict["err"], 1),
         "pairs": verdict["pairs"], "games": verdict["n"],
         "llr": round(verdict["llr"], 2), "measured_at_sims": 400,
         "causal": facts.get("causal"),
-        "promote_with": "scripts/promote.py runs/value.pt.candidate",
+        "promoted_at": time.time(),
+        "rollback": "cp runs/value.pt.previous runs/value.pt",
     }, indent=2))
-    return {"staged": True, "stage_why":
-            f"staged {which} as runs/value.pt.candidate: {verdict['elo']:+.1f} "
-            f"+-{verdict['err']:.1f} Elo over {verdict['n']} games. "
-            f"A human promotes it with scripts/promote.py"}
+    return {"promoted": True, "promote_why":
+            f"PROMOTED {which}: {verdict['elo']:+.1f} +-{verdict['err']:.1f} Elo "
+            f"over {verdict['n']} games on a clock, and it passed the smoke "
+            f"gate. Previous checkpoint at runs/value.pt.previous; the bot uses "
+            f"the new one from its next game"}
 
 
 def write_report(facts: dict) -> dict:
@@ -515,8 +547,8 @@ PLAN: list[Job] = [
                                   games=200, budget=("--time", "3.0")),
         probe=lambda: match_progress("lab-136m-vs-current"),
         timeout=20 * HOUR, needs=["train-136m"]),
-    Job(id="stage", what="stage a candidate if the match earned it. Never promote",
-        decide=decide_stage, needs=["match-136m", "match-9m-long"]),
+    Job(id="promote", what="deploy the winner, if it wins AND boots AND is fast enough",
+        decide=decide_promote, needs=["match-136m", "match-9m-long"]),
     Job(id="report", what="write runs/lab/report.md", decide=write_report),
 ]
 
