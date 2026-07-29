@@ -199,7 +199,7 @@ class Plan:
             # 1-based screen cell of the image's top-left corner.
             # Rows: 3 header panel, 1 label line, 1 top player line.
             # Cols: the left gutter, so the first image column is the one after.
-            self.image_at = (6, BOARD_GUTTER_L + 1)
+            self.image_at = (5, BOARD_GUTTER_L + 1)
         else:
             self.scale = board.pick_scale(budget_w - 3, budget_h)
             bw, bh = board.board_size(self.scale)

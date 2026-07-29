@@ -126,6 +126,11 @@ def header(state, user: str, width: int):
         left.append("   no rated games yet", style=f"{DIM} on {BG}")
 
     right = Text(no_wrap=True)
+    game = state.get("game")
+    if game:
+        # Up here rather than over the board: it is a thing you go and look at
+        # once, not a thing you watch, and beside the picture it was clutter.
+        right.append(f"lichess.org/{game['id']}   ", style=f"{FAINT} on {BG}")
     right.append(f"{counts.get('win', 0)} won", style=f"{GOOD} on {BG}")
     right.append(" \u00b7 ", style=f"{FAINT} on {BG}")
     right.append(f"{counts.get('draw', 0)} drawn", style=f"{DIM} on {BG}")
@@ -212,12 +217,7 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         # So no Panel here, and the only styled thing on these rows is the
         # eval bar in the first two columns, which sits to the left of the
         # image and is therefore safe to repaint.
-        head = Text(no_wrap=True)
-        head.append("board ", style=f"{FG} on {BG}")
-        head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
-        head.append("   name \u00b7 rating \u00b7 captures \u00b7 clock \u00b7 win estimate",
-                    style=f"{FAINT} on {BG}")
-        rows = [head]
+        rows = []
         rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
         # Nothing styled on these rows at all. The picture is underneath and
         # rich rewrites a whole line when any cell in it changes, so a styled
@@ -242,12 +242,7 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
 
     # Same shape as the image path above: a label line rather than a panel, so
     # the two renderers do not look like two different programs.
-    head = Text(no_wrap=True)
-    head.append("board ", style=f"{FG} on {BG}")
-    head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
-    head.append("   name \u00b7 rating \u00b7 captures \u00b7 clock \u00b7 win estimate",
-                style=f"{FAINT} on {BG}")
-    return Group(head, *rows)
+    return Group(*rows)
 
 
 def _engine_matches(eng: dict, board: chess.Board) -> bool:
@@ -468,8 +463,7 @@ def mind_panel(state, width: int, height: int):
 
     return _panel(Group(*rows), "engine search",
                   border=ACCENT if thinking else FAINT,
-                  subtitle=f"[{FAINT}]candidate · simulations spent · "
-                           f"q = win rate · p = policy prior[/]")
+                  )
 
 
 # ---- the move list --------------------------------------------------------
@@ -519,8 +513,7 @@ def moves_panel(state, width: int, height: int):
                 break
         body.append(line)
     return _panel(Group(*body), "moves",
-                  subtitle=f"[{FAINT}]{len(moves)} half-moves \u00b7 number is "
-                           f"SumoFish's chance of winning after that move[/]")
+                  )
 
 
 # ---- training, machine, tape ---------------------------------------------
@@ -563,12 +556,7 @@ def curve_panel(state, width: int, height: int):
             line.append_text(rows[i])
         out.append(line)
 
-    now = state.eval_smooth.value
-    who = "SumoFish" if series or now is not None else "white"
-    sub = (f"chance {who} wins \u00b7 now "
-           f"{('%.3f' % now) if now is not None else '--'} "
-           f"\u00b7 {len(series)} moves")
-    return _panel(Group(*out), "evaluation", subtitle=f"[{FAINT}]{sub}[/]")
+    return _panel(Group(*out), "evaluation")
 
 
 def train_panel(state, width: int):
@@ -614,7 +602,7 @@ def train_panel(state, width: int):
         line4.append("no puzzle eval yet", style=f"{FAINT} on {BG}")
 
     return _panel(Group(line1, line2, line3, line4), "training",
-                  subtitle=f"[{FAINT}]next value net \u00b7 loss and puzzle accuracy[/]")
+                  )
 
 
 def machine_panel(state, width: int):
@@ -661,7 +649,7 @@ def machine_panel(state, width: int):
         line.append(f"  {GATE.throttled} throttled", style=f"{BAD} on {BG}")
     rows.append(line)
     return _panel(Group(*rows), "machine",
-                  subtitle=f"[{FAINT}]shared by the bot and the trainer[/]")
+                  )
 
 
 def tape_panel(state, width: int, height: int):
