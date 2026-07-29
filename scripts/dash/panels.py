@@ -502,7 +502,7 @@ def moves_panel(state, width: int, height: int):
         b = moves[i + 1] if i + 1 < len(moves) else None
         pairs.append((i // 2 + 1, w, b))
 
-    with_eval = {ply: ours(state, v) for ply, v in state.curve.items()}
+    with_eval = {ply: ours(state, v) for ply, v in state.curve_items()}
     for n, w, b in pairs[-max(1, rows):]:
         line = Text(no_wrap=True)
         line.append(f"{n:>3}. ", style=f"{FAINT} on {BG}")

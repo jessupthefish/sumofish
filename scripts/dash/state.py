@@ -233,6 +233,19 @@ class State:
         with self._lock:
             return [self.curve[p] for p in sorted(self.curve)]
 
+    def curve_items(self) -> list[tuple[int, float]]:
+        """(ply, P(White wins)) pairs, snapshotted.
+
+        The move list needs the plies as well as the values, and it used to
+        read `state.curve` directly. That is a dict another thread writes to
+        on every engine move, so iterating it from the render loop could raise
+        `dictionary changed size during iteration` -- inside `draw`, which
+        nothing catches, so the whole dashboard would exit with a traceback in
+        the middle of a game. Rare, and fatal when it happened.
+        """
+        with self._lock:
+            return sorted(self.curve.items())
+
     @property
     def health(self) -> str:
         """Worst track across the sources that matter for watching a game."""

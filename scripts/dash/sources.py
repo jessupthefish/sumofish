@@ -142,8 +142,15 @@ class Source(threading.Thread):
 
 
 def _get(path: str, token: str | None = None, timeout: float = 8.0):
-    """A lichess GET that distinguishes 'too fast' from 'broken'."""
-    headers = {"User-Agent": USER_AGENT}
+    """A lichess GET that distinguishes 'too fast' from 'broken'.
+
+    `Accept: application/json` is not decoration. Several lichess endpoints
+    serve PGN or ndjson by default and only answer JSON when asked -- the
+    game export is one, and without the header it returned a PGN that
+    `json.load` rejected, which this function then reported as a network
+    error. Ask for what we are going to parse.
+    """
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"https://lichess.org{path}", headers=headers)
@@ -276,7 +283,14 @@ class GameStream(threading.Thread):
     def run(self) -> None:
         while True:
             games = self.state.get("playing", [])
-            gid = games[0]["gameId"] if games else None
+            ids = [g.get("gameId") for g in games]
+            # Stay on the game we are already watching for as long as it is
+            # still being played. `nowPlaying` lists both of the bot's games
+            # and lichess is free to order them however it likes -- by whose
+            # turn it is, for one -- so taking the first every time meant the
+            # dashboard could swap boards in the middle of a game and swap
+            # back, for no reason visible on screen.
+            gid = self.current if self.current in ids else (ids[0] if ids else None)
             if not gid:
                 time.sleep(0.4)
                 continue
@@ -312,6 +326,11 @@ class GameStream(threading.Thread):
         board = chess.Board()
         moves: list[dict] = []
         meta: dict = {}
+        # Every position this game has been in, placement only. This is the
+        # only thing that can tell the engine telemetry of *this* game from
+        # that of the other one lichess-bot is playing at the same time, both
+        # of which land in the same log. See dash/fusion.EngineBoard.
+        history: set[str] = {board.board_fen()}
         # The gate covers establishing the connection only. `urlopen` returns
         # once the response headers are in, so the body is streamed outside it
         # -- holding it across a quiet board would stall every other source.
@@ -334,6 +353,7 @@ class GameStream(threading.Thread):
                     # Initial position. May not be the standard one.
                     board = chess.Board(_full_fen(fen))
                     moves = []
+                    history = {board.board_fen()}
                 else:
                     mv = _match(board, lm)
                     if mv is not None:
@@ -344,6 +364,7 @@ class GameStream(threading.Thread):
                         board.push(mv)
                     else:
                         board = chess.Board(_full_fen(fen))
+                    history.add(board.board_fen())
                 # Never publish a position earlier than one already shown for
                 # this game.
                 #
@@ -367,15 +388,18 @@ class GameStream(threading.Thread):
                     "board": board.copy(),
                     "last": board.peek() if board.move_stack else None,
                     "moves": list(moves),
+                    "history": frozenset(history),
                     "wc": msg.get("wc"),
                     "bc": msg.get("bc"),
                     "clock_at": time.time(),
                 })
                 # The stream blocks between moves, so the "are we still in this
                 # game" check has to happen here rather than in the outer loop,
-                # which is parked in urlopen for the duration.
+                # which is parked in urlopen for the duration. Still *in* the
+                # list, not still first in it: with two games running the order
+                # is lichess's business and changes on its own.
                 live = self.state.get("playing", [])
-                if live and live[0].get("gameId") != gid:
+                if live and gid not in [g.get("gameId") for g in live]:
                     return
 
 
@@ -431,7 +455,15 @@ class Tailer:
             return []
         if self.fh is None or st.st_ino != self.inode:
             self._close()
-            self.fh = self.path.open("r", errors="replace")
+            # Binary, and decoded here. Giving a partial line back to the
+            # writer means seeking backwards from where we are, and a text
+            # handle cannot do that: `seek(-n, SEEK_CUR)` raises
+            # `io.UnsupportedOperation: can't do nonzero cur-relative seeks`,
+            # because the text layer's position is an opaque cookie. In text
+            # mode this raised on every torn write -- the record was lost, the
+            # engine field flashed failed, and the handle was left mid-line so
+            # the *next* read started inside a record and lost that one too.
+            self.fh = self.path.open("rb")
             self.inode = st.st_ino
             # Start at the end: a dashboard wants what is happening, not a
             # replay of every move the engine has ever made.
@@ -441,10 +473,10 @@ class Tailer:
             self.fh.seek(0)
         out = self.fh.readlines()
         # A partial final line means the writer is mid-write. Give it back.
-        if out and not out[-1].endswith("\n"):
-            self.fh.seek(-len(out[-1].encode()), os.SEEK_CUR)
+        if out and not out[-1].endswith(b"\n"):
+            self.fh.seek(-len(out[-1]), os.SEEK_CUR)
             out.pop()
-        return [l.strip() for l in out if l.strip()]
+        return [l.decode("utf-8", "replace").strip() for l in out if l.strip()]
 
     def _close(self) -> None:
         if self.fh:
@@ -460,15 +492,41 @@ class EngineTail(Source):
 
     field, interval = "engine", 0.2
 
-    def __init__(self, state, path: Path) -> None:
+    def __init__(self, state, path: Path, user: str = "SumoFish") -> None:
         super().__init__(state)
         self.tail = Tailer(path)
+        self.user = user
         self.last_ply = None
+        self.last_game = None
         # The board as the engine sees it, which is ~9s ahead of the public
         # stream. See dash/fusion.py for the measurement.
         self.eboard = fusion.EngineBoard()
 
     def tick(self) -> None:
+        # Which game we are following, and every position it has been in.
+        # lichess-bot plays two at once and both engines write to this one
+        # file, so a record that does not belong to this game has to be
+        # dropped rather than rendered. See dash/fusion.EngineBoard.
+        game = self.state.get("game") or {}
+        if game.get("id") != self.last_game:
+            self.last_game, self.last_ply = game.get("id"), None
+            self.eboard.reset()
+        history = game.get("history") or frozenset()
+        # The engine only searches on its own turn, so every record from our
+        # game has us to move. When the other game has us on the other colour
+        # -- about half the time, since matchmaking alternates -- that alone
+        # separates them, including in the opening where the two games can be
+        # in the same position and the history cannot tell them apart. None
+        # means the stream has not said which colour we are, and then this
+        # filter does nothing rather than guessing.
+        side = _our_side(game, self.user)
+
+        # Records held earlier that the stream has since confirmed are ours.
+        # They are replayed before anything new, so the curve keeps the plies
+        # it could not place at the time rather than losing them.
+        for rec in self.eboard.reanchor(history):
+            self._absorb(rec)
+
         for line in self.tail.lines():
             try:
                 rec = json.loads(line)
@@ -477,20 +535,44 @@ class EngineTail(Source):
             if rec.get("ev") == "boot":
                 self.state.note("engine", "engine restarted")
                 continue
-            self.state.set(self.field, rec)
-            self.eboard.update(rec)
-            snap = self.eboard.snapshot()
-            if snap:
-                self.state.set("engine_board", snap)
-            if rec.get("ev") == "move" and rec.get("ply") != self.last_ply:
-                self.last_ply = rec.get("ply")
-                if rec.get("wp_white") is not None:
-                    self.state.record_eval(rec["ply"], rec["wp_white"])
-                self.state.note(
-                    "move",
-                    f"{rec.get('best','?')}  wp {rec.get('wp',0):.3f}  "
-                    f"{rec.get('nodes',0)}n in {rec.get('elapsed',0):.2f}s",
-                )
+            if side and rec.get("stm") not in (None, side):
+                continue                     # the other game, definitively
+            if not self.eboard.update(rec, history):
+                continue                     # the other game, or not yet ours
+            self._absorb(rec)
+
+    def _absorb(self, rec: dict) -> None:
+        """Publish one record that belongs to the game on screen."""
+        self.state.set(self.field, rec)
+        snap = self.eboard.snapshot()
+        if snap:
+            self.state.set("engine_board", snap)
+        if rec.get("ev") == "move" and rec.get("ply") != self.last_ply:
+            self.last_ply = rec.get("ply")
+            if rec.get("wp_white") is not None:
+                self.state.record_eval(rec["ply"], rec["wp_white"])
+            self.state.note(
+                "move",
+                f"{rec.get('best','?')}  wp {rec.get('wp',0):.3f}  "
+                f"{rec.get('nodes',0)}n in {rec.get('elapsed',0):.2f}s",
+            )
+
+
+def _our_side(game: dict, user: str) -> str | None:
+    """'w' or 'b' if the stream says which colour we are, else None.
+
+    Only ever from the stream's own description of the game on screen. The
+    "which games am I in" poller cannot answer this: with two games running it
+    lists both, and its first entry is not necessarily the one being watched.
+    """
+    players = (game.get("meta") or {}).get("players") or {}
+    if not isinstance(players, dict):
+        return None
+    for colour, code in (("white", "w"), ("black", "b")):
+        name = ((players.get(colour) or {}).get("user") or {}).get("name", "")
+        if name and name.lower() == user.lower():
+            return code
+    return None
 
 
 class TrainTail(Source):
@@ -600,10 +682,22 @@ class Finished(Source):
         gid = game.get("id")
         if not gid or gid == self.seen:
             return
-        data, err = _get(f"/api/game/export/{gid}?moves=false&clocks=false")
+        # `/game/export/{id}`, not `/api/game/export/{id}`. The latter is a
+        # 404, and because this source only remembered a game id after a
+        # *successful* fetch, every failure was retried on the next tick --
+        # so between games it asked lichess for a page that does not exist
+        # every four seconds, forever, from the address the bot plays from.
+        # Nothing showed the failure either, because the panel that would
+        # have shown the summary simply stayed empty.
+        data, err = _get(f"/game/export/{gid}?moves=false&clocks=false")
         if data is None:
             if err == 429:
                 self.backoff_until = time.time() + 60
+            else:
+                # Do not ask again for this game. A summary is a nicety; a
+                # retry loop against a shared rate limit is not.
+                self.seen = gid
+                self.state.fail(self.field, f"lichess {err}")
             return
         self.seen = gid
         players = data.get("players", {})

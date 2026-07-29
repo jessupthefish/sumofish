@@ -207,8 +207,11 @@ class Plan:
             # to watch, because the log of what happened while you looked away
             # is the thing that gets squeezed out.
             cell_rows = self.main_h - 5 - sixel.MARGIN_CELLS - TAPE_ROWS
-            self.image_px = int(min(cell_cols * self.caps.cell_w,
-                                    cell_rows * self.caps.cell_h))
+            # Snapped to the SVG's own grid: see sixel.GRID_PX. Done here
+            # rather than inside the renderer so the rows and columns reserved
+            # for the picture are derived from the size it will actually be.
+            self.image_px = sixel.snap(int(min(cell_cols * self.caps.cell_w,
+                                               cell_rows * self.caps.cell_h)))
             self.image_rows = max(1, int(self.image_px / self.caps.cell_h) + 1)
             image_cols = self.image_cols = int(self.image_px / self.caps.cell_w)
             self.board_w = BOARD_GUTTER_L + image_cols + BOARD_GUTTER_R
@@ -603,7 +606,7 @@ def main() -> None:
         sources.Profile(state, args.user, token),
         sources.Playing(state, token),
         sources.GameStream(state),
-        sources.EngineTail(state, ROOT / "logs" / "engine.jsonl"),
+        sources.EngineTail(state, ROOT / "logs" / "engine.jsonl", args.user),
         sources.TrainTail(state, ROOT),
         sources.RatingLog(state, ROOT / "logs" / "rating.jsonl"),
         sources.Gpu(state),
