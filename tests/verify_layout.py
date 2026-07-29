@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import watch  # noqa: E402
-from dash import sixel  # noqa: E402
+from dash import panels, sixel, sources  # noqa: E402
 from dash.state import State  # noqa: E402
 
 PASS, FAIL = "\033[32mok\033[0m", "\033[31mFAIL\033[0m"
@@ -175,6 +175,40 @@ short = plan_for(160, 48)
 check("a shorter terminal is height-bound, not width-bound",
       short.image_px < plan_for(160, 96).image_px,
       f"{short.image_px} < {plan_for(160, 96).image_px}")
+# ---------------------------------------------------------------------------
+print("\nthe results panel fits its width at every size the layout produces")
+
+
+_state = State()
+try:
+    sources.Results(_state, ROOT / "logs" / "games", "SumoFish").tick()
+except Exception:
+    _state.set("results", [])
+
+_rows = _state.get("results") or []
+if not _rows:
+    # Synthetic worst case, so this checks the geometry even on a machine with
+    # no game history: the longest termination lichess sends and a long name.
+    _state.set("results", [{"when": "00:27", "verdict": "loss", "tc": "180+10",
+                            "opponent": "a_very_long_bot_name_here",
+                            "how": "time forfeit", "id": "x"}] * 6)
+
+_clipped = []
+for _w in range(52, 100):
+    _con = Console(width=_w + 12, no_color=True)
+    with _con.capture() as _cap:
+        _con.print(panels.results_panel(_state, _w, 8))
+    for _line in _cap.get().splitlines():
+        # A row that reached the border has been clipped by rich.
+        if "time forfeit" not in _line and "forfei" in _line:
+            _clipped.append(_w)
+            break
+
+check(f"widths 52-99 render the longest termination in full",
+      not _clipped, f"clipped at {_clipped[:4]}")
+
 
 print(f"\n{'all checks passed' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
+
+

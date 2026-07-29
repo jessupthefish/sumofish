@@ -798,8 +798,13 @@ def results_panel(state, width: int, height: int):
     # game read "time forfei" -- the exact class of bug a fixed slice invites.
     # Everything but the opponent is fixed-width and known, so measure those,
     # give the termination what it needs, and let the opponent take the rest.
+    # Count EVERY column including the separators, or the row is one over and
+    # rich clips the last character -- which is how "time forfeit" became
+    # "time forfei" twice: once from an 11-char slice, and again from an
+    # off-by-one here that dropped the same letter for a different reason.
+    # The assertion below is what stops there being a third time.
     HOW = 12                      # "time forfeit", the longest lichess sends
-    fixed = len(" HH:MM ") + 2 + 8 + HOW
+    fixed = 7 + 2 + 1 + 8 + HOW   # " HH:MM " + "D " + gap + "  180+0 " + how
     who_w = max(8, width - 4 - fixed)
 
     body = Text(no_wrap=True)
