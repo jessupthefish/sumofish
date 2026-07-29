@@ -793,6 +793,15 @@ def results_panel(state, width: int, height: int):
         return _panel(Text("no finished games yet", style=f"{DIM} on {BG}"),
                       "recent games", subtitle=track_tag(f, ""))
 
+    # Width is allocated, not guessed. The first version hardcoded an 11-column
+    # slice for the termination and "time forfeit" is twelve, so every flagged
+    # game read "time forfei" -- the exact class of bug a fixed slice invites.
+    # Everything but the opponent is fixed-width and known, so measure those,
+    # give the termination what it needs, and let the opponent take the rest.
+    HOW = 12                      # "time forfeit", the longest lichess sends
+    fixed = len(" HH:MM ") + 2 + 8 + HOW
+    who_w = max(8, width - 4 - fixed)
+
     body = Text(no_wrap=True)
     # Two rows of chrome: the panel border top and bottom.
     for game in rows[: max(0, height - 2)]:
@@ -800,12 +809,9 @@ def results_panel(state, width: int, height: int):
                        "draw": ("D", DIM)}.get(game["verdict"], ("·", FAINT))
         body.append(f" {game['when']} ", style=f"{FAINT} on {BG}")
         body.append(f"{mark} ", style=f"bold {style} on {BG}")
-        # Opponent is the only field worth spending width on; the rest is
-        # context that only matters once a line has caught your eye.
-        who = game["opponent"][:16]
-        body.append(f"{who:<16} ", style=f"{DIM} on {BG}")
+        body.append(f"{game['opponent'][:who_w]:<{who_w}} ", style=f"{DIM} on {BG}")
         body.append(f"{game['tc']:>7} ", style=f"{FAINT} on {BG}")
-        body.append(f"{game['how'][:11]}\n", style=f"{FAINT} on {BG}")
+        body.append(f"{game['how'][:HOW]}\n", style=f"{FAINT} on {BG}")
 
     won = sum(1 for g in rows if g["verdict"] == "win")
     lost = sum(1 for g in rows if g["verdict"] == "loss")
