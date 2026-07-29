@@ -75,7 +75,14 @@ BOARD_COLS = 74             # 8x8 pixel squares + rank labels + eval bar + chrom
 # of it is text, and text does not get more readable when the board grows.
 # Override per-run with --board; the image is square, so this ends up
 # governing its height as well whenever width is the binding constraint.
-BOARD_SHARE = 0.42
+# Measured rather than chosen: at 0.42 the board was width-limited and the
+# right-hand panels were far wider than their content, so the board was small
+# and the boxes beside it were mostly empty. At 0.50 the board reaches its
+# height limit -- 1152px, the full column height -- and anything past that
+# buys nothing, because a board is square and there are no more rows. It also
+# takes 16 columns off the right-hand panels, which had them to spare, and
+# shrinks the event log from seventeen rows to nine, which it also had.
+BOARD_SHARE = 0.50
 
 # Rows kept under the board for the event tape, so the picture cannot grow
 # until it squeezes the tape out entirely.
