@@ -90,6 +90,10 @@ def main() -> None:
                     help="HL-Gauss bins; the paper's ablation is flat above 32")
     ap.add_argument("--data", default=None,
                     help="defaults to the bag matching --target")
+    ap.add_argument("--val-data", default=None,
+                    help="held-out bag; defaults to data/test/<target>_data.bag")
+    ap.add_argument("--val-batches", type=int, default=32,
+                    help="batches of held-out data per eval; 0 disables")
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
@@ -105,6 +109,10 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=5000)
     ap.add_argument("--run", default=None, help="run name; defaults to preset+causal")
     ap.add_argument("--compile", type=int, default=1)
+    ap.add_argument("--seed", type=int, default=1234,
+                    help="weight init and data order; hold it fixed across the "
+                         "arms of an ablation or the arms differ by more than "
+                         "the thing being tested")
     ap.add_argument("--resume", default=None)
     ap.add_argument(
         "--init-from",
@@ -126,6 +134,8 @@ def main() -> None:
     is_value = args.target == "state_value"
     if args.data is None:
         args.data = str(ROOT / f"data/train/{args.target}_data.bag")
+    if args.val_data is None:
+        args.val_data = str(ROOT / f"data/test/{args.target}_data.bag")
 
     run = args.run or f"{args.preset}-{'sv' if is_value else 'bc'}"
     out = ROOT / "runs" / run
@@ -142,6 +152,10 @@ def main() -> None:
     device = "cuda:0"
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    # Before `build`, so the weights themselves are reproducible and not just
+    # the batches. Two runs differing only in --causal should differ only in
+    # --causal.
+    torch.manual_seed(args.seed)
 
     # The only architectural difference between the two targets is the width of
     # the output layer: 1968 moves, or `--value-bins` histogram buckets.
@@ -203,7 +217,7 @@ def main() -> None:
         policy=args.target,
         batch_size=args.batch_size,
         num_workers=args.workers,
-        seed=1234 + start_step,
+        seed=args.seed + start_step,
     )
     batches = iter(loader)
 
@@ -246,6 +260,54 @@ def main() -> None:
         )
         os.replace(tmp, path)
         return path
+
+    # Held-out loss. The run logged train loss and puzzle accuracy and nothing
+    # else, which cannot separate "the model has stopped learning" from "the
+    # model has started memorising" -- and the 9M state-value run needed exactly
+    # that distinction when its puzzle curve went flat while its train loss kept
+    # falling. (It was capacity: 307M samples is under one epoch of a 530M
+    # position bag, so there was nothing to memorise. That was an argument from
+    # arithmetic, not a measurement, and it gets weaker at 136M.)
+    #
+    # Deliberately deterministic: one worker, a shuffle buffer of one, a fresh
+    # iterator each time. The same held-out positions in the same order at every
+    # eval, so two numbers from different steps differ because the model did.
+    val_path = Path(args.val_data)
+    if args.val_batches > 0 and not val_path.exists():
+        print(f"no held-out bag at {val_path}; validation disabled")
+
+    def validate(eval_model: ChessTransformer) -> float | None:
+        if args.val_batches <= 0 or not val_path.exists():
+            return None
+        eval_model.eval()
+        loader = make_loader(
+            args.val_data,
+            policy=args.target,
+            batch_size=args.batch_size,
+            num_workers=0,
+            shuffle_buffer=1,
+            seed=0,
+            infinite=False,
+        )
+        total, batches_seen = 0.0, 0
+        with torch.no_grad():
+            for tokens, targets in loader:
+                if batches_seen >= args.val_batches:
+                    break
+                tokens = tokens.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    logits = eval_model(tokens)
+                # The same objective the run is trained on, so the two numbers
+                # are directly comparable. A gap that opens between them is the
+                # signal this exists to catch.
+                total += float(
+                    hl_loss(logits.float(), hl.targets(targets))
+                    if is_value
+                    else F.cross_entropy(logits.float(), targets)
+                )
+                batches_seen += 1
+        return total / max(1, batches_seen)
 
     log_path = out / "log.jsonl"
     running = 0.0
@@ -308,17 +370,25 @@ def main() -> None:
             t0 = time.perf_counter()
 
         if (step + 1) % args.eval_every == 0 or stopping:
-            eval_model = build(args.preset, **build_kwargs)
+            eval_model = build(args.preset, **build_kwargs).to(device)
             ema.copy_into(eval_model)
+            # Validate the EMA weights, not the raw ones: EMA is what gets
+            # evaluated, promoted and played, so a held-out number measured on
+            # anything else would describe a model that never ships.
+            val_loss = validate(eval_model)
             evaluator = (
                 ValuePolicy(eval_model, HLGauss(bins=args.value_bins), device=device)
                 if is_value
                 else NeuralPolicy(eval_model, device=device)
             )
             result = evaluate_puzzles(evaluator, puzzles)
-            print(f"  [eval] step {step+1:,}  puzzles {result}  (BC ceiling ~0.657; 0.889 is the action-value model)")
+            val_note = f"  val {val_loss:.4f}" if val_loss is not None else ""
+            print(f"  [eval] step {step+1:,}  puzzles {result}{val_note}  (BC ceiling ~0.657; 0.889 is the action-value model)")
+            rec = {"step": step + 1, "puzzle_acc": result.accuracy}
+            if val_loss is not None:
+                rec["val_loss"] = round(val_loss, 5)
             with log_path.open("a") as f:
-                f.write(json.dumps({"step": step + 1, "puzzle_acc": result.accuracy}) + "\n")
+                f.write(json.dumps(rec) + "\n")
             if result.accuracy > best:
                 best = result.accuracy
                 save(step + 1, "best")
