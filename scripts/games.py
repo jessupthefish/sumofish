@@ -198,6 +198,8 @@ def main() -> None:
     w = sum(1 for _, v, _ in scored if v == "win")
     d = sum(1 for _, v, _ in scored if v == "draw")
     lo = sum(1 for _, v, _ in scored if v == "loss")
+    # Abandoned and aborted games are shown but never scored: they dilute the
+    # percentage with games nobody played.
     n = w + d + lo
     label = f"since {args.since}" if since else "all time"
 

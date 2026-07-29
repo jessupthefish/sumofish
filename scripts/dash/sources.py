@@ -47,9 +47,11 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import chess
+import chess.pgn
 
 from . import fusion
 
@@ -818,3 +820,76 @@ class Finished(Source):
             f"{result.upper()} vs {summary['opponent']} by {summary['status']}"
             + (f"  ({summary['delta']:+d})" if summary["delta"] is not None else ""),
         )
+
+
+class Results(Source):
+    """Recently finished games, read off the PGNs lichess-bot writes itself.
+
+    `pgn_directory` in the bot config makes lichess-bot save every finished
+    game with the result, the opponent, both ratings, the time control and how
+    it ended. That is a complete local record that costs no API call and
+    survives a restart, and until now nothing read it.
+
+    Cheap enough at two minutes: the file is a few hundred KB and only grows by
+    one game at a time. It is re-read whole rather than tailed because a PGN
+    record is multi-line and a partial parse of an appended game is worse than
+    being sixty seconds late. `mtime` short-circuits the common case where
+    nothing has finished since the last look.
+    """
+
+    field, interval = "results", 120.0
+    LIMIT = 40
+
+    def __init__(self, state, directory: Path, user: str) -> None:
+        super().__init__(state)
+        self.directory = directory
+        self.user = user
+        self._stamp: float | None = None
+
+    def tick(self) -> None:
+        paths = sorted(self.directory.glob("*.pgn")) if self.directory.is_dir() else []
+        if not paths:
+            self.state.set(self.field, [])
+            return
+        stamp = max(p.stat().st_mtime for p in paths)
+        if stamp == self._stamp:
+            self.state.set(self.field, self.state.get(self.field) or [])
+            return
+
+        rows = []
+        for path in paths:
+            with path.open() as fh:
+                while (game := chess.pgn.read_game(fh)) is not None:
+                    h = game.headers
+                    white, result = h.get("White", "?"), h.get("Result", "*")
+                    we_are_white = white == self.user
+                    if result == "1/2-1/2":
+                        verdict = "draw"
+                    elif result in ("1-0", "0-1"):
+                        won = (result == "1-0") == we_are_white
+                        verdict = "win" if won else "loss"
+                    else:
+                        # Result "*" -- abandoned or aborted. Folding this into
+                        # "draw" is wrong twice over: it shows a D for a game
+                        # nobody drew, and it dilutes the score line with games
+                        # that were never played.
+                        verdict = "none"
+                    when = "?"
+                    try:
+                        when = datetime.strptime(
+                            f"{h['UTCDate']} {h['UTCTime']}", "%Y.%m.%d %H:%M:%S"
+                        ).replace(tzinfo=timezone.utc).astimezone().strftime("%H:%M")
+                    except (KeyError, ValueError):
+                        pass
+                    rows.append({
+                        "when": when,
+                        "verdict": verdict,
+                        "opponent": h.get("Black" if we_are_white else "White", "?"),
+                        "tc": h.get("TimeControl", "?"),
+                        "how": h.get("Termination", "?").lower(),
+                        "id": h.get("GameId", ""),
+                        "sort": f"{h.get('UTCDate', '')} {h.get('UTCTime', '')}",
+                    })
+        rows.sort(key=lambda r: r["sort"], reverse=True)
+        self._stamp = stamp
+        self.state.set(self.field, rows[: self.LIMIT])

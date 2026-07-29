@@ -767,3 +767,54 @@ def tape_panel(state, width: int, height: int):
     if not rows:
         rows = [Text("nothing yet", style=f"{FAINT} on {BG}")]
     return _panel(Group(*rows), "event log")
+
+
+def results_panel(state, width: int, height: int):
+    """The last few finished games, won and lost.
+
+    The header has carried a lifetime tally for a while -- "19 won, 4 drawn,
+    63 lost of 86" -- and that number cannot answer the question you actually
+    have after leaving it running overnight, which is *which* games. A record
+    of 19-63 reads the same whether the bot lost eight straight to one opponent
+    at one time control or drifted down against everybody, and those call for
+    completely different responses.
+
+    Source is `logs/games/*.pgn`, which lichess-bot writes itself on every
+    finished game (`pgn_directory`), so this costs no API calls and survives a
+    restart. Parsing is done by the source thread, never here: `dash/sources.py`
+    owns cadence, panels are a pure function of state.
+
+    The same data in a wider, scrollable, filterable form is `sumofish-games`,
+    which is the one to open when a game here looks worth reading.
+    """
+    rows = state.get("results") or []
+    f = state.field("results")
+    if not rows:
+        return _panel(Text("no finished games yet", style=f"{DIM} on {BG}"),
+                      "recent games", subtitle=track_tag(f, ""))
+
+    body = Text(no_wrap=True)
+    # Two rows of chrome: the panel border top and bottom.
+    for game in rows[: max(0, height - 2)]:
+        mark, style = {"win": ("W", GOOD), "loss": ("L", BAD),
+                       "draw": ("D", DIM)}.get(game["verdict"], ("·", FAINT))
+        body.append(f" {game['when']} ", style=f"{FAINT} on {BG}")
+        body.append(f"{mark} ", style=f"bold {style} on {BG}")
+        # Opponent is the only field worth spending width on; the rest is
+        # context that only matters once a line has caught your eye.
+        who = game["opponent"][:16]
+        body.append(f"{who:<16} ", style=f"{DIM} on {BG}")
+        body.append(f"{game['tc']:>7} ", style=f"{FAINT} on {BG}")
+        body.append(f"{game['how'][:11]}\n", style=f"{FAINT} on {BG}")
+
+    won = sum(1 for g in rows if g["verdict"] == "win")
+    lost = sum(1 for g in rows if g["verdict"] == "loss")
+    drew = sum(1 for g in rows if g["verdict"] == "draw")
+    sub = Text(no_wrap=True)
+    sub.append(f"last {won + drew + lost}: ", style=f"{FAINT} on {BG}")
+    sub.append(f"{won}W", style=f"{GOOD} on {BG}")
+    sub.append(" ", style=f"{FAINT} on {BG}")
+    sub.append(f"{drew}D", style=f"{DIM} on {BG}")
+    sub.append(" ", style=f"{FAINT} on {BG}")
+    sub.append(f"{lost}L", style=f"{BAD} on {BG}")
+    return _panel(body, "recent games", subtitle=sub)

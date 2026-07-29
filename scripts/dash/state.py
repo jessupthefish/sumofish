@@ -184,6 +184,10 @@ class State:
             ("gpu", 3.0),
             ("units", 8.0),
             ("finished", 3600.0),   # summary of the last completed game
+            # Finished games read off lichess-bot's own PGNs. Generous:
+            # at 15+10 a game takes twenty minutes, so a stale mark here
+            # would mean "quiet", not "broken".
+            ("results", 1800.0),
         ):
             self.fields[name] = Field(name, interval)
 

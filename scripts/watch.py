@@ -272,8 +272,14 @@ class Plan:
         # Whatever is left over goes to the evaluation chart, which is the one
         # thing here that genuinely gets better with more vertical room.
         self.mind_h = max(12, min(16, h // 2))
-        self.moves_h = max(8, min(34, h - self.mind_h))
-        self.curve_h = h - self.mind_h - self.moves_h
+        # The results panel is fixed and small: eight rows is six games plus a
+        # border, which is a night's play at 15+10. It is taken out of `moves`
+        # rather than added to the column, so the vertical budget below is
+        # unchanged and `tests/verify_layout.py` still holds. Dropped entirely
+        # on a short terminal, where the live game matters more than history.
+        self.results_h = 8 if h - self.mind_h >= 20 else 0
+        self.moves_h = max(8, min(34, h - self.mind_h - self.results_h))
+        self.curve_h = h - self.mind_h - self.moves_h - self.results_h
         panels_ = [Layout(name="mind", size=self.mind_h),
                    Layout(name="moves", size=self.moves_h)]
         if self.curve_h >= 7:
@@ -282,6 +288,8 @@ class Plan:
             self.curve_h = 0
             self.moves_h = h - self.mind_h
             panels_[1] = Layout(name="moves", size=self.moves_h)
+        if self.results_h:
+            panels_.append(Layout(name="results", size=self.results_h))
         panels_ += [Layout(name="train", size=self.train_h),
                     Layout(name="machine", size=self.machine_h)]
         self.layout["main"]["right"].split_column(*panels_)
@@ -350,6 +358,8 @@ def draw(plan: Plan, state: State) -> None:
     L["moves"].update(panels.moves_panel(state, plan.moves_w, plan.moves_h))
     if plan.curve_h:
         L["curve"].update(panels.curve_panel(state, plan.curve_w, plan.curve_h))
+    if getattr(plan, "results_h", 0):
+        L["results"].update(panels.results_panel(state, plan.right_w, plan.results_h))
     if plan.train_h:
         L["train"].update(panels.train_panel(state, plan.train_w))
     if plan.machine_h:
@@ -632,6 +642,7 @@ def main() -> None:
         sources.EngineTail(state, ROOT / "logs" / "engine.jsonl", args.user),
         sources.TrainTail(state, ROOT),
         sources.RatingLog(state, ROOT / "logs" / "rating.jsonl"),
+        sources.Results(state, ROOT / "logs" / "games", args.user),
         sources.Gpu(state),
         sources.Units(state),
         sources.Finished(state, args.user),
