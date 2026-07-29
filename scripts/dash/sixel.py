@@ -256,6 +256,33 @@ class Renderer(threading.Thread):
                     self.ready_key, self.ready_data = key, data
 
 
+def clear() -> None:
+    """Erase the screen, picture included, so a stale image cannot survive.
+
+    The same property that lets the board survive a redraw strands it when the
+    geometry changes: `rich` writes nothing at all for a row with no content,
+    so the pixels under those rows stay exactly as they were. Resize the
+    terminal and the new, smaller image is drawn over the top-left of the old
+    one -- and the old one's bottom rows sit under the player line and the
+    event log with nothing that will ever repaint them. That is the strip of
+    board squares and half a pawn that appeared below the coordinates.
+
+    `ESC[2J` does clear image data in Konsole (verified: the board vanishes and
+    the panels around it come straight back on the next frame). Nothing here
+    knows how to erase just the region the old image used, and it does not need
+    to: the caller only does this when the whole layout is being rebuilt.
+    """
+    try:
+        # Same ordering rule as emit(): flush rich's text layer first, or its
+        # pending frame lands after the erase and the screen is left half drawn.
+        sys.stdout.flush()
+        buf = sys.stdout.buffer
+        buf.write(b"\x1b[2J\x1b[H")
+        buf.flush()
+    except Exception as exc:                             # noqa: BLE001
+        _log(f"clear FAILED {type(exc).__name__}: {exc}")
+
+
 def emit(row: int, col: int, data: bytes) -> None:
     """Place the image with its top-left corner at a 1-based cell position.
 

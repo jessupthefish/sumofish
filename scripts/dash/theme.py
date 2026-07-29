@@ -55,24 +55,25 @@ LIVE    = GOOD
 COAST   = ACCENT
 LOST    = BAD
 
-# The evaluation gauge. Deliberately NOT white-and-black ink.
+# The evaluation gauge: white for our share, on a neutral ground.
 #
-# It measures our side's chance, not White's, and white/black ink carries chess
-# meaning that contradicts that: playing Black and losing gives a mostly-dark
-# bar, which reads as "Black is winning" to anyone who has ever seen an
-# evaluation bar. Green-for-us against a neutral ground says only what it
-# means, and matches the colour the history line already uses when we are
-# ahead.
-EVAL_WHITE = "#b8bb26"   # our share
+# White is the ink every evaluation bar ever drawn uses for the side that is
+# winning, so the gauge reads at a glance without learning anything. What it is
+# still NOT is white-against-black: this bar measures our side's chance, not
+# White's, and an opposing black half would carry chess meaning that
+# contradicts the number -- playing Black and losing would give a mostly-dark
+# bar, which reads as "Black is winning". The empty half is therefore a ground,
+# a colour that means only "not filled", and the filled half is white whichever
+# colour SumoFish happens to be pushing.
+EVAL_WHITE = "#ffffff"   # our share
 EVAL_BLACK = "#504945"   # theirs: a ground, not an opposing colour
 #
 # That ground has to be visible against the panel it sits on. It was #32302f,
 # which measures 1.12:1 against the #282828 panel -- indistinguishable -- so a
-# gauge reading 95% looked like a green stripe floating in space rather than a
-# bar filled nearly to the top. #504945 is 1.67:1 against the panel and 4.27:1
-# against the fill, so both the gauge's extent and its level are legible.
-EVAL_MID   = "#7c6f64"   # the level line: must read against both of the above
-EVAL_EDGE  = "#504945"   # the bar's own outline, so it is a gauge not a smear
+# gauge reading 95% looked like a stripe floating in space rather than a bar
+# filled nearly to the top. #504945 is 1.67:1 against the panel and 8.9:1
+# against a white fill, so both the gauge's extent and its level are legible.
+EVAL_MID   = "#7c6f64"   # the chart's 0.50 line, drawn on the panel ground
 
 # Gauges get a cap. On a 2560px-wide terminal an "as wide as the panel" bar is
 # 140 characters, which puts its own label so far from its fill that the eye

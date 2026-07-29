@@ -467,7 +467,12 @@ def _live_position(state):
 
 
 def _image_key(plan, state):
-    """What the board picture would depend on, without rendering it."""
+    """What the board picture would depend on, without rendering it.
+
+    The size is part of the key, and not only so a resize re-renders: it is
+    what lets the loop tell an image drawn for this layout from one drawn for
+    the last one. See `board_image_tick`.
+    """
     board, last = _live_position(state)
     if board is None:
         return None
@@ -475,6 +480,11 @@ def _image_key(plan, state):
     players = game.get("meta", {}).get("players", {})
     flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
     return (board.fen(), flip, last.uci() if last else None, plan.image_px)
+
+
+def _fits(key, plan) -> bool:
+    """Was this image drawn for the layout that is on screen now?"""
+    return bool(key) and key[-1] == plan.image_px
 
 
 def board_image_tick(plan, state, renderer, painted):
@@ -485,6 +495,15 @@ def board_image_tick(plan, state, renderer, painted):
     encode itself happens on its own thread, so a fast game cannot make the
     clocks stutter, and positions that go stale while one is encoding are
     dropped rather than queued.
+
+    Never an image drawn for a different layout, though. A resize rebuilds the
+    plan and asks for a fresh render, but the finished one from a moment ago is
+    still sitting in the renderer and takes about 400ms to replace -- so the
+    frame straight after a resize would paint the *old* board, at the old size,
+    over the screen that was just wiped for it. Shrinking the window then left
+    the bottom and right edges of the previous, larger board stranded in rows
+    the new layout never writes to. Wait for one that fits instead: the board
+    is briefly absent rather than briefly wrong, and nothing is left behind.
     """
     game = state.get("game")
     if not game:
@@ -495,9 +514,10 @@ def board_image_tick(plan, state, renderer, painted):
     key = _image_key(plan, state)
     if key is not None and board is not None:
         renderer.want(key, board, flip, last, plan.image_px)
-    if renderer.ready_key is not None and renderer.ready_key != painted:
+    ready = renderer.ready_key
+    if ready is not None and ready != painted and _fits(ready, plan):
         sixel.emit(plan.image_at[0], plan.image_at[1], renderer.ready_data)
-        return renderer.ready_key
+        return ready
     return painted
 
 
@@ -537,11 +557,21 @@ def main() -> None:
         renderer = sixel.Renderer()
         if caps:
             renderer.start()
-        plan = Plan(console, args.small, caps, args.board)
-        painted = None
+        last_size, plan, painted = None, None, None
         try:
             with Live(console=console, refresh_per_second=2, screen=True) as live:
                 while True:
+                    # The fixture exists to check the layout at whatever size
+                    # the window happens to be, so it reflows exactly like the
+                    # live loop does. It used to build the plan once, which
+                    # meant dragging the window while checking a layout showed
+                    # a board sized for the window before last.
+                    size = console.size
+                    if size != last_size:
+                        plan = Plan(console, args.small, caps, args.board)
+                        last_size, painted = size, None
+                        if caps:
+                            sixel.clear()
                     draw(plan, state)
                     live.update(plan.layout)
                     if plan.image_px:
@@ -589,7 +619,12 @@ def main() -> None:
                     break
                 if key == "r":
                     # Force a full repaint and a re-emit of the board image.
+                    # Erase first: the thing `r` is for is junk on the screen,
+                    # and a redraw that writes nothing over the blank rows
+                    # cannot remove any of it.
                     painted = None
+                    if caps:
+                        sixel.clear()
                     live.refresh()
                 size = console.size
                 if size != last_size:
@@ -598,6 +633,15 @@ def main() -> None:
                     # not the same one resized.
                     plan = Plan(console, args.small, caps, args.board)
                     last_size, painted = size, None
+                    # And wipe what the old layout left behind. The new board
+                    # is drawn at the new size over the top-left of the old
+                    # one; the rows the old one used past that are blank as far
+                    # as `rich` is concerned, so they are never written to and
+                    # the leftover strip of squares stays there for good.
+                    # (The first pass through here does it too, which is what
+                    # cleans up after a previous run of the dashboard.)
+                    if caps:
+                        sixel.clear()
                 draw(plan, state)
                 live.update(plan.layout)
                 # Only when the picture would actually differ, and never on a
