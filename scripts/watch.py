@@ -85,7 +85,7 @@ TAPE_ROWS = 7
 # hairline and one of gap on the left, pure margin on the right. The right one has to be stated rather
 # than left at zero, because the image's width is derived from the column
 # width and without it the picture ends flush against the panel beside it.
-BOARD_GUTTER_L = 5
+BOARD_GUTTER_L = 1        # pure margin now that the gauge is gone
 BOARD_GUTTER_R = 3
 
 
@@ -426,27 +426,27 @@ def _image_key(plan, state):
     return (game["board"].fen(), flip, last.uci() if last else None, plan.image_px)
 
 
-def paint_board_image(plan, state) -> object:
-    """Re-emit the sixel board, and report what it drew.
+def board_image_tick(plan, state, renderer, painted):
+    """Keep the board picture current without ever blocking the loop.
 
-    The caller keeps the returned key and only calls again when it changes.
-    `rich` leaves the region alone as long as it renders identically, so the
-    image persists between moves and the expensive path runs about once a
-    second rather than eight times.
+    Two separate things each frame, and neither is expensive: tell the
+    renderer which position we want, and emit whatever it has finished. The
+    encode itself happens on its own thread, so a fast game cannot make the
+    clocks stutter, and positions that go stale while one is encoding are
+    dropped rather than queued.
     """
     game = state.get("game")
     if not game:
-        return None
-    board_obj = game["board"]
+        return painted
     players = game.get("meta", {}).get("players", {})
     flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
-    last = game.get("last")
     key = _image_key(plan, state)
-    data = sixel.render(board_obj, flip, last, plan.image_px)
-    if data is None:
-        return None
-    sixel.emit(plan.image_at[0], plan.image_at[1], data)
-    return key
+    if key is not None:
+        renderer.want(key, game["board"], flip, game.get("last"), plan.image_px)
+    if renderer.ready_key is not None and renderer.ready_key != painted:
+        sixel.emit(plan.image_at[0], plan.image_at[1], renderer.ready_data)
+        return renderer.ready_key
+    return painted
 
 
 def main() -> None:
@@ -482,6 +482,9 @@ def main() -> None:
         seed_demo(state)
         original = None if args.no_resize else request_resize(console)
         caps = None if args.no_image else sixel.probe(*console.size)
+        renderer = sixel.Renderer()
+        if caps:
+            renderer.start()
         plan = Plan(console, args.small, caps, args.board)
         painted = None
         try:
@@ -490,11 +493,12 @@ def main() -> None:
                     draw(plan, state)
                     live.update(plan.layout)
                     if plan.image_px:
-                        key = _image_key(plan, state)
-                        if key is not None and key != painted:
+                        before = painted
+                        painted = board_image_tick(plan, state, renderer, painted)
+                        if painted != before:
                             live.refresh()
-                            painted = paint_board_image(plan, state) or painted
-                    time.sleep(0.5)
+                            sixel.emit(*plan.image_at, renderer.ready_data)
+                    time.sleep(0.2)
         except KeyboardInterrupt:
             pass
         finally:
@@ -520,6 +524,9 @@ def main() -> None:
     # Probed once, before Live takes the screen: the query needs the tty in raw
     # mode and writes an escape sequence, neither of which is safe mid-render.
     caps = None if args.no_image else sixel.probe(*console.size)
+    renderer = sixel.Renderer()
+    if caps:
+        renderer.start()
     last_size, plan, painted = None, None, None
     try:
         with Keys() as keys, Live(console=console, refresh_per_second=FPS,
@@ -547,10 +554,11 @@ def main() -> None:
                 # could be replacing. `rich` leaves the region alone between
                 # moves because it renders identically, so once is enough.
                 if plan.image_px:
-                    key = _image_key(plan, state)
-                    if key is not None and key != painted:
+                    before = painted
+                    painted = board_image_tick(plan, state, renderer, painted)
+                    if painted != before:
                         live.refresh()
-                        painted = paint_board_image(plan, state) or painted
+                        sixel.emit(*plan.image_at, renderer.ready_data)
                 time.sleep(1.0 / FPS)
     except KeyboardInterrupt:
         pass

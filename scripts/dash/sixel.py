@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import termios
+import threading
 import tty
 from dataclasses import dataclass
 
@@ -181,7 +182,7 @@ def render(board: chess.Board, flip: bool, last, size_px: int) -> bytes | None:
             input=svg.encode(), capture_output=True, timeout=10, check=True,
         ).stdout
         data = subprocess.run(
-            ["magick", "png:-", "-depth", "8", "sixel:-"],
+            ["magick", "png:-", "-colors", "32", "sixel:-"],
             input=png, capture_output=True, timeout=10, check=True,
         ).stdout
     except Exception as exc:                             # noqa: BLE001
@@ -204,6 +205,55 @@ def _log(msg: str) -> None:
             fh.write(msg + "\n")
     except OSError:
         pass
+
+
+class Renderer(threading.Thread):
+    """Renders board images off the render loop, newest position wins.
+
+    Encoding a 1150px board to sixel costs about 400ms, almost all of it in
+    ImageMagick's sixel encoder. Doing that inline was fine for one move and
+    quietly catastrophic for a game of bullet: the bot plays faster than
+    400ms a move, so every move queued behind the last and the board fell
+    further behind for the whole game without ever catching up.
+
+    So: ask for a position, get told when an image is ready. If three moves
+    land while one is encoding, the two in the middle are simply dropped --
+    nobody wants to watch a stale board catch up, they want the current one.
+    That bounds the lag at one render regardless of how fast the game is.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(name="board-render", daemon=True)
+        self._want: tuple | None = None
+        self._new = threading.Event()
+        self._lock = threading.Lock()
+        self.ready_key = None
+        self.ready_data: bytes | None = None
+
+    def want(self, key, board, flip, last, size_px: int) -> None:
+        """Ask for a position. Cheap, and safe to call every frame."""
+        with self._lock:
+            if self._want and self._want[0] == key:
+                return
+            self._want = (key, board, flip, last, size_px)
+        self._new.set()
+
+    def run(self) -> None:
+        while True:
+            self._new.wait()
+            self._new.clear()
+            with self._lock:
+                job = self._want
+            if not job:
+                continue
+            key, board, flip, last, size_px = job
+            data = render(board, flip, last, size_px)
+            if data is None:
+                continue
+            with self._lock:
+                # Only publish if nothing newer was asked for meanwhile.
+                if self._want and self._want[0] == key:
+                    self.ready_key, self.ready_data = key, data
 
 
 def emit(row: int, col: int, data: bytes) -> None:

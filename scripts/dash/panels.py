@@ -27,10 +27,9 @@ from .sources import GATE
 from .theme import (
     ACCENT, BAD, BG, COOL, DIM, FAINT, FG, GAUGE_MAX, GOOD, INFO, PLUM, WARM,
 )
-from .widgets import bar, curve_chart, evalbar, ladder, sparkline, track_tag
+from .widgets import bar, curve_chart, ladder, sparkline, track_tag
 
-# Cells across for the evaluation gauge. The player lines reserve the same
-# width for their percentages, so the two line up as one column.
+# Width reserved for each player's win percentage at the head of their line.
 EVAL_WIDTH = 3
 
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -194,11 +193,13 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
         rows = [head]
         rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
-        ebar = evalbar(wp_bottom, image_rows, width=EVAL_WIDTH)
-        for i in range(image_rows):
-            row = Text(no_wrap=True)
-            row.append_text(ebar[i])
-            rows.append(row)
+        # Nothing down the side of the board. The evaluation is already on
+        # both player lines as a number, in the mind panel as a percentage,
+        # and across the whole game in the eval chart; a fourth copy as a
+        # coloured column bought nothing and cost the board five columns of
+        # width and a permanent bar in the corner of the eye.
+        for _ in range(image_rows):
+            rows.append(Text(""))
         rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
         return Group(*rows)
 
@@ -207,13 +208,8 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     if True:
         art = boardmod.render(board, flip=flip, last=game.get("last"), scale=scale)
         _bw, bh = boardmod.board_size(scale)
-        ebar = evalbar(wp_bottom, bh - 1, width=EVAL_WIDTH)
-        for i, line in enumerate(art.split("\n")):
-            row = Text(no_wrap=True)
-            row.append_text(ebar[i] if i < len(ebar) else Text("  ", style=f"on {BG}"))
-            row.append(" ", style=f"on {BG}")
-            row.append_text(line)
-            rows.append(row)
+        for line in art.split("\n"):
+            rows.append(line)
     rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
 
     # Same shape as the image path above: a label line rather than a panel, so
