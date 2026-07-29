@@ -280,10 +280,20 @@ fn spawn_sources(
         }
         let path = args.replay.clone().unwrap_or_else(|| bot.telemetry.clone());
         let id = BotId(bot.id.clone());
+        // Attribution normally comes from `/api/account/playing`: game -> bot, then
+        // pid -> game. With no lichess there is nothing to ask, so a replay or an
+        // offline run would show an empty board forever. Adopt every game seen
+        // instead -- safe precisely because there is only one bot's worth of
+        // telemetry to misattribute, and never enabled when lichess is live, where
+        // guessing an owner is the mistake that put two games on one curve.
+        let adopt = args.offline || args.replay.is_some();
         let tx = tx.clone();
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             let mut src = sf_sources::TelemetrySource::new(path);
+            if adopt {
+                src = src.adopt_all(id.clone());
+            }
             // Until `/api/account/playing` lands, nothing owns any game, so records
             // are counted as unattributed rather than guessed at. The lichess
             // source calls `own()` as soon as it knows.

@@ -18,6 +18,17 @@
 sf_layout::panels! {
     header,
     board,
+    mind,
+    moves,
+    curve,
+    results,
+    train,
+    machine,
+    tape,
+    lab,
+    matches,
+    versions,
+    api,
 }
 
 #[cfg(test)]
