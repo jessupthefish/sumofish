@@ -46,11 +46,61 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 import chess
 
 USER_AGENT = "sumofish-watch (local dashboard, read-only)"
+
+# Minimum gap between two API calls, from any source. Our natural rate is well
+# under this, so it almost never binds; it is a ceiling, not a pace.
+MIN_GAP = 0.25
+
+
+class _Gate:
+    """One API request at a time, and never two in the same instant.
+
+    lichess asks for this in as many words -- "Only make one request at a
+    time" -- and the dashboard was not obeying it: `Profile`, `Playing` and
+    `Finished` are separate threads and could each have a request in flight at
+    once, on top of everything lichess-bot does from the same address.
+
+    Costs nothing in practice. The calls take about half a second and the
+    intervals are measured in seconds, so they were rarely overlapping anyway;
+    this makes that guaranteed rather than incidental. The game stream holds
+    the gate only while its connection is being established, never while it is
+    reading, or a quiet board would block every other source for minutes.
+    """
+
+    def __init__(self, min_gap: float = MIN_GAP) -> None:
+        self._lock = threading.Lock()
+        self._next = 0.0
+        self._min_gap = min_gap
+        self.sent = 0
+        self.throttled = 0
+        self.recent: deque = deque(maxlen=600)     # timestamps, for a rate
+
+    def __enter__(self) -> "_Gate":
+        self._lock.acquire()
+        wait = self._next - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        now = time.monotonic()
+        self._next = now + self._min_gap
+        self.sent += 1
+        self.recent.append(time.time())
+        self._lock.release()
+
+    def per_minute(self) -> int:
+        cutoff = time.time() - 60
+        return sum(1 for t in self.recent if t >= cutoff)
+
+
+GATE = _Gate()
 
 
 class Source(threading.Thread):
@@ -96,9 +146,11 @@ def _get(path: str, token: str | None = None, timeout: float = 8.0):
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"https://lichess.org{path}", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with GATE, urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r), None
     except urllib.error.HTTPError as e:
+        if e.code == 429:
+            GATE.throttled += 1
         return None, e.code
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
         return None, str(e)
@@ -258,7 +310,12 @@ class GameStream(threading.Thread):
         board = chess.Board()
         moves: list[dict] = []
         meta: dict = {}
-        with urllib.request.urlopen(req, timeout=self.READ_TIMEOUT) as r:
+        # The gate covers establishing the connection only. `urlopen` returns
+        # once the response headers are in, so the body is streamed outside it
+        # -- holding it across a quiet board would stall every other source.
+        with GATE:
+            response = urllib.request.urlopen(req, timeout=self.READ_TIMEOUT)
+        with response as r:
             for raw in r:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line:

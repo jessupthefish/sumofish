@@ -23,6 +23,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import board as boardmod
+from .sources import GATE
 from .theme import (
     ACCENT, BAD, BG, COOL, DIM, FAINT, FG, GAUGE_MAX, GOOD, INFO, PLUM, WARM,
 )
@@ -546,6 +547,12 @@ def machine_panel(state, width: int):
         line.append(f" {unit.replace('chess-gpu-', '')} ", style=f"{DIM} on {BG}")
         if info.get("restarts", "0") not in ("0", "?"):
             line.append(f"({info['restarts']} restarts) ", style=f"{WARM} on {BG}")
+    # How hard this viewer is leaning on lichess, since it shares an address
+    # with the bot and a throttled bot stops playing. Answerable by looking.
+    rate = GATE.per_minute()
+    line.append(f"  api {rate}/min", style=f"{DIM} on {BG}")
+    if GATE.throttled:
+        line.append(f"  {GATE.throttled} throttled", style=f"{BAD} on {BG}")
     rows.append(line)
     return _panel(Group(*rows), "machine")
 
