@@ -163,13 +163,19 @@ def _rating_history(state) -> dict[str, list[float]]:
 # ---- the board ------------------------------------------------------------
 
 def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2",
-                image_rows: int = 0, image_cols: int = 0):
-    """The board, and the two player lines that frame it.
+                image_rows: int = 0, image_cols: int = 0, indent: int = 0):
+    """The board, and the two player blocks that frame it.
 
     `image_rows` is non-zero when the board is being drawn as a sixel image by
     the caller. In that case this reserves exactly that many blank rows and
     draws nothing into them: the image lives underneath, and the region has to
     render identically every frame or `rich` will repaint over the picture.
+
+    `indent` and `image_cols` are where the picture starts and how wide it is,
+    so the player blocks can be set to the board's own edges rather than to the
+    column's. They are not the same thing -- the column is the picture plus a
+    gutter either side -- and a name that starts left of the board's edge while
+    a clock ends right of it is what made the whole thing look off-centre.
     """
     game = state.get("game")
     playing = state.get("playing", []) or []
@@ -207,6 +213,16 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     wp_bottom = None if wp_white is None else (1 - wp_white if flip else wp_white)
     wp_top = None if wp_bottom is None else 1 - wp_bottom
 
+    span = image_cols or width
+    top_block = _player_block(
+        top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE),
+        _captured(board, chess.WHITE if flip else chess.BLACK), wp_top,
+        span, indent, above=True)
+    bottom_block = _player_block(
+        bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK),
+        _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom,
+        span, indent, above=False)
+
     if image_rows:
         # The image region has to be *unstyled*, not merely blank.
         #
@@ -220,8 +236,7 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         # So no Panel here, and the only styled thing on these rows is the
         # eval bar in the first two columns, which sits to the left of the
         # image and is therefore safe to repaint.
-        rows = []
-        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
+        rows = list(top_block)
         # Nothing styled on these rows at all. The picture is underneath and
         # rich rewrites a whole line when any cell in it changes, so a styled
         # gauge here erases the board a row at a time as it animates.
@@ -231,17 +246,14 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         # is a picture of.
         for _ in range(image_rows):
             rows.append(Text(""))
-        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
+        rows.extend(bottom_block)
         return Group(*rows)
 
-    rows = []
-    rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
-    if True:
-        art = boardmod.render(board, flip=flip, last=last_move, scale=scale)
-        _bw, bh = boardmod.board_size(scale)
-        for line in art.split("\n"):
-            rows.append(line)
-    rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
+    rows = list(top_block)
+    art = boardmod.render(board, flip=flip, last=last_move, scale=scale)
+    for line in art.split("\n"):
+        rows.append(line)
+    rows.extend(bottom_block)
 
     # Same shape as the image path above: a label line rather than a panel, so
     # the two renderers do not look like two different programs.
@@ -312,25 +324,52 @@ def _names(players: dict, flip: bool):
 # place and can be compared by looking rather than by reading.
 NAME_W, RATING_W, CLOCK_W = 20, 5, 8
 
+# Where the second row of a player block starts: past the to-move marker, so
+# the material hangs under the name rather than under the marker column.
+MARK_W = 2
 
-def _player_line(who, clock: float | None, to_move: bool, taken: Text,
-                 prob: float | None, width: int) -> Text:
-    """One player, in columns: name, rating, captures, clock, win estimate.
+
+def _player_block(who, clock: float | None, to_move: bool, taken: Text,
+                  prob: float | None, width: int, indent: int,
+                  above: bool) -> list[Text]:
+    """One player, over two rows, set to the board's own width.
+
+    The material used to share the name's row, wedged between the rating and
+    the clock, where twelve captured pieces became an unreadable smear of
+    identical figurines with no room to separate them. It gets its own row
+    here, and the row always exists even when nothing has been taken, because a
+    block that changes height would move the board picture under it.
+
+    The material row is the one nearest the board on both sides -- names
+    outermost, captures innermost -- so the two rows read outward from the
+    position rather than in the same direction on both halves of the screen.
+    """
+    name = _name_line(who, clock, to_move, prob, width, indent)
+    mat = _material_line(taken, width, indent)
+    return [name, mat] if above else [mat, name]
+
+
+def _name_line(who, clock: float | None, to_move: bool,
+               prob: float | None, width: int, indent: int) -> Text:
+    """Name, title, rating on the left; clock and win estimate on the right.
 
     Aligned on purpose. The rating used to sit in parentheses after the name,
     so with a four-character name above a twelve-character one the two numbers
     were nowhere near each other and comparing them meant hunting.
+
+    Both names are drawn bold, not just the one to move: dimming the waiting
+    player costs half the readability of the line to say something the marker
+    and the live clock already say twice.
     """
     title, name, rating = who
     line = Text(no_wrap=True)
+    if indent:
+        line.append(" " * indent, style=f"on {BG}")
     line.append("\u25b8 " if to_move else "  ", style=f"{ACCENT} on {BG}")
-    line.append(f"{name[:NAME_W]:<{NAME_W}}",
-                style=f"{'bold ' + FG if to_move else FG} on {BG}")
+    line.append(f"{name[:NAME_W]:<{NAME_W}}", style=f"bold {FG} on {BG}")
     line.append(f"{title:>3} ", style=f"{PLUM if title else DIM} on {BG}")
     line.append(f"{rating if rating else '--':>{RATING_W}}",
                 style=f"bold {ACCENT} on {BG}")
-    line.append("   ")
-    line.append_text(taken)
 
     tail = Text(no_wrap=True)
     style = BAD if (clock is not None and clock < 10) else (ACCENT if to_move else DIM)
@@ -340,34 +379,51 @@ def _player_line(who, clock: float | None, to_move: bool, taken: Text,
     else:
         tail.append(f"{prob * 100:>5.0f}%", style=f"{FG} on {BG}")
 
-    pad = width - line.cell_len - tail.cell_len - 2
+    pad = indent + width - line.cell_len - tail.cell_len
     if pad > 0:
         line.append(" " * pad, style=f"on {BG}")
     line.append_text(tail)
     return line
 
 
+def _material_line(taken: Text, width: int, indent: int) -> Text:
+    line = Text(no_wrap=True)
+    if indent + MARK_W:
+        line.append(" " * (indent + MARK_W), style=f"on {BG}")
+    line.append_text(taken)
+    pad = indent + width - line.cell_len
+    if pad > 0:
+        line.append(" " * pad, style=f"on {BG}")
+    return line
+
+
 def _captured(board: chess.Board, colour) -> Text:
     """What this side has taken, and by how much they are up.
+
+    Grouped and counted rather than drawn one figurine per piece. Six pawns
+    printed as six pawns is fourteen characters of identical eight-pixel
+    silhouettes with nothing between them, which is a texture and not a number;
+    `\u265f6` is two, one of which is a digit. The count is dropped at one, because
+    `\u265b1` reads as a worse `\u265b`.
 
     Derived from what is missing off the starting set rather than from a move
     history, so it is correct even if the dashboard attached mid-game.
     """
-    start = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2,
-             chess.ROOK: 2, chess.QUEEN: 1}
+    start = {chess.QUEEN: 1, chess.ROOK: 2, chess.BISHOP: 2,
+             chess.KNIGHT: 2, chess.PAWN: 8}
     other = not colour
     out = Text(no_wrap=True)
-    score = 0
     for piece_type, n in start.items():
-        left = len(board.pieces(piece_type, other))
-        taken = n - left
+        taken = n - len(board.pieces(piece_type, other))
         if taken > 0:
-            out.append(FIGURES[piece_type] * taken, style=f"{FAINT} on {BG}")
-            score += taken * VALUES[piece_type]
+            out.append(FIGURES[piece_type], style=f"{DIM} on {BG}")
+            out.append(f"{taken}" if taken > 1 else " ",
+                       style=f"bold {FG} on {BG}")
+            out.append(" ", style=f"on {BG}")
     mine = sum(VALUES[p] * len(board.pieces(p, colour)) for p in VALUES)
     theirs = sum(VALUES[p] * len(board.pieces(p, other)) for p in VALUES)
     if mine > theirs:
-        out.append(f" +{mine - theirs}", style=f"{GOOD} on {BG}")
+        out.append(f" +{mine - theirs}", style=f"bold {GOOD} on {BG}")
     return out
 
 

@@ -85,25 +85,46 @@ MIN_WIDE_COLS = 100
 # of it is text, and text does not get more readable when the board grows.
 # Override per-run with --board; the image is square, so this ends up
 # governing its height as well whenever width is the binding constraint.
-# Measured rather than chosen: at 0.42 the board was width-limited and the
-# right-hand panels were far wider than their content, so the board was small
-# and the boxes beside it were mostly empty. At 0.50 the board reaches its
-# height limit -- 1152px, the full column height -- and anything past that
-# buys nothing, because a board is square and there are no more rows. It also
-# takes 16 columns off the right-hand panels, which had them to spare, and
-# shrinks the event log from seventeen rows to nine, which it also had.
-BOARD_SHARE = 0.50
+#
+# It is a backstop and not the working limit. On a 16:9 window the board is
+# width-bound long before it is height-bound -- 598px against a 1192px column
+# on this screen -- so the number that decides how big the board gets is
+# RIGHT_COLS below, and this one only bites on a terminal wide enough that
+# half of it would overflow the column's height anyway.
+BOARD_SHARE = 0.65
+
+# What the right-hand column keeps, and therefore what the board may have: all
+# the rest. The panels there are text and stop improving once their content
+# fits, so past that point every column is worth more to the picture.
+#
+# 60 is where the mind panel's ladder bar comes down to half of GAUGE_MAX,
+# which is the first thing in that column that visibly loses by being narrower
+# (`min(GAUGE_MAX, inner - 34)`, and the 34 is the move and its three numbers).
+# The floor MIN_WIDE_COLS names, 52, is what those panels need to be *correct*;
+# this is what they need to be worth looking at. The difference is 26 columns
+# of board, which is a third of its area.
+RIGHT_COLS = 60
 
 # Rows kept under the board for the event tape, so the picture cannot grow
 # until it squeezes the tape out entirely.
 TAPE_ROWS = 7
 
-# Columns either side of the board image: three of eval gauge, its edge
-# hairline and one of gap on the left, pure margin on the right. The right one has to be stated rather
-# than left at zero, because the image's width is derived from the column
-# width and without it the picture ends flush against the panel beside it.
-BOARD_GUTTER_L = 1        # pure margin: the gauge sits under the board
-BOARD_GUTTER_R = 3
+# Columns either side of the board image, and the same on both sides on
+# purpose: the column's width is derived from the picture's, so an asymmetric
+# pair puts the board permanently off-centre in its own column with the player
+# lines -- which do span the full width -- hanging past one edge and short of
+# the other. Two rather than one, because at one the picture ends flush against
+# the panel beside it.
+BOARD_GUTTER = 2
+
+# Rows each player gets above and below the board: the name, rating, clock and
+# win estimate on one, the captured material on the other. Two rather than one
+# because at one the material had to share a line with the name and became a
+# smear of figurines squeezed between two columns of numbers. These rows are
+# not free-floating slack -- they are exactly the rows the old layout left
+# empty under the board, which is what made the picture look like it was
+# pinned to the top of its column.
+PLAYER_ROWS = 2
 
 
 def load_token() -> str | None:
@@ -194,19 +215,21 @@ class Plan:
         # alone it takes a 40x20 square and swallows the screen.
         #
         # So: never more than the share of the width below, whatever fits.
-        budget_w = min(self.cols - 52, int(self.cols * self.share))
-        budget_h = self.main_h - 4          # panel chrome + two player lines
+        budget_w = min(self.cols - RIGHT_COLS, int(self.cols * self.share))
+        # Both players' blocks, above and below.
+        player_h = 2 * PLAYER_ROWS
+        budget_h = self.main_h - player_h
         if self.caps:
             # A picture has no cell grid to satisfy, so it takes the space and
-            # the only constraint is staying square. Two rows go to the player
-            # lines, two to the panel border, one to the margin.
+            # the only constraint is staying square. The player blocks take
+            # their rows off the top and the bottom, and one goes to the margin.
             self.scale = "sixel"
-            cell_cols = budget_w - BOARD_GUTTER_L - BOARD_GUTTER_R
+            cell_cols = budget_w - 2 * BOARD_GUTTER
             # Leave room for the tape underneath: a board that fills the
             # column to the last row looks better in a screenshot and is worse
             # to watch, because the log of what happened while you looked away
             # is the thing that gets squeezed out.
-            cell_rows = self.main_h - 5 - sixel.MARGIN_CELLS - TAPE_ROWS
+            cell_rows = budget_h - 1 - sixel.MARGIN_CELLS - TAPE_ROWS
             # Snapped to the SVG's own grid: see sixel.GRID_PX. Done here
             # rather than inside the renderer so the rows and columns reserved
             # for the picture are derived from the size it will actually be.
@@ -214,17 +237,17 @@ class Plan:
                                                cell_rows * self.caps.cell_h)))
             self.image_rows = max(1, int(self.image_px / self.caps.cell_h) + 1)
             image_cols = self.image_cols = int(self.image_px / self.caps.cell_w)
-            self.board_w = BOARD_GUTTER_L + image_cols + BOARD_GUTTER_R
-            self.board_h = self.image_rows + 4
+            self.board_w = image_cols + 2 * BOARD_GUTTER
+            self.board_h = self.image_rows + player_h
             # 1-based screen cell of the image's top-left corner.
-            # Rows: 3 header panel, 1 label line, 1 top player line.
+            # Rows: 3 header panel, then the top player's block.
             # Cols: the left gutter, so the first image column is the one after.
-            self.image_at = (5, BOARD_GUTTER_L + 1)
+            self.image_at = (4 + PLAYER_ROWS, BOARD_GUTTER + 1)
         else:
             self.scale = board.pick_scale(budget_w - 3, budget_h)
             bw, bh = board.board_size(self.scale)
             self.board_w = min(budget_w + 7, bw + 3 + 4)  # eval bar, gap, chrome
-            self.board_h = bh + 4
+            self.board_h = bh + player_h
         self.right_w = self.cols - self.board_w
 
         self.layout["main"].split_row(
@@ -289,7 +312,7 @@ class Plan:
         )
         body_h = self.main_h - self.train_h - self.tape_h
         self.board_h = body_h
-        self.scale = board.pick_scale(self.board_w - 7, body_h - 4)
+        self.scale = board.pick_scale(self.board_w - 7, body_h - 2 * PLAYER_ROWS)
         self.moves_h = max(6, body_h // 3)
         self.mind_h = body_h - self.moves_h
         self.layout["main"]["body"]["right"].split_column(
@@ -322,7 +345,7 @@ def draw(plan: Plan, state: State) -> None:
     L["head"].update(panels.header(state, USER, plan.cols))
     L["board"].update(panels.board_panel(
         state, USER, plan.board_w, plan.board_h, plan.scale, plan.image_rows,
-        plan.image_cols))
+        plan.image_cols, BOARD_GUTTER if plan.image_cols else 0))
     L["mind"].update(panels.mind_panel(state, plan.right_w, plan.mind_h))
     L["moves"].update(panels.moves_panel(state, plan.moves_w, plan.moves_h))
     if plan.curve_h:
