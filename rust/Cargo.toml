@@ -1,0 +1,27 @@
+[package]
+name = "sumofish_core"
+version = "0.1.0"
+edition = "2021"
+
+# cdylib for the Python extension; rlib so the Rust integration tests in
+# tests/ can link against the crate directly and run without Python.
+[lib]
+name = "sumofish_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# NOT `features = ["extension-module"]` here. That feature tells the linker not
+# to link libpython, which is correct when building a Python extension and fatal
+# when building a test binary -- `cargo test` would fail to link with a wall of
+# undefined `Py*` symbols. maturin adds it at build time via the `features` key
+# in pyproject.toml, so both paths work.
+pyo3 = { version = "0.27" }
+
+[profile.release]
+# The whole point of this crate is the hot loop, so build it like it matters.
+lto = "fat"
+codegen-units = 1
+# NOT panic = "abort". PyO3 catches Rust panics at the FFI boundary and turns
+# them into Python exceptions; aborting would take the interpreter down instead,
+# which during Stage A would kill the differential harness rather than report a
+# failing case.
