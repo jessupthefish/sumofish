@@ -57,9 +57,10 @@ LOST    = BAD
 
 # The eval bar. Chess convention: White's share at the bottom, Black's at the
 # top, so "the bar is going up" means the same thing here as on lichess.
-EVAL_WHITE = "#ebdbb2"
-EVAL_BLACK = "#3c3836"
-EVAL_MID   = "#504945"   # the level line on the evaluation chart
+EVAL_WHITE = "#f9f5d7"   # further apart than fg/bg, so the boundary is crisp
+EVAL_BLACK = "#1d2021"
+EVAL_MID   = "#7c6f64"   # the level line: must read against both of the above
+EVAL_EDGE  = "#504945"   # the bar's own outline, so it is a gauge not a smear
 
 # Gauges get a cap. On a 2560px-wide terminal an "as wide as the panel" bar is
 # 140 characters, which puts its own label so far from its fill that the eye

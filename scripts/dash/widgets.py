@@ -74,35 +74,59 @@ def bar(fraction: float, width: int, fg: str, bg: str = BG) -> Text:
     return out
 
 
-def evalbar(win_prob_white: float | None, height: int, width: int = 2) -> list[Text]:
-    """The vertical bar every chess interface has, White at the bottom.
+def evalbar(win_prob_bottom: float | None, height: int,
+            width: int = 3) -> list[Text]:
+    """The vertical gauge every chess interface has, for the side at the bottom.
 
-    Rendered with half-blocks so the boundary can land between rows, which
-    matters because at eight rows a whole-row bar cannot show the difference
-    between 0.50 and 0.56 -- exactly the range where most of a game is spent.
+    Note *bottom*, not White. lichess flips its eval bar along with the board,
+    and it is right to: the board is already oriented so the player you care
+    about is nearest you, and a gauge that fills upward for someone else is
+    read backwards every time. Filling up always means "going well for the
+    side you are watching". The caller does the flip, because the caller is
+    what knows which way the board is facing.
+
+    Half-blocks give two samples per row, so the boundary can land between
+    rows. That matters: over most of a game the evaluation sits between 0.45
+    and 0.60, and at whole-row resolution that whole range is one step.
+
+    A tick marks even. Without it the bar answers "how far up is it" when the
+    question is "which side of level, and by how much".
     """
-    from .theme import EVAL_BLACK, EVAL_WHITE
+    from .theme import EVAL_BLACK, EVAL_EDGE, EVAL_MID, EVAL_WHITE
 
     rows: list[Text] = []
-    if win_prob_white is None:
+    if win_prob_bottom is None:
         # Unstyled, not a dark fill. With no evaluation to show there is
         # nothing to draw, and a styled blank reads as a black bar down the
         # side of the board rather than as an absent gauge.
         for _ in range(height):
             rows.append(Text(" " * width))
         return rows
-    p = max(0.0, min(1.0, win_prob_white))
-    white_halves = p * height * 2
-    for r in range(height):                     # r=0 is the top row
-        from_top = r * 2
-        filled_top = (height * 2 - from_top) <= white_halves
-        filled_bot = (height * 2 - from_top - 1) <= white_halves
-        top = EVAL_WHITE if filled_top else EVAL_BLACK
-        bot = EVAL_WHITE if filled_bot else EVAL_BLACK
+
+    p = max(0.0, min(1.0, win_prob_bottom))
+    halves = height * 2
+    filled = p * halves
+    mid_row = height // 2
+
+    for r in range(height):
+        top_i, bot_i = r * 2, r * 2 + 1
+        top = EVAL_WHITE if (halves - top_i) <= filled else EVAL_BLACK
+        bot = EVAL_WHITE if (halves - bot_i) <= filled else EVAL_BLACK
         line = Text(no_wrap=True)
-        for _ in range(width):
-            line.append("▀" if top != bot else " ",
-                        style=f"{top} on {bot}" if top != bot else f"on {bot}")
+        if r == mid_row:
+            # Even. Drawn across the bar rather than beside it, so the eye
+            # lands on it without hunting; one row of the seventy loses its
+            # sub-row precision, which costs nothing.
+            for _ in range(width):
+                line.append("─", style=f"{EVAL_MID} on {bot}")
+        elif top == bot:
+            line.append(" " * width, style=f"on {bot}")
+        else:
+            for _ in range(width):
+                line.append("▀", style=f"{top} on {bot}")
+        # A hairline down the outer edge, so the gauge reads as an object
+        # rather than as a colour that happens to stop.
+        line.append("▏", style=f"{EVAL_EDGE}")
         rows.append(line)
     return rows
 

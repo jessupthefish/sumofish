@@ -29,6 +29,10 @@ from .theme import (
 )
 from .widgets import bar, curve_chart, evalbar, ladder, sparkline, track_tag
 
+# Cells across for the evaluation gauge. The player lines reserve the same
+# width for their percentages, so the two line up as one column.
+EVAL_WIDTH = 3
+
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
           chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
 FIGURES = {chess.PAWN: "♟", chess.KNIGHT: "♞", chess.BISHOP: "♝",
@@ -168,6 +172,9 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
 
     eng = state.get("engine") or {}
     wp_white = eng.get("wp_white") if _engine_matches(eng, board) else None
+    # The gauge belongs to whoever is at the bottom of the board, which is us.
+    wp_bottom = None if wp_white is None else (1 - wp_white if flip else wp_white)
+    wp_top = None if wp_bottom is None else 1 - wp_bottom
 
     if image_rows:
         # The image region has to be *unstyled*, not merely blank.
@@ -186,28 +193,28 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         head.append("board ", style=f"{FG} on {BG}")
         head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
         rows = [head]
-        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK)))
-        ebar = evalbar(wp_white, image_rows, width=2)
+        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
+        ebar = evalbar(wp_bottom, image_rows, width=EVAL_WIDTH)
         for i in range(image_rows):
             row = Text(no_wrap=True)
             row.append_text(ebar[i])
             rows.append(row)
-        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))
+        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
         return Group(*rows)
 
     rows = []
-    rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK)))
+    rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
     if True:
         art = boardmod.render(board, flip=flip, last=game.get("last"), scale=scale)
         _bw, bh = boardmod.board_size(scale)
-        ebar = evalbar(wp_white, bh - 1, width=2)
+        ebar = evalbar(wp_bottom, bh - 1, width=EVAL_WIDTH)
         for i, line in enumerate(art.split("\n")):
             row = Text(no_wrap=True)
             row.append_text(ebar[i] if i < len(ebar) else Text("  ", style=f"on {BG}"))
             row.append(" ", style=f"on {BG}")
             row.append_text(line)
             rows.append(row)
-    rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))
+    rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
 
     # Same shape as the image path above: a label line rather than a panel, so
     # the two renderers do not look like two different programs.
@@ -250,9 +257,20 @@ def _names(players: dict, flip: bool) -> tuple[str, str]:
     return (label("white"), label("black")) if flip else (label("black"), label("white"))
 
 
-def _player_line(name: str, clock: float | None, to_move: bool, taken: Text) -> Text:
+def _player_line(name: str, clock: float | None, to_move: bool, taken: Text,
+                 prob: float | None = None) -> Text:
+    """One player: their share of the evaluation, name, captures, clock.
+
+    The percentage sits in the same columns as the gauge, directly above and
+    below it, so the bar is labelled at both ends rather than being a coloured
+    column the reader has to infer the meaning of.
+    """
     line = Text(no_wrap=True)
-    line.append("   ", style=f"on {BG}")
+    if prob is None:
+        line.append(" " * (EVAL_WIDTH + 1), style=f"on {BG}")
+    else:
+        line.append(f"{prob * 100:>{EVAL_WIDTH}.0f}", style=f"{FG} on {BG}")
+        line.append(" ", style=f"{DIM} on {BG}")
     line.append("▸ " if to_move else "  ", style=f"{ACCENT} on {BG}")
     line.append(f"{name}", style=f"{'bold ' + FG if to_move else DIM} on {BG}")
     line.append("  ")

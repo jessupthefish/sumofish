@@ -81,11 +81,11 @@ BOARD_SHARE = 0.42
 # until it squeezes the tape out entirely.
 TAPE_ROWS = 7
 
-# Columns either side of the board image: two of eval bar then one of gap on
-# the left, pure margin on the right. The right one has to be stated rather
+# Columns either side of the board image: three of eval gauge, its edge
+# hairline and one of gap on the left, pure margin on the right. The right one has to be stated rather
 # than left at zero, because the image's width is derived from the column
 # width and without it the picture ends flush against the panel beside it.
-BOARD_GUTTER_L = 3
+BOARD_GUTTER_L = 5
 BOARD_GUTTER_R = 3
 
 
