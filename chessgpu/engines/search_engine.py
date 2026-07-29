@@ -60,6 +60,7 @@ import torch
 from chessgpu.engines.neural_engine import load_policy
 from chessgpu.hlgauss import HLGauss
 from chessgpu.mcts import MCTS
+from chessgpu.rust_mcts import select_mcts_class
 from chessgpu.model import ChessTransformer, ModelConfig
 from chessgpu.telemetry import Telemetry, perspective
 from chessgpu.uci import Limits, run
@@ -141,7 +142,48 @@ def main() -> None:
     # time it had been granted.
     sims = int(os.environ.get("CHESSGPU_SIMS", "100000"))
     batch = int(os.environ.get("CHESSGPU_BATCH", "64"))
-    mcts = MCTS(value, policy=policy, simulations=sims, batch=batch)
+
+    # `CHESSGPU_CORE=rust` selects the Rust search. Default is python, so this
+    # file's behaviour is unchanged unless asked. The Rust path produces
+    # byte-identical root visit vectors -- verified with the real checkpoints in
+    # `tests/identity_engine.py` -- so it plays the same moves, faster. Measured
+    # 7.0x on a midgame position at 1600 simulations.
+    #
+    # Rollback is unsetting the variable. Nothing about the checkpoints, the
+    # config or the unit changes, which is the point: an env var is a decision a
+    # tired person can reverse at 3am.
+    mcts_cls, core_name = select_mcts_class()
+    if core_name == "rust":
+        # Both speed flags default OFF, and that is a measured decision rather
+        # than caution.
+        #
+        # `dedup` and `compile+pad` are each identity-preserving in the SEARCH --
+        # verified byte-identical against chessgpu.mcts with a deterministic mock.
+        # Against the real networks they are not, and the reason is not a bug in
+        # either: they change the number of rows in the forward pass, and the
+        # network is not batch-shape invariant, because GPU float reductions
+        # depend on shape. Measured at 400 simulations over 8 positions:
+        #
+        #   plain rust        8/8 byte-identical, 8/8 same move    3.6x
+        #   dedup only        3/8 byte-identical, 8/8 same move    3.8x
+        #   compile+pad only  1/8 byte-identical, 7/8 same move
+        #   both              1/8 byte-identical, 7/8 same move    7.0x
+        #
+        # So plain rust is free: provably the same moves, 3.6x faster. The extra
+        # 1.9x changes what the engine plays in roughly one position in eight, and
+        # is therefore an Elo question, not a speed one. It is almost certainly
+        # positive -- at a fixed clock it buys ~2x the simulations -- but "almost
+        # certainly" is the reasoning this project's own philosophy forbids, and
+        # the instrument to settle it now exists.
+        mcts = mcts_cls(
+            value, policy=policy, simulations=sims, batch=batch,
+            dedup=os.environ.get("CHESSGPU_DEDUP", "0") != "0",
+            compile_nets=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
+            pad_batches=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
+            mate_distance=os.environ.get("CHESSGPU_MATE_DISTANCE", "0") != "0",
+        )
+    else:
+        mcts = MCTS(value, policy=policy, simulations=sims, batch=batch)
 
     tele = Telemetry(
         os.environ.get("CHESSGPU_TELEMETRY", str(ROOT / "logs/engine.jsonl"))
@@ -154,6 +196,7 @@ def main() -> None:
             "bins": bins,
             "sims": sims,
             "batch": batch,
+            "core": core_name,
             "params": pinfo["params"],
         },
         durable=True,
@@ -161,7 +204,7 @@ def main() -> None:
 
     print(
         f"policy step={pinfo['step']} | value step={ck.get('step')} bins={bins} | "
-        f"cap {sims} sims, batch {batch} (clock-bound)",
+        f"cap {sims} sims, batch {batch}, core={core_name} (clock-bound)",
         file=sys.stderr,
     )
 
