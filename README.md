@@ -23,10 +23,16 @@ Everything here was trained on a single RTX 5070 Ti.
 
 | | |
 |---|---|
+| **Rating on lichess** | **2379 rapid** (v1, 15+10, non-provisional) |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
-| State-value model | 57.4% at 12% trained, warm-started from the above |
+| State-value model | 68.7% puzzle accuracy, 300k steps |
 | Search vs no search | **7 wins, 17 draws, 0 losses** (value net only 3% trained) |
+| Tree reuse | +21 Elo, 300 games, pair-scored |
+| A doubling of search | +237 Elo at 2400 simulations, peaking near +284 at 1200 |
 | Move latency | ~10 ms searchless, clock-bound with search |
+
+Versions are tracked in `VERSIONS.jsonl`; each one's win/loss record starts at
+zero, because a lifetime record averages engines that no longer exist.
 
 For scale, the reference implementation trained on **81.9 billion** positions.
 This is roughly 0.4% of that compute.
