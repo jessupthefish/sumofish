@@ -87,11 +87,20 @@ from chessgpu.engines.neural_engine import load_policy  # noqa: E402
 from chessgpu.hlgauss import HLGauss  # noqa: E402
 from chessgpu.mcts import MCTS  # noqa: E402
 from chessgpu.model import ChessTransformer, ModelConfig  # noqa: E402
+from chessgpu.rules import terminal_value, terminal_value_legacy  # noqa: E402
 from chessgpu.value_policy import ValuePolicy  # noqa: E402
 
 # The match statistics live in `elo.py` so that `lab.py` can read a result
 # without importing torch to do it.
-from elo import score_stats, sprt_bounds, sprt_llr  # noqa: E402
+from elo import (  # noqa: E402
+    pair_stats,
+    pair_sums,
+    pairing_efficiency,
+    score_stats,
+    sprt_bounds,
+    sprt_llr_pairs,
+    tally,
+)
 
 # ---------------------------------------------------------------------------
 # players
@@ -111,6 +120,7 @@ class Spec:
     movetime: float | None
     searchless: bool
     reuse: bool
+    legacy_draws: bool
 
     def describe(self) -> str:
         if self.searchless:
@@ -178,6 +188,7 @@ class Player:
                 simulations=spec.sims,
                 batch=spec.batch,
                 reuse=spec.reuse,
+                terminal=terminal_value_legacy if spec.legacy_draws else terminal_value,
             )
 
     def new_game(self) -> None:
@@ -341,6 +352,9 @@ def main() -> None:
         ap.add_argument(f"--{side}-searchless", action="store_true")
         ap.add_argument(f"--{side}-no-reuse", action="store_true",
                         help="rebuild the tree from scratch every move")
+        ap.add_argument(f"--{side}-legacy-draws", action="store_true",
+                        help="the pre-rules.py terminal test: treat a draw that "
+                             "is merely reachable by one move as already drawn")
         ap.add_argument(f"--{side}-label")
 
     ap.add_argument("--games", type=int, default=200,
@@ -381,6 +395,7 @@ def main() -> None:
             movetime=getattr(args, f"{side}_time") or args.time,
             searchless=getattr(args, f"{side}_searchless"),
             reuse=not getattr(args, f"{side}_no_reuse"),
+            legacy_draws=getattr(args, f"{side}_legacy_draws"),
         )
 
     a, b = spec("a"), spec("b")
@@ -424,10 +439,9 @@ def main() -> None:
     for p in players.values():
         p.move(chess.Board())
 
-    w = d = l = 0
-    for rec in done.values():
-        w, d, l = w + (rec["score"] == 1), d + (rec["score"] == 0.5), l + (rec["score"] == 0)
-
+    # Every record, because the pair statistics need the colour-swapped partner
+    # and not just a running W/D/L.
+    records: list[dict] = list(done.values())
     lower, upper = sprt_bounds(args.alpha, args.beta)
     log_fh = log_path.open("a")
     pgn_fh = pgn_path.open("a")
@@ -464,14 +478,13 @@ def main() -> None:
                 )
                 pgn_fh.flush()
 
-                w += score == 1.0
-                d += score == 0.5
-                l += score == 0.0
-
-                st = score_stats(w, d, l)
-                llr = sprt_llr(w, d, l, args.elo0, args.elo1)
+                records.append(rec)
+                w, d, l = tally(records)
+                sums = pair_sums(records)
+                st = pair_stats(sums)
+                llr = sprt_llr_pairs(sums, args.elo0, args.elo1)
                 print(
-                    f"[{st['n']:4d}] W{w} D{d} L{l}  "
+                    f"[{len(records):4d}|{st['pairs']:3d}pr] W{w} D{d} L{l}  "
                     f"score {st['score'] * 100:5.1f}%  "
                     f"elo {st['elo']:+7.1f} +-{st['err']:5.1f}  "
                     f"LOS {st['los'] * 100:5.1f}%  LLR {llr:+5.2f}  "
@@ -480,9 +493,15 @@ def main() -> None:
                     flush=True,
                 )
 
-                if not args.no_sprt and (llr >= upper or llr <= lower):
+                # Only ever at a pair boundary. Stopping mid-pair leaves the
+                # match one game long in one colour, and since the stop is
+                # triggered by a game that MOVED the statistic, that unpaired
+                # game is systematically A's -- a bias built into the stopping
+                # rule itself.
+                if not args.no_sprt and game_in_pair == 1 and (llr >= upper or llr <= lower):
                     verdict = "A is better" if llr >= upper else "A is not better"
-                    print(f"\nSPRT concluded after {st['n']} games: {verdict} "
+                    print(f"\nSPRT concluded after {st['pairs']} pairs "
+                          f"({len(records)} games): {verdict} "
                           f"(LLR {llr:+.2f}, bounds {lower:+.2f} / {upper:+.2f})")
                     return
     except KeyboardInterrupt:
@@ -491,12 +510,19 @@ def main() -> None:
         log_fh.close()
         pgn_fh.close()
 
-    st = score_stats(w, d, l)
+    w, d, l = tally(records)
+    sums = pair_sums(records)
+    st, by_game = pair_stats(sums), score_stats(w, d, l)
+    r = pairing_efficiency(sums, w, d, l)
     print(
-        f"\n{st['n']} games  W{w} D{d} L{l}\n"
-        f"score {st['score'] * 100:.1f}%   "
-        f"elo {st['elo']:+.1f} +-{st['err']:.1f} (95%)   "
-        f"LOS {st['los'] * 100:.1f}%"
+        f"\n{len(records)} games in {st['pairs']} complete pairs  W{w} D{d} L{l}\n"
+        f"by pair   score {st['score'] * 100:.1f}%   "
+        f"elo {st['elo']:+.1f} +-{st['err']:.1f} (95%)   LOS {st['los'] * 100:.1f}%\n"
+        f"by game   elo {by_game['elo']:+.1f} +-{by_game['err']:.1f}   "
+        f"LOS {by_game['los'] * 100:.1f}%\n"
+        # r is the whole reason the two lines differ, and it is a property of
+        # THIS match rather than a constant to be carried anywhere else.
+        f"pairing   r = {r:.3f}, so counting pairs is worth {1 / r:.2f}x the games"
     )
     if st["err"] > abs(st["elo"]):
         print("The interval includes zero. This match has not shown a difference.")

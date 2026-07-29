@@ -152,3 +152,117 @@ def tally(records: list[dict]) -> tuple[int, int, int]:
     w = sum(r["score"] == 1.0 for r in records)
     d = sum(r["score"] == 0.5 for r in records)
     return w, d, len(records) - w - d
+
+
+# ---------------------------------------------------------------------------
+# scoring the PAIR instead of the game
+#
+# The match plays every opening twice with the colours swapped, and then throws
+# that structure away by counting wins, draws and losses. Counting the pair
+# instead is worth roughly a factor of two in games, for about twenty lines.
+#
+# Why it works, and why the direction is the opposite of what the docstring
+# above assumed. A pair's two games share an opening, so its bias appears in
+# both -- once for A and once against. Summing the pair cancels it, which is
+# the entire reason for playing paired colours in the first place. Measured on
+# 231 games of a real match: within-pair correlation rho = -0.56, and
+#
+#     r = Var(pair sum) / (2 * Var(game)) = 0.44
+#
+# Below 1 means the pair is *less* variable than two independent games, so the
+# trinomial form was not "slightly optimistic" as first written here. It was
+# conservative by 2.3x, and it cost a real conclusion: that match reads
+# +22.4 +-29.3 ("no difference") counted by game, and +22.5 [+3.2, +41.9]
+# counted by pair, which excludes zero.
+#
+# Two cautions, both from the Council that found this. The gain is largest when
+# the engines are most alike, because r is (opening bias) / (engine difference),
+# so it shrinks as the arms genuinely diverge -- do not expect 2.3x on a match
+# between different-sized nets. And r must be re-estimated from each match's own
+# pairs rather than stored as a constant, which is what `pairing_efficiency`
+# is for.
+
+# Floor on the variance of a pair sum. Two games' worth of `MIN_SCORE_VAR`,
+# which is what a pair would carry if its games were independent.
+MIN_PAIR_VAR = 2 * MIN_SCORE_VAR
+
+
+def pair_sums(records: list[dict]) -> list[float]:
+    """A's total score over each COMPLETE colour-swapped pair, in order.
+
+    `match.py` plays game 2k and 2k+1 from opening k with the colours swapped,
+    so the pair index is the game index over two. An unfinished trailing pair
+    is dropped rather than counted as half: the whole point is that the two
+    halves cancel each other's bias, and one half alone cancels nothing.
+    """
+    by_pair: dict[int, list[float]] = {}
+    for record in records:
+        by_pair.setdefault(record["game"] // 2, []).append(record["score"])
+    return [sum(scores) for _, scores in sorted(by_pair.items()) if len(scores) == 2]
+
+
+def pair_stats(sums: list[float]) -> dict:
+    """Score, Elo and a 95% interval, taking the pair as the unit of sampling.
+
+    Same shape as `score_stats` so the two are interchangeable at call sites,
+    plus `pairs`. A pair sum runs over {0, 0.5, 1, 1.5, 2} and its expectation
+    under a dead-even match is 1, so the score is half the mean pair sum.
+    """
+    n = len(sums)
+    if n == 0:
+        return {"n": 0, "pairs": 0, "score": 0.5, "elo": 0.0,
+                "err": float("inf"), "los": 0.5}
+    mean = sum(sums) / n
+    var = max(sum((x - mean) ** 2 for x in sums) / n, MIN_PAIR_VAR)
+    sigma = math.sqrt(var / n) / 2.0          # of the score, not of the pair sum
+    s = mean / 2.0
+    lo, hi = max(1e-6, s - 1.96 * sigma), min(1 - 1e-6, s + 1.96 * sigma)
+    elo = score_to_elo(s)
+    # LOS from the same normal approximation. Draws drop out of the trinomial
+    # version because they carry no information; here a drawn PAIR is a pair
+    # sum of exactly 1 and contributes nothing to the mean's distance from
+    # even, which is the same statement made continuously.
+    los = 0.5 * (1.0 + math.erf((s - 0.5) / (sigma * math.sqrt(2.0)))) if sigma else 0.5
+    return {
+        "n": 2 * n,
+        "pairs": n,
+        "score": s,
+        "elo": elo,
+        "err": max(score_to_elo(hi) - elo, elo - score_to_elo(lo)),
+        "los": los,
+    }
+
+
+def sprt_llr_pairs(sums: list[float], elo0: float, elo1: float) -> float:
+    """The sequential test, on pairs. Reduces exactly to `sprt_llr` at r = 1.
+
+    Worth checking by hand once: substituting Var(pair) = 2*Var(game) and
+    target = 2*score turns this expression into the game-based one, so the
+    pairing buys nothing when the two games really are independent and buys
+    the whole 1/r when they are not. Nothing is assumed about r; it is measured
+    by the variance of the sums that were actually played.
+    """
+    n = len(sums)
+    if 2 * n < MIN_SPRT_GAMES:
+        return 0.0
+    mean = sum(sums) / n
+    var = max(sum((x - mean) ** 2 for x in sums) / n, MIN_PAIR_VAR)
+    t0, t1 = 2 * expected_score(elo0), 2 * expected_score(elo1)
+    return n * (t1 - t0) * (mean - 0.5 * (t0 + t1)) / var
+
+
+def pairing_efficiency(sums: list[float], w: int, d: int, l: int) -> float:  # noqa: E741
+    """r = Var(pair sum) / (2 * Var(game)). Below 1 means pairing is paying.
+
+    Report it. It is the number that says how much the colour swap is actually
+    doing on THIS match, and 1/r is the factor by which counting pairs beats
+    counting games.
+    """
+    n = w + d + l
+    if not sums or n == 0:
+        return 1.0
+    mean = sum(sums) / len(sums)
+    var_pair = sum((x - mean) ** 2 for x in sums) / len(sums)
+    s = (w + 0.5 * d) / n
+    var_game = (w * (1 - s) ** 2 + d * (0.5 - s) ** 2 + l * (0 - s) ** 2) / n
+    return var_pair / (2 * var_game) if var_game > 0 else 1.0
