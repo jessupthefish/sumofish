@@ -265,4 +265,10 @@ def pairing_efficiency(sums: list[float], w: int, d: int, l: int) -> float:  # n
     var_pair = sum((x - mean) ** 2 for x in sums) / len(sums)
     s = (w + 0.5 * d) / n
     var_game = (w * (1 - s) ** 2 + d * (0.5 - s) ** 2 + l * (0 - s) ** 2) / n
-    return var_pair / (2 * var_game) if var_game > 0 else 1.0
+    if var_game <= 0:
+        return 1.0
+    # Floored away from zero. Two identical pairs give var_pair = 0, which is
+    # "infinitely efficient" and is a small-sample artifact rather than a
+    # finding -- and callers report 1/r, so it crashed a completed two-game
+    # match on the summary line after every game had been played and logged.
+    return max(var_pair / (2 * var_game), 1e-3)

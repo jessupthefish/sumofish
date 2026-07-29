@@ -240,6 +240,31 @@ def load_openings(path: Path, min_ply: int, max_ply: int, seed: int) -> list[lis
     return lines
 
 
+import functools  # noqa: E402
+import hashlib  # noqa: E402
+import subprocess  # noqa: E402
+
+
+@functools.lru_cache(maxsize=1)
+def code_fingerprint() -> str:
+    """git SHA plus a hash of the package, so a stale result can be spotted.
+
+    The SHA alone is not enough: this project's own Lab Notes record that
+    editing `chessgpu/` mid-match makes the first half of the games play a
+    different engine than the second, and an uncommitted edit does not move the
+    SHA. Hashing the source that actually gets imported does.
+    """
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                             capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        sha = "?"
+    digest = hashlib.sha256()
+    for path in sorted((ROOT / "chessgpu").rglob("*.py")):
+        digest.update(path.read_bytes())
+    return f"{sha or '?'}+{digest.hexdigest()[:12]}"
+
+
 # ---------------------------------------------------------------------------
 # one game
 
@@ -304,6 +329,21 @@ def play_game(
         "opening": opening,
         "moves": [m.uci() for m in board.move_stack[opening_plies:]],
         "final_fen": board.fen(),
+        # The per-ply win probability, in White's frame, one entry per move
+        # played after the book. It was computed and thrown away 400 times a
+        # match, and it is the only raw material in this project from which
+        # anything about the TEXTURE of a game can be derived: whether the
+        # evaluation collapses in a single ply or slides, whether a game was
+        # decided early or late, whether mistakes cluster in sharp positions
+        # the way a human's do or land at random the way a handicapped engine's
+        # do. Four bytes a ply. Storing it costs nothing and not storing it
+        # means the question cannot be asked retrospectively.
+        "curve": [round(p, 4) for p in curve],
+        # What was actually playing. A match spans hours and the working tree
+        # is editable throughout; without this, a match that straddles an edit
+        # is indistinguishable from one that did not. Cheap insurance against
+        # a silently invalidated result.
+        "code": code_fingerprint(),
     }
 
 
