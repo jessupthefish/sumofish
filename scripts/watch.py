@@ -71,6 +71,16 @@ FPS = 12
 WANT_COLS, WANT_ROWS = 150, 44
 BOARD_COLS = 74             # 8x8 pixel squares + rank labels + eval bar + chrome
 
+# What the full layout *needs*, which is a different question from what it asks
+# for above and must not be answered with the same number. Measured at 149
+# columns -- one short of the ask, because the window was already as wide as
+# that monitor gets -- where the fallback layout drew a 46-column text board
+# next to a fifty-row empty box and dropped the evaluation panel entirely. The
+# real floor is the 52 columns the right-hand panels need plus a board worth
+# looking at; 100 clears both with room to spare, and anything above it gets
+# the picture, the evaluation chart and the tape.
+MIN_WIDE_COLS = 100
+
 # The most of the terminal's width the board may take. Everything to the right
 # of it is text, and text does not get more readable when the board grows.
 # Override per-run with --board; the image is square, so this ends up
@@ -152,7 +162,7 @@ class Plan:
         self.image_cols = 0
         self.image_px = 0
         self.image_at = (0, 0)
-        self.wide = not small and cols >= WANT_COLS and rows >= WANT_ROWS - 6
+        self.wide = not small and cols >= MIN_WIDE_COLS and rows >= WANT_ROWS - 6
 
         self.layout = Layout()
         self.layout.split_column(Layout(name="head", size=3),

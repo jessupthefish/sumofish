@@ -13,6 +13,7 @@ event tape is last, because it answers a question asked after the fact.
 
 from __future__ import annotations
 
+import math
 import time
 
 import chess
@@ -25,7 +26,8 @@ from rich.text import Text
 from . import board as boardmod
 from .sources import GATE
 from .theme import (
-    ACCENT, BAD, BG, COOL, DIM, FAINT, FG, GAUGE_MAX, GOOD, INFO, PLUM, WARM,
+    ACCENT, BAD, BG, COOL, DIM, EVAL_WHITE, FAINT, FG, GAUGE_MAX, GOOD, INFO,
+    PLUM, WARM,
 )
 from .widgets import (bar, curve_chart, evalbar, ladder, sparkline,
                       track_tag)
@@ -519,6 +521,34 @@ def moves_panel(state, width: int, height: int):
 
 # ---- training, machine, tape ---------------------------------------------
 
+def advantage(wp: float | None) -> str | None:
+    """A win probability on the conventional pawn scale, ours positive.
+
+    SumoFish has no centipawn scale. It predicts P(win) and nothing else, so
+    this is a second way of writing the same number rather than a second
+    opinion about the position -- the mapping is monotone, which is what makes
+    it safe: `+1.20` and a gauge two thirds full can never be telling different
+    stories, because one is a function of the other.
+
+    The mapping is the Elo logistic inverted, `cp = 400 * log10(p / (1 - p))`,
+    which is the one `chessgpu.engines.search_engine.centipawns` already uses
+    for `score cp` over UCI, so the number here and the number a lichess
+    analysis board shows for our moves are the same number. Copied rather than
+    imported on purpose: that module pulls in torch, and the viewer not
+    importing torch is the property that makes it impossible for the dashboard
+    to take GPU time from the engine.
+
+    Signed from SumoFish's point of view, like everything else in this panel:
+    `+` is us better, whichever colour we are. That is deliberately not the
+    White-relative sign a chess GUI uses, and it is why the number is drawn in
+    the gauge's own ink rather than in black and white.
+    """
+    if wp is None:
+        return None
+    p = min(max(wp, 1e-4), 1.0 - 1e-4)
+    return f"{400.0 * math.log10(p / (1.0 - p)) / 100.0:+.2f}"
+
+
 def curve_panel(state, width: int, height: int):
     """Now and so far: a gauge of the current evaluation, then its history.
 
@@ -533,14 +563,28 @@ def curve_panel(state, width: int, height: int):
     Renormalising makes a dead-level draw look like a collapse, which is the
     usual way a chart of this kind lies.
     """
-    inner_h = max(3, height - 4)
+    # One row goes to the readout, which is the number the gauge is a picture
+    # of. It reads the *target* rather than the eased value: a bar may slide,
+    # a figure may not show a value the engine never produced.
+    inner_h = max(3, height - 5)
     series = [ours(state, v) for v in state.curve_series()]
+
+    now = state.eval_smooth.target
+    head = Text(no_wrap=True)
+    adv = advantage(now)
+    if adv is None:
+        # The gauge is empty in this case too, so the panel says "no evaluation
+        # for the position on the board" in both places at once.
+        head.append("     --", style=f"{DIM} on {BG}")
+    else:
+        head.append(f"{adv:>7}", style=f"{EVAL_WHITE} on {BG}")
+        head.append(f"   wp {now:.2f}", style=f"{FAINT} on {BG}")
 
     gauge = evalbar(state.eval_smooth.value, inner_h, width=GAUGE_W)
     chart_w = max(8, width - GAUGE_W - 10)
     rows = curve_chart(series, chart_w, inner_h) if len(series) >= 2 else []
 
-    out = []
+    out = [head]
     for i in range(inner_h):
         line = Text(no_wrap=True)
         if i == 0:

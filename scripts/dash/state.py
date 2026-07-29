@@ -45,11 +45,18 @@ class Smooth:
     def __init__(self, tau: float = 0.35) -> None:
         self.tau = tau
         self.value: float | None = None
+        # Where it is heading, kept because a *number* must not ease. The bar
+        # slides so the eye can follow it; the figure beside it has to be one
+        # the engine actually produced, not a point part way between two of
+        # them. Same source, so the two can differ for a third of a second and
+        # can never disagree about which way the game is going.
+        self.target: float | None = None
         self._last = 0.0
 
     def advance(self, target: float | None) -> float | None:
         now = time.monotonic()
         dt, self._last = (now - self._last if self._last else 0.0), now
+        self.target = target
         if target is None:
             self.value = None
             return None
