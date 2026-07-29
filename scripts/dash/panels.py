@@ -213,16 +213,19 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         head = Text(no_wrap=True)
         head.append("board ", style=f"{FG} on {BG}")
         head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
-        head.append("   name \u00b7 title \u00b7 rating \u00b7 captures \u00b7 clock "
-                    "\u00b7 engine's win estimate", style=f"{FAINT} on {BG}")
+        head.append("   name \u00b7 rating \u00b7 captures \u00b7 clock \u00b7 win estimate",
+                    style=f"{FAINT} on {BG}")
         rows = [head]
         rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
         # Nothing styled on these rows at all. The picture is underneath and
         # rich rewrites a whole line when any cell in it changes, so a styled
         # gauge here erases the board a row at a time as it animates.
+        # Picture only. Nothing styled goes in this column beside or below
+        # the image any more: two separate corruption bugs came from trying,
+        # and the gauge reads better in the search panel next to the number it
+        # is a picture of.
         for _ in range(image_rows):
             rows.append(Text(""))
-        rows.append(evalbar_h(state.eval_smooth.value, image_cols))
         rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
         return Group(*rows)
 
@@ -233,7 +236,6 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         _bw, bh = boardmod.board_size(scale)
         for line in art.split("\n"):
             rows.append(line)
-        rows.append(evalbar_h(state.eval_smooth.value, _bw))
     rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
 
     # Same shape as the image path above: a label line rather than a panel, so
@@ -241,8 +243,8 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
     head = Text(no_wrap=True)
     head.append("board ", style=f"{FG} on {BG}")
     head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
-    head.append("   name \u00b7 title \u00b7 rating \u00b7 captures \u00b7 clock "
-                "\u00b7 engine's win estimate", style=f"{FAINT} on {BG}")
+    head.append("   name \u00b7 rating \u00b7 captures \u00b7 clock \u00b7 win estimate",
+                style=f"{FAINT} on {BG}")
     return Group(head, *rows)
 
 
@@ -411,6 +413,17 @@ def mind_panel(state, width: int, height: int):
                           BAD if frac > 0.9 else COOL))
     gauge.append(f" {used:5.2f}s of {budget:.2f}s", style=f"{DIM} on {BG}")
     rows.append(gauge)
+
+    # The evaluation gauge, beside the number it is a picture of. It lives
+    # here rather than under the board because this panel is pure text: a
+    # sixel image is next to nothing here, so an animated styled row cannot
+    # rewrite a line that the picture happens to occupy.
+    gauge_w = max(10, min(60, inner - 22))
+    gline = Text(no_wrap=True)
+    gline.append("them  ", style=f"{DIM} on {BG}")
+    gline.append_text(evalbar_h(state.eval_smooth.value, gauge_w))
+    gline.append("  us", style=f"{DIM} on {BG}")
+    rows.append(gline)
 
     stats = Text(no_wrap=True)
     stats.append("nodes ", style=f"{DIM} on {BG}")
