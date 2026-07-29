@@ -57,7 +57,7 @@ from dash.state import State
 
 ROOT = Path(__file__).resolve().parent.parent
 USER = "SumoFish"
-FPS = 8
+FPS = 12
 
 # What the full layout needs. Below this it drops panels rather than clipping
 # them, because a clipped panel is a lie and a missing one is not.
@@ -85,7 +85,7 @@ TAPE_ROWS = 7
 # hairline and one of gap on the left, pure margin on the right. The right one has to be stated rather
 # than left at zero, because the image's width is derived from the column
 # width and without it the picture ends flush against the panel beside it.
-BOARD_GUTTER_L = 1        # pure margin now that the gauge is gone
+BOARD_GUTTER_L = 3        # 2 for the evaluation gauge, 1 gap
 BOARD_GUTTER_R = 3
 
 
@@ -291,6 +291,12 @@ class Plan:
 
 
 def draw(plan: Plan, state: State) -> None:
+    # Advance animations here rather than inside a panel: panels are pure
+    # functions of state and are called more than once per frame in some
+    # layouts, which would make the easing run at a rate that depends on how
+    # many panels happen to be on screen.
+    state.eval_smooth.advance(_eval_target(state))
+
     L = plan.layout
     L["head"].update(panels.header(state, USER, plan.cols))
     L["board"].update(panels.board_panel(
@@ -413,6 +419,26 @@ class Keys:
         except Exception:                                # noqa: BLE001
             pass
         return ""
+
+
+def _eval_target(state):
+    """Where the gauge should be heading: the bottom side's win probability.
+
+    None whenever the engine's evaluation is not about the position actually
+    on the board, so the gauge disappears rather than asserting something
+    stale.
+    """
+    game = state.get("game")
+    eng = state.get("engine")
+    if not game or not eng or eng.get("wp_white") is None:
+        return None
+    board, _ = _live_position(state)
+    if board is None or not panels._engine_matches(eng, board):
+        return None
+    players = game.get("meta", {}).get("players", {})
+    flip = panels._our_colour(players, USER, state.get("playing", []) or []) == "black"
+    wp_white = eng["wp_white"]
+    return 1.0 - wp_white if flip else wp_white
 
 
 def _live_position(state):

@@ -20,12 +20,48 @@ of it, and nothing can bypass it.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 
 LIVE, COAST, LOST = "live", "coast", "lost"
+
+
+class Smooth:
+    """A number that moves toward its target instead of jumping to it.
+
+    Exponential approach rather than a fixed step, so a big swing starts fast
+    and settles gently, and the motion takes the same time whatever the size
+    of the change. `tau` is the time constant: roughly, how long to cover two
+    thirds of the remaining distance.
+
+    Framerate independent on purpose -- it eases against the wall clock, not
+    against a frame count -- so it looks the same whether the loop is keeping
+    up or not.
+    """
+
+    def __init__(self, tau: float = 0.35) -> None:
+        self.tau = tau
+        self.value: float | None = None
+        self._last = 0.0
+
+    def advance(self, target: float | None) -> float | None:
+        now = time.monotonic()
+        dt, self._last = (now - self._last if self._last else 0.0), now
+        if target is None:
+            self.value = None
+            return None
+        if self.value is None or dt <= 0:
+            self.value = target
+            return self.value
+        # 1 - e^(-dt/tau): the fraction of the remaining gap to close this
+        # frame, for however long this frame happened to take.
+        self.value += (target - self.value) * (1.0 - math.exp(-dt / self.tau))
+        if abs(target - self.value) < 5e-4:
+            self.value = target
+        return self.value
 
 
 @dataclass
@@ -118,6 +154,8 @@ class State:
         # frame, never the side-to-move frame the search works in, because a
         # curve of alternating perspectives is a sawtooth rather than a trend.
         self.curve: dict[int, float] = {}
+        # The evaluation gauge's animated position, advanced once per frame.
+        self.eval_smooth = Smooth()
         self.fields: dict[str, Field] = {}
         for name, interval in (
             # These are "how often a healthy source updates this", which is

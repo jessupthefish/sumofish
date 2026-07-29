@@ -74,59 +74,44 @@ def bar(fraction: float, width: int, fg: str, bg: str = BG) -> Text:
     return out
 
 
-def evalbar(win_prob_bottom: float | None, height: int,
-            width: int = 3) -> list[Text]:
-    """The vertical gauge every chess interface has, for the side at the bottom.
+# Bottom-aligned partial blocks: one cell in nine states rather than two.
+EIGHTHS = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 
-    Note *bottom*, not White. lichess flips its eval bar along with the board,
-    and it is right to: the board is already oriented so the player you care
-    about is nearest you, and a gauge that fills upward for someone else is
-    read backwards every time. Filling up always means "going well for the
-    side you are watching". The caller does the flip, because the caller is
-    what knows which way the board is facing.
 
-    Half-blocks give two samples per row, so the boundary can land between
-    rows. That matters: over most of a game the evaluation sits between 0.45
-    and 0.60, and at whole-row resolution that whole range is one step.
+def evalbar(value: float | None, height: int, width: int = 2) -> list[Text]:
+    """A vertical gauge for the side at the bottom of the board.
 
-    A tick marks even. Without it the bar answers "how far up is it" when the
-    question is "which side of level, and by how much".
+    Eighths, not halves. A seventy-row bar drawn in half-blocks has 140
+    positions, which sounds like plenty until you notice that most of a game
+    is spent between 0.45 and 0.60 -- twenty of them -- and every small change
+    lands on the same one. Eighths give 560, so the boundary actually moves
+    when the evaluation does, which is the whole point of watching it.
+
+    The caller passes the *eased* value, so the boundary slides rather than
+    jumping. See `state.Smooth`.
     """
-    from .theme import EVAL_BLACK, EVAL_EDGE, EVAL_MID, EVAL_WHITE
+    from .theme import EVAL_BLACK, EVAL_WHITE
 
+    if value is None:
+        # Unstyled, so there is nothing there at all rather than a dark column
+        # down the side of the board.
+        return [Text(" " * width) for _ in range(height)]
+
+    total = height * 8
+    filled = int(round(max(0.0, min(1.0, value)) * total))
     rows: list[Text] = []
-    if win_prob_bottom is None:
-        # Unstyled, not a dark fill. With no evaluation to show there is
-        # nothing to draw, and a styled blank reads as a black bar down the
-        # side of the board rather than as an absent gauge.
-        for _ in range(height):
-            rows.append(Text(" " * width))
-        return rows
-
-    p = max(0.0, min(1.0, win_prob_bottom))
-    halves = height * 2
-    filled = p * halves
-    mid_row = height // 2
-
     for r in range(height):
-        top_i, bot_i = r * 2, r * 2 + 1
-        top = EVAL_WHITE if (halves - top_i) <= filled else EVAL_BLACK
-        bot = EVAL_WHITE if (halves - bot_i) <= filled else EVAL_BLACK
+        # Rows are drawn top down; the gauge fills bottom up.
+        base = (height - 1 - r) * 8
+        k = max(0, min(8, filled - base))
         line = Text(no_wrap=True)
-        if r == mid_row:
-            # Even. Drawn across the bar rather than beside it, so the eye
-            # lands on it without hunting; one row of the seventy loses its
-            # sub-row precision, which costs nothing.
-            for _ in range(width):
-                line.append("─", style=f"{EVAL_MID} on {bot}")
-        elif top == bot:
-            line.append(" " * width, style=f"on {bot}")
-        else:
-            for _ in range(width):
-                line.append("▀", style=f"{top} on {bot}")
-        # A hairline down the outer edge, so the gauge reads as an object
-        # rather than as a colour that happens to stop.
-        line.append("▏", style=f"{EVAL_EDGE}")
+        for _ in range(width):
+            if k == 0:
+                line.append(" ", style=f"on {EVAL_BLACK}")
+            elif k == 8:
+                line.append(" ", style=f"on {EVAL_WHITE}")
+            else:
+                line.append(EIGHTHS[k], style=f"{EVAL_WHITE} on {EVAL_BLACK}")
         rows.append(line)
     return rows
 
