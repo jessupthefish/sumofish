@@ -236,11 +236,31 @@ def main() -> None:
         choose,
         name=f"SumoFish {pinfo['params']//1_000_000}M search",
         author="Jessupthefish",
-        options=[("option name Simulations type string default 800", "")],
-        on_option=lambda n, v: (
-            setattr(mcts, "simulations", max(1, int(v))) or True
-        ) if n.lower() == "simulations" and v.isdigit() else False,
+        options=[("option name Simulations type string default 800", ""),
+                 # Which game this process is playing. The engine does not use
+                 # it and does not need to; it exists so the narration can say
+                 # which of the two concurrent games each record came from,
+                 # because both write to the same file. lichess-bot sends it
+                 # from extra_game_handlers.py (patches/0003).
+                 ("option name GameId type string default ", "")],
+        on_option=_option_handler(mcts, tele),
     )
+
+
+def _option_handler(mcts, tele):
+    """UCI options this engine honours. Anything else is declined, loudly."""
+    def handle(name: str, value: str) -> bool:
+        key = name.lower()
+        if key == "simulations" and value.isdigit():
+            mcts.simulations = max(1, int(value))
+            return True
+        if key == "gameid":
+            # Stamped on every record from here on. Empty means "no idea",
+            # which is what a hand-run engine or an older lichess-bot gives.
+            tele.game = value.strip() or None
+            return True
+        return False
+    return handle
 
 
 if __name__ == "__main__":

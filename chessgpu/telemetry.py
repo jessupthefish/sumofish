@@ -60,6 +60,18 @@ class Telemetry:
     def __init__(self, path: str | os.PathLike | None) -> None:
         self.path = Path(path) if path else None
         self.dropped = 0
+        # Who wrote this. lichess-bot runs two games at once and spawns an
+        # engine per game, and every one of them appends here, so without an
+        # identity on each record the file is two narrations spliced together
+        # and a reader has no way to unpick them. It cost the dashboard an
+        # evaluation chart that plotted both games at once.
+        #
+        # `pid` is free and always right. `game` is the lichess game id, which
+        # is what a reader actually wants to match against, and it arrives over
+        # UCI (`setoption name GameId`) because the engine has no other way to
+        # learn it -- so it stays None when nobody sets it.
+        self.pid = os.getpid()
+        self.game: str | None = None
         self._q: queue.Queue[tuple[bool, dict]] = queue.Queue(maxsize=QUEUE_DEPTH)
         self._fh = None
         self._thread = None
@@ -92,6 +104,9 @@ class Telemetry:
         if self.path is None:
             return
         record.setdefault("t", time.time())
+        record.setdefault("pid", self.pid)
+        if self.game:
+            record.setdefault("game", self.game)
         try:
             self._q.put_nowait((durable, record))
         except queue.Full:

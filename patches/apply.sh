@@ -45,3 +45,23 @@ p.write_text(t.replace(old, new))
 PY2
   echo "0002 (matchmaking blocking check): applied"
 fi
+
+if grep -q "PATCHED (see patches/0003" extra_game_handlers.py; then
+  echo "0003 (engine game id): already applied"
+else
+  python3 - <<'PY3'
+import pathlib
+p = pathlib.Path("extra_game_handlers.py"); t = p.read_text()
+old = """    By default, an empty dict is returned so that the options in the configuration file are used.
+    \"\"\"
+    return {}"""
+new = """    By default, an empty dict is returned so that the options in the configuration file are used.
+    \"\"\"
+    # PATCHED (see patches/0003-engine-game-id.patch): stamp the game id on the
+    # engine's telemetry, so two concurrent games can be told apart in one log.
+    return {"GameId": game.id}"""
+assert old in t, "0003: anchor not found"
+p.write_text(t.replace(old, new))
+PY3
+  echo "0003 (engine game id): applied"
+fi

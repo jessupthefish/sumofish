@@ -540,6 +540,15 @@ class EngineTail(Source):
             if rec.get("ev") == "boot":
                 self.state.note("engine", "engine restarted")
                 continue
+            claim = _claims(rec, game.get("id"))
+            if claim is False:
+                continue                     # says outright it is another game
+            if claim is True:
+                # Identity is settled, so the board follows this record
+                # whatever it says -- no history to satisfy, no bridge to find.
+                self.eboard.update(rec, frozenset())
+                self._absorb(rec)
+                continue
             if side and rec.get("stm") not in (None, side):
                 continue                     # the other game, definitively
             if not self.eboard.update(rec, history):
@@ -615,10 +624,37 @@ class EngineTail(Source):
                 continue
             if rec.get("ev") != "move":
                 continue
+            claim = _claims(rec, self.last_game)
+            if claim is False:
+                continue
+            if claim is True:
+                self.eboard.update(rec, frozenset())
+                self._absorb(rec, quiet=True)
+                continue
             if side and rec.get("stm") not in (None, side):
                 continue
             if self.eboard.update(rec, history):
                 self._absorb(rec, quiet=True)
+
+
+def _claims(rec: dict, game_id: str | None) -> bool | None:
+    """Does this record say which game it belongs to? True/False, or None.
+
+    The engine stamps the lichess game id on everything it writes, having been
+    told it over UCI at spawn (`setoption name GameId`, sent by lichess-bot
+    from extra_game_handlers.py; see patches/0003). When both sides of that are
+    in place this is the whole answer and nothing has to be inferred.
+
+    None means the record predates it -- an engine process that was already
+    running, or a hand-run one -- and then the caller falls back to working it
+    out from the stream's position history and whose turn it is. Which works,
+    and is still what covers the seam while a game started under the old code
+    finishes.
+    """
+    claimed = rec.get("game")
+    if not claimed or not game_id:
+        return None
+    return claimed == game_id
 
 
 def _our_side(game: dict, user: str) -> str | None:
