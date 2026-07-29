@@ -643,6 +643,7 @@ def main() -> None:
         sources.TrainTail(state, ROOT),
         sources.RatingLog(state, ROOT / "logs" / "rating.jsonl"),
         sources.Results(state, ROOT / "logs" / "games", args.user),
+        sources.Grader(state, ROOT),
         sources.Gpu(state),
         sources.Units(state),
         sources.Finished(state, args.user),

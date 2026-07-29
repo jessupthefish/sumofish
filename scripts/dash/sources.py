@@ -893,3 +893,122 @@ class Results(Source):
         rows.sort(key=lambda r: r["sort"], reverse=True)
         self._stamp = stamp
         self.state.set(self.field, rows[: self.LIMIT])
+
+
+# ---------------------------------------------------------------------------
+# Stockfish as a second opinion
+
+
+# Centipawns lost by the move actually played, against the best available.
+# lichess's own bands, which are the ones the numbers will be read against.
+GRADES = ((10, "best"), (50, "good"), (100, "inaccuracy"), (300, "mistake"))
+
+
+def grade_of(loss_cp: float) -> str:
+    for threshold, name in GRADES:
+        if loss_cp < threshold:
+            return name
+    return "blunder"
+
+
+class Grader(Source):
+    """Stockfish's opinion of every move in the current game, ours and theirs.
+
+    The engine narrates what IT thought, which is the one opinion that cannot
+    tell you whether it was wrong. A second, stronger engine can, and that is
+    the whole reason to spend a core on this: a value net that is confidently
+    mistaken looks identical in its own telemetry to one that is right.
+
+    ## One evaluation per position, not two per move
+
+    The obvious implementation evaluates before and after every move, which is
+    two searches a ply. It is not needed: the position *after* move N is the
+    position *before* move N+1. So each position is evaluated once, from
+    White's point of view, and the loss for the move that left it is the drop
+    between consecutive evaluations read from the mover's side. Half the work,
+    and the cache means a move is never graded twice.
+
+    ## Why this cannot slow the dashboard down
+
+    Stockfish is CPU-only and this box has 16 cores, so it never touches the
+    GPU the engine and the training runs are competing for. Depth is capped low
+    -- 12 is far past enough to catch a hung piece, which is what a grade is
+    for -- and the work happens on this thread, on its own cadence, never in a
+    panel. If the binary is missing the source disables itself and says so once
+    rather than failing every tick.
+    """
+
+    field, interval = "grades", 4.0
+    DEPTH = 12
+    BINARY = "tools/stockfish/stockfish-ubuntu-x86-64-bmi2"
+    MATE = 10_000
+
+    def __init__(self, state, root: Path) -> None:
+        super().__init__(state)
+        self.binary = root / self.BINARY
+        self.engine = None
+        self.disabled = not self.binary.exists()
+        self.game_id: str | None = None
+        self.evals: dict[int, int] = {}     # ply -> centipawns, White's frame
+
+    def _engine(self):
+        if self.engine is None:
+            import chess.engine
+            self.engine = chess.engine.SimpleEngine.popen_uci(str(self.binary))
+            # Modest: the point is a second opinion, not a rival for the CPU
+            # the dataloaders are using.
+            self.engine.configure({"Threads": 2, "Hash": 128})
+        return self.engine
+
+    def tick(self) -> None:
+        if self.disabled:
+            self.state.set(self.field, {})
+            return
+        game = self.state.get("game")
+        if not game or not game.get("moves"):
+            self.state.set(self.field, {})
+            return
+
+        # A new game invalidates every cached evaluation: plies are numbered
+        # per game and reusing them across games would grade one game's move
+        # against another game's position.
+        if game.get("id") != self.game_id:
+            self.game_id, self.evals = game.get("id"), {}
+
+        board = chess.Board()
+        try:
+            engine = self._engine()
+            import chess.engine as ce
+            for ply, mv in enumerate(game["moves"]):
+                if ply not in self.evals:
+                    info = engine.analyse(board, ce.Limit(depth=self.DEPTH))
+                    self.evals[ply] = info["score"].white().score(
+                        mate_score=self.MATE)
+                try:
+                    board.push_san(mv["san"])
+                except ValueError:
+                    return                    # a torn move list; try again next tick
+            if len(game["moves"]) not in self.evals:
+                info = engine.analyse(board, ce.Limit(depth=self.DEPTH))
+                self.evals[len(game["moves"])] = info["score"].white().score(
+                    mate_score=self.MATE)
+        except Exception:
+            # A dead engine is recoverable; a dead source thread is not.
+            if self.engine is not None:
+                try:
+                    self.engine.quit()
+                except Exception:              # noqa: BLE001
+                    pass
+                self.engine = None
+            raise
+
+        # Loss for the move that left position `ply`, from the mover's side.
+        out: dict[int, dict] = {}
+        for ply, mv in enumerate(game["moves"]):
+            if ply not in self.evals or ply + 1 not in self.evals:
+                continue
+            sign = 1 if ply % 2 == 0 else -1      # even ply = White to move
+            loss = max(0, sign * (self.evals[ply] - self.evals[ply + 1]))
+            out[mv["ply"]] = {"loss": loss, "grade": grade_of(loss),
+                              "cp": sign * self.evals[ply + 1]}
+        self.state.set(self.field, out)

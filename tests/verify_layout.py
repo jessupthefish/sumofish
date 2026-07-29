@@ -208,6 +208,38 @@ check(f"widths 52-99 render the longest termination in full",
       not _clipped, f"clipped at {_clipped[:4]}")
 
 
+# ---------------------------------------------------------------------------
+print("\nthe header fits every width the wide layout allows")
+
+_prof = State()
+_prof.set("profile", {"perfs": {
+    "bullet": {"rating": 1950, "rd": 69, "games": 37},
+    "blitz": {"rating": 1844, "rd": 97, "games": 23},
+    "rapid": {"rating": 2394, "rd": 75, "games": 32},
+}, "count": {"win": 34, "draw": 8, "loss": 77, "all": 119}})
+_prof.set("rating_log", [])
+
+# Two width bugs in two days, both from reasoning about columns instead of
+# counting them: "time forfeit" losing its t, and the blitz rating falling off
+# the header. Both are cheap to check and neither is visible in a screenshot
+# taken at one size.
+_clipped = []
+for _w in range(watch.MIN_WIDE_COLS, 181, 5):
+    _con = Console(width=_w, no_color=True)
+    with _con.capture() as _cap:
+        _con.print(panels.header(_prof, "SumoFish", _w))
+    _line = next(l for l in _cap.get().splitlines() if "SUMOFISH" in l)
+    # The live control and the heartbeat must always survive; the frozen
+    # ratings are allowed to drop out below 120, which is deliberate.
+    _need = ["rapid 2394", "lichess"] + (
+        ["bullet 1950", "blitz 1844"] if _w >= 120 else [])
+    if not all(x in _line for x in _need):
+        _clipped.append(_w)
+
+check(f"widths {watch.MIN_WIDE_COLS}-180 keep the live rating and the record",
+      not _clipped, f"clipped at {_clipped[:4]}")
+
+
 print(f"\n{'all checks passed' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
 

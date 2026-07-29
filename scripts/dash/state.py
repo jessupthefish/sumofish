@@ -188,6 +188,9 @@ class State:
             # at 15+10 a game takes twenty minutes, so a stale mark here
             # would mean "quiet", not "broken".
             ("results", 1800.0),
+            # Stockfish's grade of each move. Lags the board by a tick
+            # or two by design; it is a second opinion, not a live feed.
+            ("grades", 60.0),
         ):
             self.fields[name] = Field(name, interval)
 

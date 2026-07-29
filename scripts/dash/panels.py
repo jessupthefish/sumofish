@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 
 import chess
 from rich.align import Align
@@ -83,6 +84,32 @@ def live_clocks(game: dict) -> tuple[float | None, float | None]:
 
 # ---- header ---------------------------------------------------------------
 
+def active_controls() -> set[str]:
+    """The time controls the bot actually accepts, from its own config.
+
+    Used to decide which rating gets the full treatment. The bot plays 15+10
+    and nothing else, so bullet and blitz can no longer move: they are history
+    worth keeping on screen and not worth spending a sparkline, a deviation and
+    a game count on.
+
+    The except is narrow on purpose. It was `except Exception`, and it silently
+    swallowed a NameError -- `Path` was not imported in this module -- so the
+    function returned "everything" and looked like it was working. A broad
+    except around a config read turns a bug into wrong behaviour with no
+    signal, which is the whole failure it was meant to prevent.
+    """
+    try:
+        import yaml
+        cfg = yaml.safe_load((ROOT / "config" / "lichess-bot.yml").read_text())
+        return set(cfg.get("challenge", {}).get("time_controls") or []) or _ALL
+    except (OSError, ImportError, ValueError, AttributeError):
+        return _ALL
+
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+_ALL = {"bullet", "blitz", "rapid", "classical"}
+
+
 def header(state, user: str, width: int):
     """Who we are, how we are rated, how we are doing, and is the feed alive.
 
@@ -105,18 +132,40 @@ def header(state, user: str, width: int):
     left = Text(no_wrap=True)
     left.append(" SUMOFISH ", style=f"bold {BG} on {ACCENT}")
     shown = 0
-    for tc in ("bullet", "blitz", "rapid", "classical"):
+    live = active_controls()
+    # The control we play gets the detail; the ones we no longer play get the
+    # number and nothing else. A deviation, a game count and a sparkline on a
+    # rating that cannot move again is width spent on history.
+    ordering = sorted(("bullet", "blitz", "rapid", "classical"),
+                      key=lambda tc: tc not in live)
+    for tc in ordering:
         p = perfs.get(tc)
         if not p or not p.get("games"):
             continue
         shown += 1
         left.append("   ")
+        if tc not in live:
+            # History, and the first thing to give up its space. The wide
+            # layout starts at 100 columns and at that size the record on the
+            # right plus the live rating already fill the row -- keeping these
+            # would push the blitz number off the end, which is worse than not
+            # showing it. The verbose "34 won / 8 drawn" on the right is a
+            # deliberate readability choice by whoever wrote it, so it is not
+            # the thing to compress.
+            if width < 120:
+                shown -= 1
+                continue
+            left.append(f"{tc} ", style=f"{FAINT} on {BG}")
+            left.append(f"{p['rating']}", style=f"{DIM} on {BG}")
+            continue
         left.append(f"{tc} ", style=f"{DIM} on {BG}")
         left.append(f"{p['rating']}", style=f"bold {ACCENT} on {BG}")
         if p.get("prov"):
             left.append("?", style=f"{WARM} on {BG}")
         left.append(f" \u00b1{p.get('rd','?')}", style=f"{FAINT} on {BG}")
-        left.append(f"  {p.get('games')} games", style=f"{DIM} on {BG}")
+        # "32g" rather than "32 games": the wide layout starts at 100 columns
+        # and the long form clipped the blitz rating off the end there.
+        left.append(f"  {p.get('games')}g", style=f"{DIM} on {BG}")
         series = hist.get(tc, [])
         if len(series) >= 2:
             left.append("  ")
@@ -126,7 +175,8 @@ def header(state, user: str, width: int):
             left.append(f" {delta:+.0f}",
                         style=f"{GOOD if delta >= 0 else BAD} on {BG}")
     if not shown:
-        left.append("   no rated games yet", style=f"{DIM} on {BG}")
+        left.append("   no rated games at the control we play",
+                    style=f"{DIM} on {BG}")
 
     right = Text(no_wrap=True)
     game = state.get("game")
@@ -559,11 +609,28 @@ def moves_panel(state, width: int, height: int):
         pairs.append((i // 2 + 1, w, b))
 
     with_eval = {ply: ours(state, v) for ply, v in state.curve_items()}
+    # Stockfish's verdict on each move, ours and theirs. Only the bad ones are
+    # marked: annotating every accurate move would be a column of noise, and
+    # the eye is looking for where a game went wrong.
+    grades = state.get("grades") or {}
+    MARKS = {"inaccuracy": ("?!", WARM), "mistake": ("?", BAD),
+             "blunder": ("??", BAD)}
+
+    def annotate(line, mv):
+        mark, style = MARKS.get(
+            (grades.get(mv["ply"]) or {}).get("grade", ""), ("  ", FAINT))
+        line.append(f"{mark:<2}", style=f"bold {style} on {BG}")
+
     for n, w, b in pairs[-max(1, rows):]:
         line = Text(no_wrap=True)
         line.append(f"{n:>3}. ", style=f"{FAINT} on {BG}")
-        line.append(f"{w['san']:<8}", style=f"{FG} on {BG}")
-        line.append(f"{b['san']:<8}" if b else " " * 8, style=f"{FG} on {BG}")
+        line.append(f"{w['san']:<7}", style=f"{FG} on {BG}")
+        annotate(line, w)
+        line.append(f"{b['san']:<7}" if b else " " * 7, style=f"{FG} on {BG}")
+        if b:
+            annotate(line, b)
+        else:
+            line.append("  ", style=f"{FAINT} on {BG}")
         # Whichever of the pair we actually played is the one we have a number
         # for; annotate it and leave the other blank rather than guessing.
         for mv in (w, b):
