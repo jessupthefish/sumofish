@@ -209,8 +209,12 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
             rows.append(row)
     rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE)))
 
-    sub = f"[{FAINT}]lichess.org/{game['id']}[/]"
-    return _panel(Group(*rows), "board", border=FAINT, subtitle=sub)
+    # Same shape as the image path above: a label line rather than a panel, so
+    # the two renderers do not look like two different programs.
+    head = Text(no_wrap=True)
+    head.append("board ", style=f"{FG} on {BG}")
+    head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
+    return Group(head, *rows)
 
 
 def _engine_matches(eng: dict, board: chess.Board) -> bool:

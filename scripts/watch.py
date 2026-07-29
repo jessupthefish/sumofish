@@ -4,6 +4,11 @@
     sumofish                     watch
     sumofish watch --no-resize   leave the terminal size alone
     sumofish watch --small       force the compact layout
+    sumofish watch --board 0.36  give the board less of the width
+    sumofish watch --no-image    text board even where sixel works
+
+Keys: `r` repaints (the one thing the loop cannot detect for itself is
+something having painted over the board image), `q` quits.
 
 What it shows, in the order it puts it on screen:
 
@@ -34,8 +39,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import select
 import sys
+import termios
 import time
+import tty
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -363,6 +371,50 @@ def seed_demo(state: State) -> None:
     state.note("move", "Kb1  wp 0.601  5104n in 2.02s")
 
 
+class Keys:
+    """Single keypresses, without blocking the render loop.
+
+    There is one thing the loop genuinely cannot work out for itself: whether
+    something has painted over the board image. `rich` leaves the region alone
+    as long as it renders identically, and a resize rebuilds and re-emits, but
+    if anything else forces a full repaint the picture is gone and nothing
+    changes the position, so nothing redraws it. `r` is the answer to that, and
+    it costs a keypress rather than a periodic flicker.
+
+    cbreak rather than raw: raw would swallow Ctrl-C.
+    """
+
+    def __init__(self) -> None:
+        self.fd = sys.stdin.fileno() if sys.stdin.isatty() else None
+        self.saved = None
+
+    def __enter__(self) -> "Keys":
+        if self.fd is not None:
+            try:
+                self.saved = termios.tcgetattr(self.fd)
+                tty.setcbreak(self.fd)
+            except Exception:                            # noqa: BLE001
+                self.fd = None
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.fd is not None and self.saved is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            except Exception:                            # noqa: BLE001
+                pass
+
+    def get(self) -> str:
+        if self.fd is None:
+            return ""
+        try:
+            if select.select([self.fd], [], [], 0)[0]:
+                return os.read(self.fd, 8).decode("ascii", "replace")
+        except Exception:                                # noqa: BLE001
+            pass
+        return ""
+
+
 def _image_key(plan, state):
     """What the board picture would depend on, without rendering it."""
     game = state.get("game")
@@ -470,8 +522,16 @@ def main() -> None:
     caps = None if args.no_image else sixel.probe(*console.size)
     last_size, plan, painted = None, None, None
     try:
-        with Live(console=console, refresh_per_second=FPS, screen=True) as live:
+        with Keys() as keys, Live(console=console, refresh_per_second=FPS,
+                                  screen=True) as live:
             while True:
+                key = keys.get()
+                if key in ("q", "\x03"):
+                    break
+                if key == "r":
+                    # Force a full repaint and a re-emit of the board image.
+                    painted = None
+                    live.refresh()
                 size = console.size
                 if size != last_size:
                     # Rebuild rather than stretch: which panels exist at all
