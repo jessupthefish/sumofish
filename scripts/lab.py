@@ -279,19 +279,27 @@ def decide_scale(facts: dict) -> dict:
     m = json.loads(bench.read_text())["ratio"] if bench.exists() else None
 
     if not doublings or m is None:
-        return {"scale_136m": False, "scale_why":
-                "declined: the exchange rate or the forward-pass ratio is "
-                "missing, and 35 hours is not a thing to spend on a guess"}
+        return {"scale_bar": None, "scale_why":
+                "the exchange rate or the forward-pass ratio is missing, so the "
+                "break-even bar is unknown; the run proceeds anyway and the "
+                "fixed-TIME match decides"}
 
-    D = sum(doublings) / len(doublings)
     import math
+    D = sum(doublings) / len(doublings)
     bar = D * math.log2(m)
-    go = bar < 150.0
-    return {"scale_136m": go, "scale_D": round(D, 1), "scale_m": round(m, 2),
+    # Reports, does not gate. Compute is not the constraint here, so there is
+    # no reason to let arithmetic veto an experiment that a match can settle
+    # directly. The number still matters: it says what the 136M has to clear,
+    # and it is why `match-136m` is a fixed-TIME match rather than a fixed-
+    # simulation one. At equal simulations a bigger net can win and still be
+    # weaker in a game, because in a game the clock is what runs out, not the
+    # simulation count.
+    return {"scale_D": round(D, 1), "scale_m": round(m, 2),
             "scale_bar": round(bar, 1), "scale_why":
             f"a doubling of search is worth {D:.0f} Elo and 136M costs "
-            f"{m:.1f}x per pass, so it must win by {bar:.0f} Elo at equal sims "
-            f"just to tie on the clock -- {'proceeding' if go else 'declined'}"}
+            f"{m:.2f}x per node in the search, so it must be {bar:.0f} Elo "
+            f"better at equal simulations to break even on a clock. Running it "
+            f"regardless and letting the fixed-time match decide"}
 
 
 def decide_tuning(facts: dict) -> dict:
@@ -329,8 +337,18 @@ def decide_stage(facts: dict) -> dict:
     an untracked binary of unknown origin, and "which run was this, measured
     against what, by how much" is exactly what nobody will be able to answer.
     """
-    verdict = match_verdict("lab-136m-vs-current")
-    candidate = ROOT / "runs/136M-sv/best.pt"
+    # Two candidates now, judged on the same clock. Whichever won by more, and
+    # only if it won at all: a bigger net and a longer-trained one are different
+    # bets and there is no reason to assume the expensive one wins.
+    contenders = [
+        (match_verdict("lab-136m-vs-current"), ROOT / "runs/136M-sv/best.pt", "136M"),
+        (match_verdict("lab-9m-long-vs-current"), ROOT / "runs/9M-sv-long/best.pt", "9M-long"),
+    ]
+    winners = [c for c in contenders if c[0]["decisive"] and c[0]["elo"] > 0]
+    if winners:
+        verdict, candidate, which = max(winners, key=lambda c: c[0]["elo"])
+    else:
+        verdict, candidate, which = contenders[0][0], contenders[0][1], "136M"
 
     if not verdict["decisive"]:
         return {"staged": False, "stage_why":
@@ -346,7 +364,7 @@ def decide_stage(facts: dict) -> dict:
     shutil.copyfile(candidate, staged)
     (ROOT / "runs/value.pt.candidate.json").write_text(json.dumps({
         "source": str(candidate),
-        "match": "lab-136m-vs-current",
+        "match": which,
         "elo": round(verdict["elo"], 1), "err": round(verdict["err"], 1),
         "pairs": verdict["pairs"], "games": verdict["n"],
         "llr": round(verdict["llr"], 2), "measured_at_sims": 400,
@@ -354,7 +372,7 @@ def decide_stage(facts: dict) -> dict:
         "promote_with": "scripts/promote.py runs/value.pt.candidate",
     }, indent=2))
     return {"staged": True, "stage_why":
-            f"staged runs/value.pt.candidate: {verdict['elo']:+.1f} "
+            f"staged {which} as runs/value.pt.candidate: {verdict['elo']:+.1f} "
             f"+-{verdict['err']:.1f} Elo over {verdict['n']} games. "
             f"A human promotes it with scripts/promote.py"}
 
@@ -491,16 +509,51 @@ PLAN: list[Job] = [
         # gated on arithmetic. Cheap certain Elo first.
         needs=["scale", "tuning"]),
 
-    Job(id="match-136m", what="the trained 136M against the live 9M",
+    # The other way to spend unlimited compute, and the one with no downside at
+    # play time. The 9M is UNDERFITTING, measured: held-out loss 2.1438 against
+    # 2.2094 on train, so it has memorised nothing and has not run out of
+    # things to learn. Its 300k steps saw 307M positions out of a bag holding
+    # well over 500M. Three times the training at the same architecture costs
+    # exactly nothing per move in a game, which is the one thing a bigger net
+    # cannot say.
+    Job(id="train-9m-long", what="the same 9M, trained 3x longer on 3x the data",
+        argv=lambda f: python(
+            str(ROOT / "train.py"),
+            "--target", "state_value", "--value-bins", "64", "--preset", "9M",
+            "--init-from", "runs/9M-sv-warm-full/final.pt",
+            "--steps", "900000", "--batch-size", "1024",
+            "--lr", "2e-4", "--warmup", "2000",
+            "--workers", "10", "--causal", f.get("causal", "1"),
+            "--log-every", "500", "--eval-every", "10000",
+            "--eval-puzzles", "1000", "--ckpt-every", "10000",
+            "--val-batches", "32", "--compile", "1",
+            "--run", "9M-sv-long", "--auto-resume"),
+        probe=lambda: train_progress("9M-sv-long"),
+        timeout=40 * HOUR, truncation_is_failure=False, needs=["tuning"]),
+    Job(id="match-9m-long", what="the longer-trained 9M against the live one, on a clock",
+        argv=lambda f: match_argv("lab-9m-long-vs-current",
+                                  "--a-value", str(ROOT / "runs/9M-sv-long/best.pt"),
+                                  "--b-value", str(ROOT / "runs/value.pt"),
+                                  "--a-label", "9M-long", "--b-label", "live-9M",
+                                  games=400, budget=("--time", "0.5")),
+        probe=lambda: match_progress("lab-9m-long-vs-current"),
+        timeout=12 * HOUR, needs=["train-9m-long"]),
+
+    Job(id="match-136m", what="the trained 136M against the live 9M, on a CLOCK",
+        # Fixed time, not fixed simulations, and this is the whole point of the
+        # job. Equal simulations measures whose judgement is better; equal wall
+        # clock measures who wins a game, and a bigger net pays for its
+        # judgement in simulations it no longer gets to run. 0.5s is inside the
+        # band the bot's own time management hands a bullet or blitz move.
         argv=lambda f: match_argv("lab-136m-vs-current",
                                   "--a-value", str(ROOT / "runs/136M-sv/best.pt"),
                                   "--b-value", str(ROOT / "runs/value.pt"),
                                   "--a-label", "136M", "--b-label", "live-9M",
-                                  games=400),
+                                  games=400, budget=("--time", "0.5")),
         probe=lambda: match_progress("lab-136m-vs-current"),
         timeout=20 * HOUR, needs=["train-136m"]),
     Job(id="stage", what="stage a candidate if the match earned it. Never promote",
-        decide=decide_stage, needs=["match-136m"]),
+        decide=decide_stage, needs=["match-136m", "match-9m-long"]),
     Job(id="report", what="write runs/lab/report.md", decide=write_report),
 ]
 
