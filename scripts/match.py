@@ -121,6 +121,7 @@ class Spec:
     searchless: bool
     reuse: bool
     legacy_draws: bool
+    fixed_cpuct: bool
 
     def describe(self) -> str:
         if self.searchless:
@@ -189,6 +190,8 @@ class Player:
                 batch=spec.batch,
                 reuse=spec.reuse,
                 terminal=terminal_value_legacy if spec.legacy_draws else terminal_value,
+                # None restores the pre-schedule constant c_puct.
+                c_puct_base=None if spec.fixed_cpuct else 19652.0,
             )
 
     def new_game(self) -> None:
@@ -238,6 +241,31 @@ def load_openings(path: Path, min_ply: int, max_ply: int, seed: int) -> list[lis
             lines.append([mv.uci() for mv in moves])
     random.Random(seed).shuffle(lines)
     return lines
+
+
+import functools  # noqa: E402
+import hashlib  # noqa: E402
+import subprocess  # noqa: E402
+
+
+@functools.lru_cache(maxsize=1)
+def code_fingerprint() -> str:
+    """git SHA plus a hash of the package, so a stale result can be spotted.
+
+    The SHA alone is not enough: this project's own Lab Notes record that
+    editing `chessgpu/` mid-match makes the first half of the games play a
+    different engine than the second, and an uncommitted edit does not move the
+    SHA. Hashing the source that actually gets imported does.
+    """
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                             capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        sha = "?"
+    digest = hashlib.sha256()
+    for path in sorted((ROOT / "chessgpu").rglob("*.py")):
+        digest.update(path.read_bytes())
+    return f"{sha or '?'}+{digest.hexdigest()[:12]}"
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +332,21 @@ def play_game(
         "opening": opening,
         "moves": [m.uci() for m in board.move_stack[opening_plies:]],
         "final_fen": board.fen(),
+        # The per-ply win probability, in White's frame, one entry per move
+        # played after the book. It was computed and thrown away 400 times a
+        # match, and it is the only raw material in this project from which
+        # anything about the TEXTURE of a game can be derived: whether the
+        # evaluation collapses in a single ply or slides, whether a game was
+        # decided early or late, whether mistakes cluster in sharp positions
+        # the way a human's do or land at random the way a handicapped engine's
+        # do. Four bytes a ply. Storing it costs nothing and not storing it
+        # means the question cannot be asked retrospectively.
+        "curve": [round(p, 4) for p in curve],
+        # What was actually playing. A match spans hours and the working tree
+        # is editable throughout; without this, a match that straddles an edit
+        # is indistinguishable from one that did not. Cheap insurance against
+        # a silently invalidated result.
+        "code": code_fingerprint(),
     }
 
 
@@ -352,6 +395,9 @@ def main() -> None:
         ap.add_argument(f"--{side}-searchless", action="store_true")
         ap.add_argument(f"--{side}-no-reuse", action="store_true",
                         help="rebuild the tree from scratch every move")
+        ap.add_argument(f"--{side}-fixed-cpuct", action="store_true",
+                        help="use a constant c_puct instead of AlphaZero's "
+                             "visit-count schedule")
         ap.add_argument(f"--{side}-legacy-draws", action="store_true",
                         help="the pre-rules.py terminal test: treat a draw that "
                              "is merely reachable by one move as already drawn")
@@ -396,6 +442,7 @@ def main() -> None:
             searchless=getattr(args, f"{side}_searchless"),
             reuse=not getattr(args, f"{side}_no_reuse"),
             legacy_draws=getattr(args, f"{side}_legacy_draws"),
+            fixed_cpuct=getattr(args, f"{side}_fixed_cpuct"),
         )
 
     a, b = spec("a"), spec("b")

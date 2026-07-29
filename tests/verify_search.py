@@ -164,6 +164,7 @@ import torch  # noqa: E402
 
 from chessgpu.engines.neural_engine import load_policy  # noqa: E402
 from chessgpu.hlgauss import HLGauss  # noqa: E402
+import chessgpu.mcts as chessgpu_mcts  # noqa: E402
 from chessgpu.mcts import MCTS  # noqa: E402
 from chessgpu.model import ChessTransformer, ModelConfig  # noqa: E402
 from chessgpu.value_policy import ValuePolicy  # noqa: E402
@@ -232,5 +233,36 @@ check("accepts the one-ply continuation", node is not None and node.visits > 0,
 check("reset() forgets it", (mcts.reset() or mcts._reroot(b)) is None)
 
 # ---------------------------------------------------------------------------
+print("\n_select_child agrees with the readable _puct it replaced")
+
+rng = random.Random(99)
+disagreements = []
+checked = 0
+for trial in range(4000):
+    n_children = rng.randint(2, 50)
+    parent = chessgpu_mcts.Node(prior=1.0, to_move=chess.WHITE)
+    parent.visits = rng.randint(0, 4000)
+    parent.value_sum = parent.visits * rng.random()
+    for i in range(n_children):
+        c = chessgpu_mcts.Node(prior=rng.random(), to_move=chess.BLACK)
+        # A realistic mix: most children unvisited, a few heavily visited.
+        c.visits = 0 if rng.random() < 0.55 else rng.randint(1, 400)
+        c.value_sum = c.visits * rng.random()
+        parent.children[chess.Move(i % 64, (i * 7 + 3) % 64)] = c
+
+    fast = mcts._select_child(parent)
+    slow = max(parent.children.items(), key=lambda kv: mcts._puct(parent, kv[1]))
+    checked += 1
+    if fast[0] != slow[0]:
+        # A genuine tie broken differently by float association is acceptable;
+        # a different SCORE is not.
+        if abs(mcts._puct(parent, fast[1]) - mcts._puct(parent, slow[1])) > 1e-9:
+            disagreements.append((n_children, parent.visits))
+
+check(f"{checked} random nodes, 2-50 children, pick the same child",
+      not disagreements, str(disagreements[:2]))
+
+# ---------------------------------------------------------------------------
 print(f"\n{'all checks passed' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
+

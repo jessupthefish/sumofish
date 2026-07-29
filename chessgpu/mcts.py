@@ -133,6 +133,9 @@ class MCTS:
         value_policy,                 # ValuePolicy: scores positions
         policy=None,                  # NeuralPolicy: supplies move priors
         c_puct: float = 2.0,
+        # AlphaZero's published schedule. None restores the constant `c_puct`.
+        c_puct_base: float | None = 19652.0,
+        c_puct_init: float = 1.25,
         simulations: int = 400,
         batch: int = 1,               # >1 uses virtual loss to fill GPU batches
         dirichlet_alpha: float = 0.3,
@@ -144,6 +147,8 @@ class MCTS:
         self.value_policy = value_policy
         self.policy = policy
         self.c_puct = c_puct
+        self.c_puct_base = c_puct_base
+        self.c_puct_init = c_puct_init
         self.simulations = simulations
         self.batch = max(1, batch)
         # Root exploration noise. Essential for self-play RL (it forces variety
@@ -167,6 +172,39 @@ class MCTS:
         self.reused = 0
         self._root: Node | None = None
         self._root_stack: list[chess.Move] = []
+
+    def c_puct_at(self, visits: int) -> float:
+        """How hard to explore, as a function of how much has been seen here.
+
+        A constant is the obvious choice and it is wrong the moment the search
+        budget moves, which it just did: the bot went from ~800 nodes a move in
+        bullet to ~60,000 at 15+10. The exploration term is
+        `c * P * sqrt(N_parent) / (1 + N_child)`, so the balance between trying
+        something new and pursuing what already looks good shifts with N, and
+        the c that balances it shifts too. Our 2.0 was never tuned at all, and
+        against AlphaZero's schedule it over-explores below ~20,000 visits and
+        under-explores above:
+
+            visits      AZ      ours
+               400    1.27      2.00
+              5000    1.48      2.00
+             20000    1.95      2.00
+             60000    2.65      2.00
+
+        AlphaZero's answer is to make it grow logarithmically rather than tune
+        it per time control, which is the right shape here for a reason beyond
+        elegance: this engine's budget is a clock, so its visit count varies
+        from move to move within a single game as the clock runs down. There is
+        no single N to tune for even if we wanted to.
+
+        `c_puct_base` and `c_puct_init` are AlphaZero's published values, not
+        fitted here. Set `c_puct_base` to None to get the old constant back,
+        which is what `match.py --a-fixed-cpuct` does so the two can be played
+        against each other rather than argued about.
+        """
+        if self.c_puct_base is None:
+            return self.c_puct
+        return math.log((1.0 + visits + self.c_puct_base) / self.c_puct_base) + self.c_puct_init
 
     def reset(self) -> None:
         """Forget the tree. Call between games, never within one."""
@@ -273,11 +311,58 @@ class MCTS:
         # line before wandering to a sibling. Both terms below are in the
         # parent's frame.
         q = (1.0 - child.q) if child.visits else max(0.0, parent.q + self.fpu)
-        u = self.c_puct * child.prior * math.sqrt(parent.visits) / (1 + child.visits)
+        u = (self.c_puct_at(parent.visits) * child.prior
+             * math.sqrt(parent.visits) / (1 + child.visits))
         return q + u
 
     def _select_child(self, node: Node) -> tuple[chess.Move, Node]:
-        return max(node.children.items(), key=lambda kv: self._puct(node, kv[1]))
+        """The same score as `_puct`, computed the way a hot loop should be.
+
+        This is 29% of the search's wall clock, measured, and it was written as
+        `max(children.items(), key=lambda kv: self._puct(node, kv[1]))`. That is
+        the readable form and it pays for readability four times per child: a
+        Python function call, a lambda call, a property lookup for `child.q`,
+        and a `math.sqrt` of a quantity that is *the same for every child*.
+
+        Hoisting the invariant and inlining the body is 2.5x on this step.
+        Measured in isolation at realistic branching factors, us per selection:
+
+            children   as written   hoisted   numpy
+                  12         3.19      1.36    8.21
+                  20         5.10      2.05    8.25
+                  30         7.46      2.98    8.19
+                  47        11.32      4.32    8.33
+
+        Note the third column, because the obvious next move is to lay the
+        children out as parallel arrays and score them with one numpy
+        expression, and it **loses at every branching factor chess produces**.
+        Array-of-children is the right layout for Lc0, which batches selections
+        across many nodes at once; for one node with thirty children, numpy's
+        per-call overhead is larger than the loop it replaces. Do not
+        reintroduce it without batching the selections too.
+
+        `_puct` is kept, unused by this path, because it is the readable
+        statement of what is being computed and `tests/verify_search.py` checks
+        the two against each other. If they ever disagree, this one is wrong.
+        """
+        # sqrt(N_parent) and the FPU fallback do not vary across children.
+        c_sqrt = self.c_puct_at(node.visits) * math.sqrt(node.visits)
+        fpu_q = node.value_sum / node.visits + self.fpu if node.visits else self.fpu
+        if fpu_q < 0.0:
+            fpu_q = 0.0
+
+        best = None
+        best_score = -1e18
+        for move, child in node.children.items():
+            visits = child.visits
+            # Inlined `child.q` and the parent's-frame flip. A property call
+            # per child per ply per simulation is not free at this rate.
+            q = (1.0 - child.value_sum / visits) if visits else fpu_q
+            score = q + c_sqrt * child.prior / (1 + visits)
+            if score > best_score:
+                best_score = score
+                best = (move, child)
+        return best
 
     # ---- the loop --------------------------------------------------------
 
