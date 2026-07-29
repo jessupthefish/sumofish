@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "sumofish-core"
+version = "0.1.0"
+description = "SumoFish hot path in Rust: board, move generation, tree, PUCT."
+requires-python = ">=3.12"
+
+[tool.maturin]
+# The crate lives at the repo's rust/ directory and builds one extension module.
+module-name = "sumofish_core"
+features = ["pyo3/extension-module"]
