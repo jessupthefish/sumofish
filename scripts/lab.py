@@ -5,17 +5,16 @@
     sumofish-lab                              # look at it
     sumofish-lab watch                        # look at it, live
 
-Everything below the search work needs the GPU, needs hours, and needs to
-happen in a specific order because later steps read earlier results. Doing that
-by hand means being present at every handoff, at 3am, for two days. This runs it
-instead.
+Everything left on the roadmap needs the GPU, needs hours, and needs to happen
+in a specific order because later steps read earlier results. Doing that by hand
+means being present at every handoff, at 3am, for two days. This runs it instead.
 
 ## What it is
 
 An ordered list of jobs and a runner that walks it. Two kinds of job:
 
     command   a subprocess -- a training run, a match. Owns the GPU while it
-              runs, gets a wall-clock timeout, and is interrupted with SIGTERM
+              runs, gets a wall-clock deadline, and is interrupted with SIGTERM
               because `train.py` checkpoints on SIGTERM and killing it outright
               throws away hours.
     decision  a Python function that reads earlier results and returns facts
@@ -23,33 +22,42 @@ An ordered list of jobs and a runner that walks it. Two kinds of job:
               "is that difference real" live, and it is why the plan can branch
               without anybody being awake.
 
-State is in `runs/lab/state.json`: which jobs finished, what they concluded,
-and the facts so far. Restarting the unit resumes from there rather than
-starting over, so a reboot in the middle of a 40-hour training run costs the
-run, not the plan.
+State is in `runs/lab/state.json`. Restarting resumes rather than starting over.
 
-## What it is allowed to do on its own
+## What it is allowed to do on its own: nothing outward-facing
 
-It measures freely and it changes exactly one thing: `runs/value.pt`, the
-checkpoint the live bot plays, and only when a match of at least
-`PROMOTE_MIN_GAMES` says the candidate is better with `PROMOTE_MIN_LOS`
-confidence AND the Elo interval excludes zero. The previous checkpoint is kept
-beside it. That is a file copy the bot picks up on its next game, and it is
-reversible with another file copy.
+**It stages, it does not promote.** A winning checkpoint is copied to
+`runs/value.pt.candidate` with a provenance sidecar, and the report says what
+it won by. Swapping the live bot stays a human command (`scripts/promote.py`).
 
-It does not edit code, does not touch systemd units, and does not change the
-engine's own defaults. A match that says "batch 256 is free" writes that
-conclusion into the report; applying it is a code change and code changes are
-not something to do unsupervised.
+That is a change from the first version of this file, which promoted
+automatically behind a statistical gate. A Council audit took the gate apart:
+the gate answers one question and no other. It does not check that the
+checkpoint loads, that its nps survives a bullet clock, that its value head is
+calibrated rather than saturated, or that the result is fun to play, which
+PHILOSOPHY.md ranks above strength. The queue's value is that thirty-five hours
+of training happened while you slept. It was never that the last file copy did.
 
-## The one rule that is not obvious
+## Three outcomes, not two
 
-Nothing may edit `chessgpu/` while this is running. The matches import from the
-working tree and spawn a process per game, so an edit half way through a match
-means the first half of the games played a different engine than the second and
-nothing in the log says so. The runner refuses to start a job while a foreign
-`train.py` or `match.py` is alive, which covers accidental overlap; it cannot
-protect you from an editor.
+A job `completed`, was `truncated` at its deadline, or `failed`. Collapsing the
+last two into the first is how a half-annealed checkpoint reaches an evaluation
+match: `train.py` exits cleanly on SIGTERM, so "clean exit" and "finished the
+schedule" are different facts and only one of them satisfies a dependency.
+
+A failed or truncated job does NOT satisfy `needs`. The first version recorded
+every finished job as done regardless of outcome and checked `needs` by
+membership, so a 136M dying at hour 30 would have handed the evaluation match an
+absent checkpoint and the gate would have run on the result.
+
+## The rule that is not obvious
+
+Nothing may edit `chessgpu/` while this is running. Matches import from the
+working tree and spawn a process per game, so an edit lands mid-match: half the
+games played a different engine and nothing in the log says which. The runner
+refuses to start a job while a foreign `train.py` or `match.py` is alive, which
+covers accidental overlap. It cannot protect you from an editor -- for that,
+`git worktree add ../chess-gpu-dev -b <branch>` and work there.
 """
 
 from __future__ import annotations
@@ -62,6 +70,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -69,18 +78,35 @@ from typing import Callable
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from elo import score_stats, tally  # noqa: E402
+from elo import (  # noqa: E402
+    pair_stats,
+    pair_sums,
+    pairing_efficiency,
+    sprt_bounds,
+    sprt_llr_pairs,
+    tally,
+)
 
 LAB = ROOT / "runs" / "lab"
 STATE = LAB / "state.json"
 EVENTS = LAB / "log.jsonl"
 
-# Promotion gate. 300 games at these bounds resolves roughly a 25-Elo
-# difference, which is about the smallest change worth deploying.
-PROMOTE_MIN_GAMES = 300
-PROMOTE_MIN_LOS = 0.95
-
 HOUR = 3600
+
+# A match may not be called decisive on fewer pairs than this even if the
+# sequential test crossed, because the sequential test's point estimate at the
+# moment it stops is biased away from zero by construction: stopping is
+# triggered by an extreme.
+MIN_DECISIVE_PAIRS = 40
+
+# The hypotheses every lab match is run against. 25 Elo is about the smallest
+# difference worth acting on here, and the harness resolves it in a few hundred
+# games now that pairs are the unit.
+ELO0, ELO1 = 0.0, 25.0
+
+# How long to wait for someone else's GPU job before giving up and saying so.
+# Unbounded waiting is indistinguishable from a dead queue in the status view.
+MAX_WAIT_HOURS = 6
 
 
 # ---------------------------------------------------------------------------
@@ -97,51 +123,59 @@ def jsonl(path: Path) -> list[dict]:
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
-                # A record torn by a concurrent write. The next read gets it.
-                pass
+                pass          # a record torn by a concurrent write
     return out
 
 
 def train_progress(run: str) -> str:
-    """Last step, loss and held-out loss of a training run."""
     rows = jsonl(ROOT / "runs" / run / "log.jsonl")
     steps = [r for r in rows if "loss" in r]
     evals = [r for r in rows if "puzzle_acc" in r]
     if not steps:
         return "starting"
-    last = steps[-1]
-    out = f"step {last['step']:,}  loss {last['loss']:.4f}"
+    out = f"step {steps[-1]['step']:,}  loss {steps[-1]['loss']:.4f}"
     if evals:
-        e = evals[-1]
-        out += f"  puzzles {e['puzzle_acc']:.3f}"
-        if "val_loss" in e:
-            out += f"  val {e['val_loss']:.4f}"
+        out += f"  puzzles {evals[-1]['puzzle_acc']:.3f}"
+        if "val_loss" in evals[-1]:
+            out += f"  val {evals[-1]['val_loss']:.4f}"
     return out
 
 
-def match_progress(name: str) -> str:
-    """Score and Elo interval of a match, live."""
-    games = jsonl(ROOT / "runs" / "matches" / name / "games.jsonl")
-    if not games:
-        return "starting"
-    st = score_stats(*tally(games))
-    return (
-        f"{st['n']} games  {st['score'] * 100:.1f}%  "
-        f"elo {st['elo']:+.1f} +-{st['err']:.1f}  LOS {st['los'] * 100:.0f}%"
-    )
-
-
 def match_verdict(name: str) -> dict:
-    """Everything a decision needs to know about a finished match."""
+    """Everything a decision needs to know about a match, scored by PAIR.
+
+    `decisive` is deliberately an OR and not an AND. The first version of this
+    required the sequential test to be running AND at least 300 games, which are
+    mutually exclusive: the sequential test stops early precisely when the
+    result is strong, so the stronger the candidate the more certainly it failed
+    the game-count floor. Monte-Carlo'd over the exact code, a true +60 Elo was
+    detected 100% of the time and passed the gate 0.5% of the time.
+
+    So either the sequential test concluded, or a fixed-length match's interval
+    excludes zero. Both are conclusions; requiring both is a contradiction.
+    """
     games = jsonl(ROOT / "runs" / "matches" / name / "games.jsonl")
-    w, d, l = tally(games)
-    st = score_stats(w, d, l)
-    st["decisive"] = (
-        st["n"] >= PROMOTE_MIN_GAMES
-        and st["los"] >= PROMOTE_MIN_LOS
-        and st["elo"] - st["err"] > 0
+    w, d, l = tally(games)          # noqa: E741
+    sums = pair_sums(games)
+    st = pair_stats(sums)
+    st.update({"w": w, "d": d, "l": l,
+               "llr": sprt_llr_pairs(sums, ELO0, ELO1),
+               "r": pairing_efficiency(sums, w, d, l)})
+    _lower, upper = sprt_bounds()
+    st["sprt_concluded"] = st["llr"] >= upper
+    st["interval_clear"] = st["elo"] - st["err"] > 0
+    st["decisive"] = st["pairs"] >= MIN_DECISIVE_PAIRS and (
+        st["sprt_concluded"] or st["interval_clear"]
     )
     return st
+
+
+def match_progress(name: str) -> str:
+    st = match_verdict(name)
+    if not st["n"]:
+        return "starting"
+    return (f"{st['n']}g/{st['pairs']}pr  elo {st['elo']:+.1f} +-{st['err']:.1f}  "
+            f"LOS {st['los'] * 100:.0f}%  LLR {st['llr']:+.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -152,27 +186,39 @@ def match_verdict(name: str) -> dict:
 class Job:
     id: str
     what: str
-    # A command job builds argv from the facts so far. A decision job returns
-    # facts instead. Exactly one of these is set.
     argv: Callable[[dict], list[str]] | None = None
     decide: Callable[[dict], dict] | None = None
     timeout: float = 6 * HOUR
     probe: Callable[[], str] | None = None
     needs: list[str] = field(default_factory=list)
+    # A job whose work is worthless if cut short. `train.py` checkpoints on
+    # SIGTERM, so a truncated run leaves a usable file and a HALF-ANNEALED one:
+    # the cosine schedule was still mid-decay, and such a checkpoint is
+    # reliably worse than a shorter run that annealed properly.
+    truncation_is_failure: bool = False
 
 
 def python(*args: str) -> list[str]:
     return [str(ROOT / ".venv/bin/python"), *args]
 
 
-def match_argv(name: str, *extra: str, games: int = 300, sims: int = 400) -> list[str]:
+def match_argv(name: str, *extra: str, games: int = 300, budget=("--sims", "400")):
+    return python(str(ROOT / "scripts/match.py"), "--name", name,
+                  "--games", str(games), *budget,
+                  "--elo0", str(ELO0), "--elo1", str(ELO1), *extra)
+
+
+def ablation_argv(causal: str) -> list[str]:
     return python(
-        str(ROOT / "scripts/match.py"),
-        "--name", name,
-        "--games", str(games),
-        "--sims", str(sims),
-        "--elo0", "0", "--elo1", "25",
-        *extra,
+        str(ROOT / "train.py"),
+        "--target", "state_value", "--value-bins", "64", "--preset", "9M",
+        "--steps", "20000", "--batch-size", "1024", "--workers", "8",
+        "--lr", "3e-4", "--warmup", "2000", "--seed", "1234",
+        "--log-every", "500", "--eval-every", "2500", "--eval-puzzles", "1000",
+        "--ckpt-every", "20000", "--val-batches", "32", "--compile", "1",
+        "--causal", causal, "--run", f"9M-sv-causal{causal}-ablation",
+        # Re-running a finished arm is a cheap no-op rather than a second run.
+        "--auto-resume",
     )
 
 
@@ -180,212 +226,219 @@ def match_argv(name: str, *extra: str, games: int = 300, sims: int = 400) -> lis
 
 
 def decide_causal(facts: dict) -> dict:
-    """Which attention mask the 136M run should use.
+    """Which attention mask the 136M run should use, on held-out loss.
 
-    Judged on held-out loss rather than puzzle accuracy. At 20k steps puzzles
-    are still mostly noise (+-1.5% at n=1000) while the held-out loss separates
-    two architectures cleanly, and loss is what the arms were trained on.
+    Not puzzle accuracy: at 20k steps that is mostly noise (+-1.5% at n=1000),
+    while held-out loss separates two architectures cleanly and is what the arms
+    were trained on. Both arms share `--seed 1234`, so they differ in the mask
+    and in nothing else.
     """
     arms = {}
     for causal in ("1", "0"):
         rows = jsonl(ROOT / f"runs/9M-sv-causal{causal}-ablation/log.jsonl")
         evals = [r for r in rows if "val_loss" in r]
-        losses = [r for r in rows if "loss" in r]
-        arms[causal] = {
-            "val_loss": evals[-1]["val_loss"] if evals else None,
-            "puzzle_acc": evals[-1]["puzzle_acc"] if evals else None,
-            "train_loss": losses[-1]["loss"] if losses else None,
-            "steps": losses[-1]["step"] if losses else 0,
-        }
+        steps = [r for r in rows if "loss" in r]
+        arms[causal] = {"val_loss": evals[-1]["val_loss"] if evals else None,
+                        "puzzle_acc": evals[-1]["puzzle_acc"] if evals else None,
+                        "steps": steps[-1]["step"] if steps else 0}
 
     usable = {c: a for c, a in arms.items() if a["val_loss"] is not None}
     if len(usable) < 2:
-        # An arm that did not produce a held-out number cannot be compared, and
-        # guessing here would silently pick an architecture for a 40-hour run.
-        # Upstream's setting is the safe default and the one the pretrained
-        # checkpoints use.
-        return {"causal": "1", "causal_why": "an arm produced no val_loss; kept upstream's default",
-                "causal_arms": arms}
+        return {"causal": "1", "causal_arms": arms, "causal_why":
+                "an arm produced no held-out loss; kept upstream's default, "
+                "and this decision decided nothing"}
 
     winner = min(usable, key=lambda c: usable[c]["val_loss"])
-    gap = abs(usable["1"]["val_loss"] - usable["0"]["val_loss"])
-    return {
-        "causal": winner,
-        "causal_why": (
-            f"causal={winner} won on held-out loss "
-            f"({usable[winner]['val_loss']:.4f} vs "
-            f"{usable['0' if winner == '1' else '1']['val_loss']:.4f}, gap {gap:.4f})"
-        ),
-        "causal_arms": arms,
-    }
+    loser = "0" if winner == "1" else "1"
+    return {"causal": winner, "causal_arms": arms, "causal_why":
+            f"causal={winner} won on held-out loss, {usable[winner]['val_loss']:.4f} "
+            f"vs {usable[loser]['val_loss']:.4f} at matched steps and seed"}
 
 
-def decide_promote(facts: dict) -> dict:
-    """Swap the live checkpoint, but only if the match actually said so."""
+def decide_scale(facts: dict) -> dict:
+    """Whether a 136M run is worth 35 hours, as arithmetic rather than opinion.
+
+    The deployed bot is clock-bound, so a bigger net does not merely have to be
+    better, it has to be better by more than the search it gives up. A 136M
+    forward pass costs m times a 9M one, which at equal wall clock is log2(m)
+    doublings of simulations forgone. If a doubling is worth D Elo, the bar is
+
+        break-even at equal TIME  =  D x log2(m)   Elo at equal SIMS
+
+    Both terms are measured: D from the exchange-rate matches below, m from
+    `bench_search.py`. A plan that skips this commits its largest resource to
+    its least-examined assumption.
+    """
+    doublings = []
+    for name, ratio in (("lab-sims-800-400", 1.0), ("lab-sims-1600-800", 1.0),
+                        ("lab-sims-400-200", 1.0)):
+        st = match_verdict(name)
+        if st["pairs"] >= MIN_DECISIVE_PAIRS:
+            doublings.append(st["elo"] / ratio)
+    bench = ROOT / "runs/lab/forward-bench.json"
+    m = json.loads(bench.read_text())["ratio"] if bench.exists() else None
+
+    if not doublings or m is None:
+        return {"scale_136m": False, "scale_why":
+                "declined: the exchange rate or the forward-pass ratio is "
+                "missing, and 35 hours is not a thing to spend on a guess"}
+
+    D = sum(doublings) / len(doublings)
+    import math
+    bar = D * math.log2(m)
+    go = bar < 150.0
+    return {"scale_136m": go, "scale_D": round(D, 1), "scale_m": round(m, 2),
+            "scale_bar": round(bar, 1), "scale_why":
+            f"a doubling of search is worth {D:.0f} Elo and 136M costs "
+            f"{m:.1f}x per pass, so it must win by {bar:.0f} Elo at equal sims "
+            f"just to tie on the clock -- {'proceeding' if go else 'declined'}"}
+
+
+def decide_stage(facts: dict) -> dict:
+    """Stage a winning checkpoint. Never swap the live one.
+
+    Writes a provenance sidecar because in eighteen months `runs/value.pt` is
+    an untracked binary of unknown origin, and "which run was this, measured
+    against what, by how much" is exactly what nobody will be able to answer.
+    """
     verdict = match_verdict("lab-136m-vs-current")
     candidate = ROOT / "runs/136M-sv/best.pt"
 
     if not verdict["decisive"]:
-        return {"promoted": False, "promote_why": (
-            f"not promoted: {verdict['n']} games, elo {verdict['elo']:+.1f} "
-            f"+-{verdict['err']:.1f}, LOS {verdict['los'] * 100:.1f}% "
-            f"(needs >={PROMOTE_MIN_GAMES} games, LOS >={PROMOTE_MIN_LOS * 100:.0f}%, "
-            f"interval clear of zero)"), "promote_verdict": verdict}
-
+        return {"staged": False, "stage_why":
+                f"not staged: {verdict['n']} games in {verdict['pairs']} pairs, "
+                f"elo {verdict['elo']:+.1f} +-{verdict['err']:.1f}, "
+                f"LLR {verdict['llr']:+.2f}. Needs the sequential test to "
+                f"conclude or the interval to clear zero, on >= "
+                f"{MIN_DECISIVE_PAIRS} pairs"}
     if not candidate.exists():
-        return {"promoted": False, "promote_why": f"no candidate at {candidate}"}
+        return {"staged": False, "stage_why": f"no candidate at {candidate}"}
 
-    live = ROOT / "runs/value.pt"
-    if live.exists():
-        shutil.copyfile(live, ROOT / "runs/value.pt.previous")
-    # Atomic, for the same reason promote.py is: a game starting mid-copy would
-    # otherwise read a torn file.
-    staged = ROOT / "runs/value.pt.staged"
+    staged = ROOT / "runs/value.pt.candidate"
     shutil.copyfile(candidate, staged)
-    os.replace(staged, live)
-    return {"promoted": True, "promote_why": (
-        f"promoted 136M: elo {verdict['elo']:+.1f} +-{verdict['err']:.1f}, "
-        f"LOS {verdict['los'] * 100:.1f}% over {verdict['n']} games. "
-        f"Previous checkpoint kept at runs/value.pt.previous"), "promote_verdict": verdict}
+    (ROOT / "runs/value.pt.candidate.json").write_text(json.dumps({
+        "source": str(candidate),
+        "match": "lab-136m-vs-current",
+        "elo": round(verdict["elo"], 1), "err": round(verdict["err"], 1),
+        "pairs": verdict["pairs"], "games": verdict["n"],
+        "llr": round(verdict["llr"], 2), "measured_at_sims": 400,
+        "causal": facts.get("causal"),
+        "promote_with": "scripts/promote.py runs/value.pt.candidate",
+    }, indent=2))
+    return {"staged": True, "stage_why":
+            f"staged runs/value.pt.candidate: {verdict['elo']:+.1f} "
+            f"+-{verdict['err']:.1f} Elo over {verdict['n']} games. "
+            f"A human promotes it with scripts/promote.py"}
 
 
 def write_report(facts: dict) -> dict:
-    """A single page saying what the lab concluded, for a human to read."""
     lines = ["# Lab report", ""]
     for name, title in (
-        ("lab-batch", "Batch 256 vs 64, equal simulations"),
-        ("lab-cpuct", "c_puct 3.0 vs 2.0"),
-        ("lab-fpu", "fpu -0.5 vs -0.2"),
-        ("lab-136m-vs-current", "136M vs the live 9M"),
+        ("lab-sims-400-200", "200 -> 400 simulations"),
+        ("lab-sims-800-400", "400 -> 800 simulations"),
+        ("lab-sims-1600-800", "800 -> 1600 simulations"),
+        ("lab-136m-vs-current", "136M vs the live 9M, equal simulations"),
     ):
         st = match_verdict(name)
         if not st["n"]:
             continue
-        lines += [
-            f"## {title}",
-            "",
-            f"- {st['n']} games, score {st['score'] * 100:.1f}%",
-            f"- **elo {st['elo']:+.1f} +-{st['err']:.1f}**, LOS {st['los'] * 100:.1f}%",
-            f"- {'A is better' if st['decisive'] else 'not resolved: treat as no difference'}",
-            "",
-        ]
+        lines += [f"## {title}", "",
+                  f"- {st['n']} games in {st['pairs']} pairs, W{st['w']} D{st['d']} L{st['l']}",
+                  f"- **elo {st['elo']:+.1f} +-{st['err']:.1f}**, LOS {st['los'] * 100:.1f}%, LLR {st['llr']:+.2f}",
+                  f"- pairing efficiency r = {st['r']:.3f}",
+                  f"- {'decisive' if st['decisive'] else 'not resolved: treat as no difference'}", ""]
     lines += ["## Decisions", ""]
-    for key in ("causal_why", "promote_why"):
-        if key in facts:
-            lines.append(f"- {facts[key]}")
-    lines += [
-        "",
-        "## Not applied automatically",
-        "",
-        "Match results that imply a *code* change are reported, never applied.",
-        "If the batch match is flat, `CHESSGPU_BATCH` can go to 256 for ~36% more",
-        "nps at no measured cost; that is an edit to `search_engine.py` and a",
-        "human should make it.",
-        "",
-    ]
+    lines += [f"- {v}" for k, v in facts.items() if k.endswith("_why")]
+    lines += ["", "## Not done automatically", "",
+              "Nothing here swaps the live checkpoint. A staged candidate is at",
+              "`runs/value.pt.candidate` with a provenance sidecar; promote it with",
+              "`scripts/promote.py`. Anything implying a *code* change is reported,",
+              "never applied.", ""]
     (LAB / "report.md").write_text("\n".join(lines))
     return {"report": str(LAB / "report.md")}
 
 
 # --- the plan --------------------------------------------------------------
-#
-# Ordered deliberately: the three cheap matches answer live-configuration
-# questions in about an hour each, and they run BEFORE the long training job
-# rather than behind it, so a two-day run does not sit in front of an answer
-# that takes an hour to get.
 
 PLAN: list[Job] = [
-    Job(
-        id="causal",
-        what="pick the attention mask for the 136M run, on held-out loss",
-        decide=decide_causal,
-    ),
-    Job(
-        id="match-batch",
-        what="batch 256 vs 64 at equal simulations: is a bigger batch free?",
-        argv=lambda f: match_argv(
-            "lab-batch", "--a-batch", "256", "--b-batch", "64",
-            "--a-label", "batch256", "--b-label", "batch64",
-        ),
-        probe=lambda: match_progress("lab-batch"),
-        timeout=4 * HOUR,
-    ),
-    Job(
-        id="match-cpuct",
-        what="c_puct 3.0 vs 2.0, never measured",
-        argv=lambda f: match_argv(
-            "lab-cpuct", "--a-cpuct", "3.0", "--b-cpuct", "2.0",
-            "--a-label", "cpuct3", "--b-label", "cpuct2",
-        ),
-        probe=lambda: match_progress("lab-cpuct"),
-        timeout=4 * HOUR,
-    ),
-    Job(
-        id="match-fpu",
-        what="first-play urgency -0.5 vs -0.2, never measured",
-        argv=lambda f: match_argv(
-            "lab-fpu", "--a-fpu", "-0.5", "--b-fpu", "-0.2",
-            "--a-label", "fpu05", "--b-label", "fpu02",
-        ),
-        probe=lambda: match_progress("lab-fpu"),
-        timeout=4 * HOUR,
-    ),
-    Job(
-        id="train-136m",
-        what="the 136M state-value run, ~35h at 821 samples/s",
+    Job(id="ablate-causal-1", what="9M state-value, causal mask, 20k steps",
+        argv=lambda f: ablation_argv("1"),
+        probe=lambda: train_progress("9M-sv-causal1-ablation"), timeout=4 * HOUR),
+    Job(id="ablate-causal-0", what="the same, bidirectional, same seed and data order",
+        argv=lambda f: ablation_argv("0"),
+        probe=lambda: train_progress("9M-sv-causal0-ablation"), timeout=4 * HOUR),
+    Job(id="causal", what="pick the attention mask, on held-out loss",
+        decide=decide_causal, needs=["ablate-causal-1", "ablate-causal-0"]),
+
+    # The exchange rate. This prices the entire remaining roadmap, because
+    # every argument for more throughput -- kernels included -- is a bet on
+    # its slope, and it is what makes the 136M question arithmetic.
+    Job(id="sims-400-200", what="200 -> 400 simulations: what is a doubling worth?",
+        argv=lambda f: match_argv("lab-sims-400-200", "--a-sims", "400",
+                                  "--b-sims", "200", "--no-sprt", budget=()),
+        probe=lambda: match_progress("lab-sims-400-200"), timeout=4 * HOUR),
+    Job(id="sims-800-400", what="400 -> 800 simulations",
+        argv=lambda f: match_argv("lab-sims-800-400", "--a-sims", "800",
+                                  "--b-sims", "400", "--no-sprt", budget=()),
+        probe=lambda: match_progress("lab-sims-800-400"), timeout=6 * HOUR),
+    Job(id="sims-1600-800", what="800 -> 1600 simulations",
+        argv=lambda f: match_argv("lab-sims-1600-800", "--a-sims", "1600",
+                                  "--b-sims", "800", "--no-sprt", budget=()),
+        probe=lambda: match_progress("lab-sims-1600-800"), timeout=8 * HOUR),
+    Job(id="forward-bench", what="how much dearer is a 136M forward pass, in the search loop",
+        argv=lambda f: python(str(ROOT / "scripts/bench_search.py"),
+                              "--preset", "136M",
+                              "--out", str(LAB / "forward-bench.json")),
+        timeout=1 * HOUR),
+    Job(id="scale", what="is 136M worth 35 hours, given the exchange rate",
+        decide=decide_scale,
+        needs=["sims-400-200", "sims-800-400", "sims-1600-800", "forward-bench"]),
+
+    Job(id="train-136m", what="the 136M state-value run, only if `scale` said so",
         argv=lambda f: python(
             str(ROOT / "train.py"),
-            "--target", "state_value", "--value-bins", "64",
-            "--preset", "136M",
-            # Batch 256 because 512 does not fit in 16GB, and because
-            # throughput is flat across batch size anyway (8128/s at 256 vs
-            # 7807/s at 1024 for the 9M), so the ceiling costs nothing.
+            "--target", "state_value", "--value-bins", "64", "--preset", "136M",
+            # Warm-started, because this project measured warm-starting at
+            # +15.3 puzzle points and the first version of this job did not do
+            # it. A cold 136M spends a large part of its budget learning what a
+            # chess position is before it starts learning to evaluate one, and
+            # the resulting match then cannot separate scale from
+            # initialisation.
+            "--init-from", "runs/9M-causal/best.pt",
             "--steps", "400000", "--batch-size", "256",
-            "--workers", "8", "--lr", "3e-4", "--warmup", "2000",
-            "--causal", f.get("causal", "1"),
-            "--log-every", "500", "--eval-every", "20000",
+            # Scaled for the batch. 3e-4 was tuned at batch 1024; carrying it
+            # unchanged to batch 256 is roughly 4x more aggressive per sample,
+            # into a model with 15x the parameters.
+            "--lr", "7.5e-5", "--warmup", "4000",
+            "--workers", "8", "--causal", f.get("causal", "1"),
+            # Every 5k, not every 20k. At 821 samples/s and batch 256 that was
+            # 6.9 hours between held-out numbers, so the first signal that the
+            # run was going badly arrived at hour seven of thirty-five.
+            "--log-every", "500", "--eval-every", "5000",
             "--eval-puzzles", "1000", "--ckpt-every", "10000",
             "--val-batches", "32", "--compile", "1",
-            "--run", "136M-sv", "--auto-resume",
-        ),
+            "--run", "136M-sv", "--auto-resume"),
         probe=lambda: train_progress("136M-sv"),
-        # Generous: the estimate is 35h and contention with the live bot is
-        # real. SIGTERM at the deadline makes train.py checkpoint and exit
-        # cleanly, so hitting this is a stop, not a loss.
-        timeout=50 * HOUR,
-        needs=["causal"],
-    ),
-    Job(
-        id="match-136m",
-        what="the trained 136M against the live 9M, equal simulations",
-        argv=lambda f: match_argv(
-            "lab-136m-vs-current",
-            "--a-value", str(ROOT / "runs/136M-sv/best.pt"),
-            "--b-value", str(ROOT / "runs/value.pt"),
-            "--a-label", "136M", "--b-label", "live-9M",
-            games=400,
-        ),
+        timeout=50 * HOUR, truncation_is_failure=True, needs=["scale"]),
+
+    Job(id="match-136m", what="the trained 136M against the live 9M",
+        argv=lambda f: match_argv("lab-136m-vs-current",
+                                  "--a-value", str(ROOT / "runs/136M-sv/best.pt"),
+                                  "--b-value", str(ROOT / "runs/value.pt"),
+                                  "--a-label", "136M", "--b-label", "live-9M",
+                                  games=400),
         probe=lambda: match_progress("lab-136m-vs-current"),
-        # A 136M forward pass is roughly an order of magnitude dearer than a
-        # 9M one and one side of every game pays it, so this is much slower per
-        # game than the tuning matches. Generous on purpose: the SPRT stops it
-        # early if the answer is clear, and a match cut short at the deadline
-        # still leaves a valid, smaller sample in the log.
-        timeout=20 * HOUR,
-        needs=["train-136m"],
-    ),
-    Job(
-        id="promote",
-        what="swap the live checkpoint if, and only if, the match said so",
-        decide=decide_promote,
-        needs=["match-136m"],
-    ),
-    Job(
-        id="report",
-        what="write runs/lab/report.md",
-        decide=write_report,
-    ),
+        timeout=20 * HOUR, needs=["train-136m"]),
+    Job(id="stage", what="stage a candidate if the match earned it. Never promote",
+        decide=decide_stage, needs=["match-136m"]),
+    Job(id="report", what="write runs/lab/report.md", decide=write_report),
 ]
+
+# Every job that must be re-run when its dependency is reset.
+DEPENDENTS: dict[str, list[str]] = {}
+for _job in PLAN:
+    for _need in _job.needs:
+        DEPENDENTS.setdefault(_need, []).append(_job.id)
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +464,12 @@ def event(kind: str, **fields) -> None:
         fh.write(json.dumps({"t": time.time(), "ev": kind, **fields}) + "\n")
 
 
+def satisfied(state: dict, job_id: str) -> bool:
+    """A dependency is met only if the job it names actually COMPLETED."""
+    record = state["done"].get(job_id)
+    return bool(record) and record.get("outcome") == "completed"
+
+
 # ---------------------------------------------------------------------------
 # running
 
@@ -419,9 +478,11 @@ def foreign_gpu_jobs(own: set[int]) -> list[str]:
     """Training or match processes this runner did not start.
 
     Deliberately not `pgrep -f`: this file's own command line contains the
-    strings being searched for, so pgrep matches itself, which is a trap this
-    project has already fallen into twice. Reading /proc and excluding our own
-    pids cannot make that mistake.
+    strings being searched for, so pgrep matches itself, a trap this project has
+    already hit twice. The `python` requirement is the second lesson from the
+    same audit -- a plain substring match meant that `vim train.py`, `tail`, or
+    a shell whose history line mentioned the file all registered as GPU jobs and
+    parked the queue indefinitely.
     """
     found = []
     for entry in Path("/proc").iterdir():
@@ -432,55 +493,66 @@ def foreign_gpu_jobs(own: set[int]) -> list[str]:
         except OSError:
             continue
         cmd = cmd.replace("\0", " ").strip()
-        if not cmd:
-            continue
-        if "train.py" in cmd or "scripts/match.py" in cmd:
+        if "python" in cmd and ("train.py" in cmd or "scripts/match.py" in cmd):
             found.append(cmd[:120])
     return found
 
 
-def wait_for_quiet(poll: float = 60.0) -> None:
-    """Hold until nothing else is using the card for an experiment.
+def wait_for_quiet(state: dict, poll: float = 60.0) -> bool:
+    """Hold until nothing else is using the card. False if we gave up.
 
-    The live bot is not counted: it plays whether or not the lab is busy, that
-    is its job, and every match here is fixed-simulation so contention costs
-    wall clock and cannot bias a result.
+    The live bot is not counted: it plays whether or not the lab is busy, and
+    every fixed-simulation match here is unbiased by contention -- it only takes
+    longer. A `--time` match is a different matter and must not share the card.
+
+    Bounded, and the wait is recorded in the state. Unbounded silent waiting is
+    pixel-identical to a dead queue in the status view, which is the failure
+    that matters at 3am.
     """
     own = {os.getpid()}
-    announced = False
+    started = time.time()
     while (busy := foreign_gpu_jobs(own)):
-        if not announced:
+        waited = time.time() - started
+        if waited > MAX_WAIT_HOURS * HOUR:
+            state["waiting_since"] = None
+            save_state(state)
+            print(f"[lab] gave up after {MAX_WAIT_HOURS}h waiting for: {busy[0]}",
+                  flush=True)
+            event("wait-timeout", jobs=busy)
+            return False
+        if state.get("waiting_since") is None:
+            state["waiting_since"] = started
+            save_state(state)
             print(f"[lab] waiting for {len(busy)} foreign job(s): {busy[0]}", flush=True)
             event("waiting", jobs=busy)
-            announced = True
         time.sleep(poll)
-    if announced:
+    if state.get("waiting_since") is not None:
+        state["waiting_since"] = None
+        save_state(state)
         print("[lab] card is free, continuing", flush=True)
+    return True
 
 
-def run_command(job: Job, facts: dict) -> tuple[bool, str]:
-    argv = job.argv(facts)
+def run_command(job: Job) -> tuple[str, str]:
+    """(outcome, detail) where outcome is completed / truncated / failed."""
+    argv = job.argv({})
     log_path = LAB / f"{job.id}.log"
     LAB.mkdir(parents=True, exist_ok=True)
     print(f"[lab] {job.id}: {' '.join(argv)}", flush=True)
 
+    truncated = False
     with log_path.open("a") as fh:
         fh.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(argv)} =====\n")
         fh.flush()
-        proc = subprocess.Popen(
-            argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT,
-            # Its own process group, so the SIGTERM below reaches the whole
-            # job -- train.py's dataloader workers included -- instead of just
-            # the parent, which would leave orphans holding the GPU.
-            start_new_session=True,
-        )
+        proc = subprocess.Popen(argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT,
+                                start_new_session=True)
         deadline = time.time() + job.timeout
         while proc.poll() is None:
             if time.time() > deadline:
                 print(f"[lab] {job.id}: deadline reached, SIGTERM", flush=True)
-                # SIGTERM, not SIGKILL: train.py finishes its step, runs a
-                # final eval and checkpoints. That takes minutes and is the
-                # difference between stopping a run and losing it.
+                truncated = True
+                # SIGTERM, not SIGKILL: train.py finishes its step, runs a final
+                # eval and checkpoints. Minutes well spent.
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
                     proc.wait(timeout=600)
@@ -490,9 +562,10 @@ def run_command(job: Job, facts: dict) -> tuple[bool, str]:
             time.sleep(5)
 
     code = proc.returncode
-    # A job stopped at its deadline exits non-zero and has still done its work.
-    ok = code in (0, -signal.SIGTERM, 128 + signal.SIGTERM)
-    return ok, f"exit {code}"
+    if truncated:
+        return ("failed" if job.truncation_is_failure else "truncated",
+                f"deadline at {job.timeout / HOUR:.0f}h, exit {code}")
+    return ("completed" if code == 0 else "failed", f"exit {code}")
 
 
 def run(only: str | None = None) -> int:
@@ -505,9 +578,9 @@ def run(only: str | None = None) -> int:
     for job in PLAN:
         if only and job.id != only:
             continue
-        if job.id in state["done"]:
+        if satisfied(state, job.id):
             continue
-        missing = [n for n in job.needs if n not in state["done"]]
+        missing = [n for n in job.needs if not satisfied(state, n)]
         if missing:
             print(f"[lab] {job.id}: skipped, needs {missing}", flush=True)
             continue
@@ -518,38 +591,38 @@ def run(only: str | None = None) -> int:
         started = time.time()
         print(f"\n[lab] === {job.id}: {job.what} ===", flush=True)
 
-        # Before decisions too, not just commands. A decision reads the logs of
-        # the job before it, and a log being read while it is still being
-        # written is a decision made on half the evidence -- which is exactly
-        # how the first version of this would have picked an attention mask for
-        # a 35-hour run from a 4,000-step sample.
-        wait_for_quiet()
-
-        if job.decide is not None:
-            facts = job.decide(state["facts"])
-            state["facts"].update(facts)
-            ok, detail = True, "; ".join(
-                str(v) for k, v in facts.items() if k.endswith("_why")
-            ) or "done"
+        # Before decisions as well as commands: a decision that reads a log
+        # still being written is a decision made on part of the evidence.
+        if not wait_for_quiet(state):
+            outcome, detail = "failed", f"gave up waiting after {MAX_WAIT_HOURS}h"
+        elif job.decide is not None:
+            try:
+                facts = job.decide(state["facts"])
+                state["facts"].update(facts)
+                outcome = "completed"
+                detail = "; ".join(str(v) for k, v in facts.items()
+                                   if k.endswith("_why")) or "done"
+            except Exception:
+                # Unguarded, this killed the process with `current` set, systemd
+                # restarted it, and it raised on the same job forever -- a crash
+                # loop that looks like a running job in the status view.
+                outcome, detail = "failed", traceback.format_exc(limit=3)
+                print(f"[lab] {job.id} raised:\n{detail}", flush=True)
         else:
-            ok, detail = run_command(job, state["facts"])
+            outcome, detail = run_command(job)
 
         state["done"][job.id] = {
-            "ok": ok,
-            "detail": detail,
-            "seconds": round(time.time() - started),
-            "finished": time.time(),
+            "outcome": outcome, "detail": detail,
+            "seconds": round(time.time() - started), "finished": time.time(),
             "summary": job.probe() if job.probe else detail,
         }
         state["current"] = None
         save_state(state)
-        event("job-end", job=job.id, ok=ok, detail=detail,
+        event("job-end", job=job.id, outcome=outcome, detail=detail,
               seconds=state["done"][job.id]["seconds"])
-        print(f"[lab] {job.id}: {'ok' if ok else 'FAILED'} -- {detail}", flush=True)
+        print(f"[lab] {job.id}: {outcome} -- {detail}", flush=True)
 
-        if not ok:
-            # Stop rather than run the rest against a broken premise. The queue
-            # resumes from here once the cause is fixed.
+        if outcome == "failed":
             print(f"[lab] halting: {job.id} failed", flush=True)
             event("lab-halt", job=job.id)
             return 1
@@ -562,41 +635,59 @@ def run(only: str | None = None) -> int:
 # ---------------------------------------------------------------------------
 # looking at it
 
+MARKS = {"completed": "done ", "truncated": "cut  ", "failed": "FAIL "}
+
 
 def render() -> str:
     state = load_state()
-    lines = []
-    total = len(PLAN)
-    done = sum(1 for j in PLAN if j.id in state["done"])
-    header = f"SumoFish lab   {done}/{total} jobs"
+    done = sum(1 for j in PLAN if satisfied(state, j.id))
+    header = f"SumoFish lab   {done}/{len(PLAN)} jobs"
     if state.get("started"):
         header += f"   running {(time.time() - state['started']) / HOUR:.1f}h"
-    lines += [header, "=" * max(60, len(header)), ""]
+    if state.get("waiting_since"):
+        header += f"   BLOCKED {(time.time() - state['waiting_since']) / 60:.0f}m"
+    lines = [header, "=" * max(64, len(header)), ""]
 
     for job in PLAN:
         record = state["done"].get(job.id)
         if record:
-            mark = "done " if record["ok"] else "FAIL "
-            detail = record.get("summary") or record["detail"]
-            took = f"{record['seconds'] / 60:.0f}m" if record["seconds"] < HOUR \
-                else f"{record['seconds'] / HOUR:.1f}h"
-            lines.append(f"  [{mark}] {job.id:<16} {took:>6}  {detail}")
+            took = (f"{record['seconds'] / 60:.0f}m" if record["seconds"] < HOUR
+                    else f"{record['seconds'] / HOUR:.1f}h")
+            mark = MARKS.get(record.get("outcome"), "?    ")
+            lines.append(f"  [{mark}] {job.id:<16} {took:>6}  "
+                         f"{record.get('summary') or record['detail']}")
         elif state.get("current") == job.id:
-            live = job.probe() if job.probe else "running"
-            lines.append(f"  [ >>> ] {job.id:<16} {'':>6}  {live}")
+            lines.append(f"  [ >>> ] {job.id:<16} {'':>6}  "
+                         f"{job.probe() if job.probe else 'running'}")
         else:
             lines.append(f"  [     ] {job.id:<16} {'':>6}  {job.what}")
 
-    facts = state.get("facts", {})
-    notes = [v for k, v in facts.items() if k.endswith("_why")]
+    notes = [v for k, v in state.get("facts", {}).items() if k.endswith("_why")]
     if notes:
-        lines += ["", "Decisions:"]
-        lines += [f"  - {n}" for n in notes]
-
-    report = LAB / "report.md"
-    if report.exists():
-        lines += ["", f"Report: {report}"]
+        lines += ["", "Decisions:"] + [f"  - {n}" for n in notes]
+    if (LAB / "report.md").exists():
+        lines += ["", f"Report: {LAB / 'report.md'}"]
     return "\n".join(lines) + "\n"
+
+
+def reset(state: dict, job_id: str | None) -> None:
+    """Forget a job AND everything downstream of it.
+
+    Resetting one job and leaving its dependents marked done is how a queue
+    serves a stale conclusion: rerun the training and the evaluation match still
+    says done, describing a checkpoint that no longer exists at that path.
+    """
+    if job_id is None:
+        state.update({"done": {}, "facts": {}, "current": None, "started": None})
+        print("plan reset")
+        return
+    stack, cleared = [job_id], []
+    while stack:
+        jid = stack.pop()
+        if state["done"].pop(jid, None) is not None:
+            cleared.append(jid)
+        stack.extend(DEPENDENTS.get(jid, []))
+    print(f"forgot {', '.join(cleared) or job_id} (and dependents); they will run again")
 
 
 def main() -> None:
@@ -604,7 +695,7 @@ def main() -> None:
     ap.add_argument("action", nargs="?", default="status",
                     choices=["run", "status", "watch", "reset"])
     ap.add_argument("--only", help="run a single job by id")
-    ap.add_argument("--job", help="with reset: forget one job instead of all")
+    ap.add_argument("--job", help="with reset: forget one job and its dependents")
     args = ap.parse_args()
 
     if args.action == "run":
@@ -618,12 +709,7 @@ def main() -> None:
             return
     if args.action == "reset":
         state = load_state()
-        if args.job:
-            state["done"].pop(args.job, None)
-            print(f"forgot {args.job}; it will run again")
-        else:
-            state = {"done": {}, "facts": {}, "current": None, "started": None}
-            print("plan reset")
+        reset(state, args.job)
         save_state(state)
         return
     print(render(), end="")
