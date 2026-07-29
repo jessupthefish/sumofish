@@ -12,6 +12,7 @@ icy_sixel = { workspace = true }
 shakmaty  = { workspace = true }
 crossterm = { workspace = true }
 png       = "0.17"
+sf-board  = { workspace = true }
 
 nvml-wrapper = { workspace = true }
 zbus         = { workspace = true }

@@ -1869,6 +1869,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sf-board"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "png 0.17.16",
+ "resvg",
+ "sf-theme",
+ "shakmaty",
+]
+
+[[package]]
 name = "sf-layout"
 version = "0.1.0"
 dependencies = [
@@ -2701,6 +2712,7 @@ dependencies = [
  "nvml-wrapper",
  "png 0.17.16",
  "resvg",
+ "sf-board",
  "shakmaty",
  "tokio",
  "zbus",

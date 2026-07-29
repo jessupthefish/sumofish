@@ -1,0 +1,16 @@
+[package]
+name = "sf-board"
+version = "0.1.0"
+edition = "2024"
+
+# No tokio and no ratatui: this crate turns a position into pixels and knows
+# nothing about terminals or scheduling. The encode is expensive enough to want a
+# thread, but whose thread is the app's business, not this crate's.
+[dependencies]
+shakmaty  = { workspace = true }
+resvg     = { workspace = true }
+sf-theme  = { workspace = true }
+anyhow    = { workspace = true }
+
+[dev-dependencies]
+png = "0.17"
