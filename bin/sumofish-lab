@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# The experiment queue: what it has run, what it concluded, what is next.
+#   sumofish-lab          one look
+#   sumofish-lab watch    live
+set -euo pipefail
+ROOT=/home/nomad/chess-gpu
+exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" "$ROOT/scripts/lab.py" "$@"
