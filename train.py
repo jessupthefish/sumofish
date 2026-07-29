@@ -172,7 +172,10 @@ def main() -> None:
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
     ema = EMA(model, decay=args.ema_decay)
     start_step = 0
-    best = 0.0
+    best = -float("inf")
+    # Which metric `best` is a value of. Checkpointed, so a resume across a
+    # change of selection rule resets rather than comparing incomparables.
+    best_metric = ""
 
     if args.auto_resume and not args.resume:
         candidate = out / "latest.pt"
@@ -189,7 +192,8 @@ def main() -> None:
         ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
         start_step = ckpt["step"]
         # Older checkpoints predate this field; 0.0 is the old (buggy) behaviour.
-        best = ckpt.get("best", 0.0)
+        best = ckpt.get("best", -float("inf"))
+        best_metric = ckpt.get("best_metric", "puzzle_acc")
         print(f"resumed from {args.resume} at step {start_step:,}, best={best:.4f}")
 
     if args.init_from and not args.resume:
@@ -255,6 +259,7 @@ def main() -> None:
                 # Must round-trip, or a resume resets it to 0.0 and the next
                 # eval unconditionally overwrites best.pt with a worse model.
                 "best": best,
+                "best_metric": best_metric,
             },
             tmp,
         )
@@ -389,10 +394,29 @@ def main() -> None:
                 rec["val_loss"] = round(val_loss, 5)
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
-            if result.accuracy > best:
-                best = result.accuracy
+            # Select on held-out loss when there is one, and only fall back to
+            # puzzle accuracy when there is not.
+            #
+            # Puzzle accuracy has a sigma of 1.5 points at n=1000, and taking
+            # the maximum over twenty evals of a metric that noisy is biased
+            # upward by roughly two sigma: best.pt is whichever eval got lucky.
+            # Measured on the finished 9M state-value run, final.pt (step 300k)
+            # scores 2.1438 held out against best.pt's (step 280k) 2.1459, so
+            # the checkpoint this rule promoted -- and which is deployed to the
+            # live bot -- is the worse of the two.
+            #
+            # Higher is better either way, so the loss enters negated, and the
+            # metric's name is checkpointed so a resume cannot compare an
+            # accuracy against a negative loss and save on the first eval.
+            metric = "neg_val_loss" if val_loss is not None else "puzzle_acc"
+            score = -val_loss if val_loss is not None else result.accuracy
+            if metric != best_metric:
+                print(f"  [eval] selection metric is now {metric}; resetting best")
+                best, best_metric = -float("inf"), metric
+            if score > best:
+                best = score
                 save(step + 1, "best")
-                print(f"  [eval] new best, saved")
+                print(f"  [eval] new best on {metric}, saved")
             del eval_model
             torch.cuda.empty_cache()
             model.train()
