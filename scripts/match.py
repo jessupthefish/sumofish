@@ -121,6 +121,7 @@ class Spec:
     searchless: bool
     reuse: bool
     legacy_draws: bool
+    fixed_cpuct: bool
 
     def describe(self) -> str:
         if self.searchless:
@@ -189,6 +190,8 @@ class Player:
                 batch=spec.batch,
                 reuse=spec.reuse,
                 terminal=terminal_value_legacy if spec.legacy_draws else terminal_value,
+                # None restores the pre-schedule constant c_puct.
+                c_puct_base=None if spec.fixed_cpuct else 19652.0,
             )
 
     def new_game(self) -> None:
@@ -392,6 +395,9 @@ def main() -> None:
         ap.add_argument(f"--{side}-searchless", action="store_true")
         ap.add_argument(f"--{side}-no-reuse", action="store_true",
                         help="rebuild the tree from scratch every move")
+        ap.add_argument(f"--{side}-fixed-cpuct", action="store_true",
+                        help="use a constant c_puct instead of AlphaZero's "
+                             "visit-count schedule")
         ap.add_argument(f"--{side}-legacy-draws", action="store_true",
                         help="the pre-rules.py terminal test: treat a draw that "
                              "is merely reachable by one move as already drawn")
@@ -436,6 +442,7 @@ def main() -> None:
             searchless=getattr(args, f"{side}_searchless"),
             reuse=not getattr(args, f"{side}_no_reuse"),
             legacy_draws=getattr(args, f"{side}_legacy_draws"),
+            fixed_cpuct=getattr(args, f"{side}_fixed_cpuct"),
         )
 
     a, b = spec("a"), spec("b")

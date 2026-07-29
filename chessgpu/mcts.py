@@ -133,6 +133,9 @@ class MCTS:
         value_policy,                 # ValuePolicy: scores positions
         policy=None,                  # NeuralPolicy: supplies move priors
         c_puct: float = 2.0,
+        # AlphaZero's published schedule. None restores the constant `c_puct`.
+        c_puct_base: float | None = 19652.0,
+        c_puct_init: float = 1.25,
         simulations: int = 400,
         batch: int = 1,               # >1 uses virtual loss to fill GPU batches
         dirichlet_alpha: float = 0.3,
@@ -144,6 +147,8 @@ class MCTS:
         self.value_policy = value_policy
         self.policy = policy
         self.c_puct = c_puct
+        self.c_puct_base = c_puct_base
+        self.c_puct_init = c_puct_init
         self.simulations = simulations
         self.batch = max(1, batch)
         # Root exploration noise. Essential for self-play RL (it forces variety
@@ -167,6 +172,39 @@ class MCTS:
         self.reused = 0
         self._root: Node | None = None
         self._root_stack: list[chess.Move] = []
+
+    def c_puct_at(self, visits: int) -> float:
+        """How hard to explore, as a function of how much has been seen here.
+
+        A constant is the obvious choice and it is wrong the moment the search
+        budget moves, which it just did: the bot went from ~800 nodes a move in
+        bullet to ~60,000 at 15+10. The exploration term is
+        `c * P * sqrt(N_parent) / (1 + N_child)`, so the balance between trying
+        something new and pursuing what already looks good shifts with N, and
+        the c that balances it shifts too. Our 2.0 was never tuned at all, and
+        against AlphaZero's schedule it over-explores below ~20,000 visits and
+        under-explores above:
+
+            visits      AZ      ours
+               400    1.27      2.00
+              5000    1.48      2.00
+             20000    1.95      2.00
+             60000    2.65      2.00
+
+        AlphaZero's answer is to make it grow logarithmically rather than tune
+        it per time control, which is the right shape here for a reason beyond
+        elegance: this engine's budget is a clock, so its visit count varies
+        from move to move within a single game as the clock runs down. There is
+        no single N to tune for even if we wanted to.
+
+        `c_puct_base` and `c_puct_init` are AlphaZero's published values, not
+        fitted here. Set `c_puct_base` to None to get the old constant back,
+        which is what `match.py --a-fixed-cpuct` does so the two can be played
+        against each other rather than argued about.
+        """
+        if self.c_puct_base is None:
+            return self.c_puct
+        return math.log((1.0 + visits + self.c_puct_base) / self.c_puct_base) + self.c_puct_init
 
     def reset(self) -> None:
         """Forget the tree. Call between games, never within one."""
@@ -273,7 +311,8 @@ class MCTS:
         # line before wandering to a sibling. Both terms below are in the
         # parent's frame.
         q = (1.0 - child.q) if child.visits else max(0.0, parent.q + self.fpu)
-        u = self.c_puct * child.prior * math.sqrt(parent.visits) / (1 + child.visits)
+        u = (self.c_puct_at(parent.visits) * child.prior
+             * math.sqrt(parent.visits) / (1 + child.visits))
         return q + u
 
     def _select_child(self, node: Node) -> tuple[chess.Move, Node]:
@@ -307,7 +346,7 @@ class MCTS:
         the two against each other. If they ever disagree, this one is wrong.
         """
         # sqrt(N_parent) and the FPU fallback do not vary across children.
-        c_sqrt = self.c_puct * math.sqrt(node.visits)
+        c_sqrt = self.c_puct_at(node.visits) * math.sqrt(node.visits)
         fpu_q = node.value_sum / node.visits + self.fpu if node.visits else self.fpu
         if fpu_q < 0.0:
             fpu_q = 0.0
