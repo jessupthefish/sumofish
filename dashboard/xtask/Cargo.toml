@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow    = { workspace = true }
+base64    = { workspace = true }
+resvg     = { workspace = true }
+icy_sixel = { workspace = true }
+shakmaty  = { workspace = true }
+crossterm = { workspace = true }
+png       = "0.17"
+
+nvml-wrapper = { workspace = true }
+zbus         = { workspace = true }
+zbus_systemd = { workspace = true }
+tokio        = { workspace = true }
