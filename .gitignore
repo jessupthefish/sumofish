@@ -32,3 +32,7 @@ bot.env
 # Local working notes, deliberately not published (see commit "Drop
 # references to removed internal docs"). Kept on disk for future sessions.
 CLAUDE.md
+
+# Third-party binaries, downloaded not vendored. 110MB and reproducible:
+# see the Stockfish note in CLAUDE.md for the exact release and how to refetch.
+tools/
