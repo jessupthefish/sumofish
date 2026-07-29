@@ -79,6 +79,14 @@ def live_clocks(game: dict) -> tuple[float | None, float | None]:
 # ---- header ---------------------------------------------------------------
 
 def header(state, user: str, width: int):
+    """Who we are, how we are rated, how we are doing, and is the feed alive.
+
+    Everything here was previously an unlabelled abbreviation -- "bul 2513?
+    rd199 4g -456" -- which is dense but unreadable unless you already know
+    what it says. The values are still compact, because the row is one line
+    and there are four time controls, but the notation is now explained once
+    in the subtitle rather than left to be guessed at.
+    """
     prof = state.get("profile", {})
     f = state.field("profile")
     perfs = prof.get("perfs", {})
@@ -87,46 +95,52 @@ def header(state, user: str, width: int):
 
     grid = Table.grid(padding=(0, 2), expand=True)
     grid.add_column(justify="left")
-    grid.add_column(justify="left")
+    grid.add_column(justify="right")
 
     left = Text(no_wrap=True)
     left.append(" SUMOFISH ", style=f"bold {BG} on {ACCENT}")
-    left.append("  ")
     shown = 0
     for tc in ("bullet", "blitz", "rapid", "classical"):
         p = perfs.get(tc)
         if not p or not p.get("games"):
             continue
         shown += 1
-        left.append(f"{tc[:3]} ", style=f"{DIM} on {BG}")
+        left.append("   ")
+        left.append(f"{tc} ", style=f"{DIM} on {BG}")
         left.append(f"{p['rating']}", style=f"bold {ACCENT} on {BG}")
-        left.append("?" if p.get("prov") else " ", style=f"{DIM} on {BG}")
+        if p.get("prov"):
+            left.append("?", style=f"{WARM} on {BG}")
+        left.append(f" \u00b1{p.get('rd','?')}", style=f"{FAINT} on {BG}")
+        left.append(f"  {p.get('games')} games", style=f"{DIM} on {BG}")
         series = hist.get(tc, [])
         if len(series) >= 2:
-            spark, lo, hi = sparkline(series, width=18, style=INFO)
+            left.append("  ")
+            spark, _lo, _hi = sparkline(series, width=14, style=INFO)
             left.append_text(spark)
             delta = series[-1] - series[0]
             left.append(f" {delta:+.0f}",
                         style=f"{GOOD if delta >= 0 else BAD} on {BG}")
-        left.append(f"  rd{p.get('rd','?')}  {p.get('games')}g   ",
-                    style=f"{DIM} on {BG}")
     if not shown:
-        left.append("no rated games yet", style=f"{DIM} on {BG}")
+        left.append("   no rated games yet", style=f"{DIM} on {BG}")
 
-    right = Text(no_wrap=True, justify="right")
-    right.append(f"{counts.get('win', 0)}W ", style=f"{GOOD} on {BG}")
-    right.append(f"{counts.get('draw', 0)}D ", style=f"{DIM} on {BG}")
-    right.append(f"{counts.get('loss', 0)}L", style=f"{BAD} on {BG}")
-    right.append(f"   {counts.get('all', 0)} games  ", style=f"{DIM} on {BG}")
+    right = Text(no_wrap=True)
+    right.append(f"{counts.get('win', 0)} won", style=f"{GOOD} on {BG}")
+    right.append(" \u00b7 ", style=f"{FAINT} on {BG}")
+    right.append(f"{counts.get('draw', 0)} drawn", style=f"{DIM} on {BG}")
+    right.append(" \u00b7 ", style=f"{FAINT} on {BG}")
+    right.append(f"{counts.get('loss', 0)} lost", style=f"{BAD} on {BG}")
+    right.append(f"   of {counts.get('all', 0)}   ", style=f"{DIM} on {BG}")
     right.append_text(track_tag(f, "lichess"))
-    # A heartbeat that is independent of the data it sits next to: it proves
-    # the render loop is alive even when nothing has changed, which is the
-    # difference between "quiet" and "dead".
-    right.append(f"  {'◆' if int(time.time() * 2) % 2 else '◇'}",
+    # A heartbeat independent of the data beside it: it proves the render loop
+    # is alive even when nothing has changed, which is the difference between
+    # "quiet" and "dead".
+    right.append(f"  {'\u25c6' if int(time.time() * 2) % 2 else '\u25c7'}",
                  style=f"{FAINT} on {BG}")
 
     grid.add_row(left, right)
-    return _panel(grid, "", border=FAINT, subtitle=f"[{FAINT}]lichess.org/@/{user}/tv[/]")
+    legend = ("? provisional  \u00b7  \u00b1 rating uncertainty  \u00b7  "
+              "spark = rating so far today")
+    return _panel(grid, "", border=FAINT, subtitle=f"[{FAINT}]{legend}[/]")
 
 
 def _rating_history(state) -> dict[str, list[float]]:
@@ -201,8 +215,10 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         head = Text(no_wrap=True)
         head.append("board ", style=f"{FG} on {BG}")
         head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
+        head.append("   name \u00b7 title \u00b7 rating \u00b7 captures \u00b7 clock "
+                    "\u00b7 engine's win estimate", style=f"{FAINT} on {BG}")
         rows = [head]
-        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
+        rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
         # Nothing down the side of the board. The evaluation is already on
         # both player lines as a number, in the mind panel as a percentage,
         # and across the whole game in the eval chart; a fourth copy as a
@@ -210,23 +226,25 @@ def board_panel(state, user: str, width: int, height: int, scale: str = "pixel2"
         # width and a permanent bar in the corner of the eye.
         for _ in range(image_rows):
             rows.append(Text(""))
-        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
+        rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
         return Group(*rows)
 
     rows = []
-    rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top))
+    rows.append(_player_line(top_name, top_clock, board.turn == (chess.BLACK if not flip else chess.WHITE), _captured(board, chess.WHITE if flip else chess.BLACK), wp_top, width))
     if True:
         art = boardmod.render(board, flip=flip, last=last_move, scale=scale)
         _bw, bh = boardmod.board_size(scale)
         for line in art.split("\n"):
             rows.append(line)
-    rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom))
+    rows.append(_player_line(bottom_name, bottom_clock, board.turn == (chess.WHITE if not flip else chess.BLACK), _captured(board, chess.BLACK if flip else chess.WHITE), wp_bottom, width))
 
     # Same shape as the image path above: a label line rather than a panel, so
     # the two renderers do not look like two different programs.
     head = Text(no_wrap=True)
     head.append("board ", style=f"{FG} on {BG}")
     head.append(f"lichess.org/{game['id']}", style=f"{FAINT} on {BG}")
+    head.append("   name \u00b7 title \u00b7 rating \u00b7 captures \u00b7 clock "
+                "\u00b7 engine's win estimate", style=f"{FAINT} on {BG}")
     return Group(head, *rows)
 
 
@@ -253,37 +271,56 @@ def _our_colour(players: dict, user: str, playing: list) -> str:
     return "black"
 
 
-def _names(players: dict, flip: bool) -> tuple[str, str]:
-    def label(side):
-        u = (players.get(side, {}).get("user") or {})
-        rating = players.get(side, {}).get("rating")
-        title = u.get("title")
-        name = u.get("name", "?")
-        return f"{title + ' ' if title else ''}{name}" + (f" ({rating})" if rating else "")
-    return (label("white"), label("black")) if flip else (label("black"), label("white"))
+def _names(players: dict, flip: bool):
+    """(title, name, rating) per side, nearest player last.
 
-
-def _player_line(name: str, clock: float | None, to_move: bool, taken: Text,
-                 prob: float | None = None) -> Text:
-    """One player: their share of the evaluation, name, captures, clock.
-
-    The percentage sits in the same columns as the gauge, directly above and
-    below it, so the bar is labelled at both ends rather than being a coloured
-    column the reader has to infer the meaning of.
+    Kept as three fields rather than one string because the rating wants its
+    own column: buried in parentheses after a variable-length name it lands in
+    a different place on every line, which is exactly why it was hard to find.
     """
+    def parts(side):
+        u = (players.get(side, {}).get("user") or {})
+        return (u.get("title") or "", u.get("name", "?"),
+                players.get(side, {}).get("rating"))
+    return (parts("white"), parts("black")) if flip else (parts("black"), parts("white"))
+
+
+# Columns for a player line. Fixed, so both players' figures land in the same
+# place and can be compared by looking rather than by reading.
+NAME_W, RATING_W, CLOCK_W = 20, 5, 8
+
+
+def _player_line(who, clock: float | None, to_move: bool, taken: Text,
+                 prob: float | None, width: int) -> Text:
+    """One player, in columns: name, rating, captures, clock, win estimate.
+
+    Aligned on purpose. The rating used to sit in parentheses after the name,
+    so with a four-character name above a twelve-character one the two numbers
+    were nowhere near each other and comparing them meant hunting.
+    """
+    title, name, rating = who
     line = Text(no_wrap=True)
-    if prob is None:
-        line.append(" " * (EVAL_WIDTH + 1), style=f"on {BG}")
-    else:
-        line.append(f"{prob * 100:>{EVAL_WIDTH}.0f}", style=f"{FG} on {BG}")
-        line.append(" ", style=f"{DIM} on {BG}")
-    line.append("▸ " if to_move else "  ", style=f"{ACCENT} on {BG}")
-    line.append(f"{name}", style=f"{'bold ' + FG if to_move else DIM} on {BG}")
-    line.append("  ")
-    line.append_text(taken)
+    line.append("\u25b8 " if to_move else "  ", style=f"{ACCENT} on {BG}")
+    line.append(f"{name[:NAME_W]:<{NAME_W}}",
+                style=f"{'bold ' + FG if to_move else FG} on {BG}")
+    line.append(f"{title:>3} ", style=f"{PLUM if title else DIM} on {BG}")
+    line.append(f"{rating if rating else '--':>{RATING_W}}",
+                style=f"bold {ACCENT} on {BG}")
     line.append("   ")
+    line.append_text(taken)
+
+    tail = Text(no_wrap=True)
     style = BAD if (clock is not None and clock < 10) else (ACCENT if to_move else DIM)
-    line.append(clockstr(clock), style=f"bold {style} on {BG}")
+    tail.append(f"{clockstr(clock):>{CLOCK_W}}", style=f"bold {style} on {BG}")
+    if prob is None:
+        tail.append("      ", style=f"on {BG}")
+    else:
+        tail.append(f"{prob * 100:>5.0f}%", style=f"{FG} on {BG}")
+
+    pad = width - line.cell_len - tail.cell_len - 2
+    if pad > 0:
+        line.append(" " * pad, style=f"on {BG}")
+    line.append_text(tail)
     return line
 
 
@@ -346,7 +383,7 @@ def mind_panel(state, width: int, height: int):
     if not eng:
         body = Text("waiting for the engine to move\n", style=f"{DIM} on {BG}")
         body.append("logs/engine.jsonl", style=f"{FAINT} on {BG}")
-        return _panel(body, "mind", border=FAINT)
+        return _panel(body, "engine search", border=FAINT)
 
     thinking = eng.get("ev") == "think"
     rows = []
@@ -404,9 +441,10 @@ def mind_panel(state, width: int, height: int):
             line.append(san + " ", style=f"{(PLUM if i == 0 else FG)} on {BG}")
         rows.append(line)
 
-    return _panel(Group(*rows), "mind",
+    return _panel(Group(*rows), "engine search",
                   border=ACCENT if thinking else FAINT,
-                  subtitle=f"[{FAINT}]visits · q · prior[/]")
+                  subtitle=f"[{FAINT}]candidate · simulations spent · "
+                           f"q = win rate · p = policy prior[/]")
 
 
 # ---- the move list --------------------------------------------------------
@@ -456,7 +494,8 @@ def moves_panel(state, width: int, height: int):
                 break
         body.append(line)
     return _panel(Group(*body), "moves",
-                  subtitle=f"[{FAINT}]{len(moves)} ply[/]")
+                  subtitle=f"[{FAINT}]{len(moves)} half-moves \u00b7 number is the "
+                           f"engine's win estimate after its move[/]")
 
 
 # ---- training, machine, tape ---------------------------------------------
@@ -473,7 +512,7 @@ def curve_panel(state, width: int, height: int):
     inner_h = max(3, height - 4)
     if len(series) < 2:
         return _panel(Text("not enough moves yet", style=f"{DIM} on {BG}"),
-                      "eval")
+                      "evaluation")
     rows = curve_chart(series, max(8, width - 10), inner_h)
     # Axis anchors in text. A trace without a scale is decoration.
     labelled = []
@@ -490,7 +529,7 @@ def curve_panel(state, width: int, height: int):
         line.append_text(row)
         labelled.append(line)
     last = series[-1]
-    return _panel(Group(*labelled), "eval",
+    return _panel(Group(*labelled), "evaluation",
                   subtitle=f"[{FAINT}]P(white) now {last:.3f} · {len(series)} points[/]")
 
 
@@ -536,7 +575,8 @@ def train_panel(state, width: int):
     else:
         line4.append("no puzzle eval yet", style=f"{FAINT} on {BG}")
 
-    return _panel(Group(line1, line2, line3, line4), "training")
+    return _panel(Group(line1, line2, line3, line4), "training",
+                  subtitle=f"[{FAINT}]next value net \u00b7 loss and puzzle accuracy[/]")
 
 
 def machine_panel(state, width: int):
@@ -582,7 +622,8 @@ def machine_panel(state, width: int):
     if GATE.throttled:
         line.append(f"  {GATE.throttled} throttled", style=f"{BAD} on {BG}")
     rows.append(line)
-    return _panel(Group(*rows), "machine")
+    return _panel(Group(*rows), "machine",
+                  subtitle=f"[{FAINT}]shared by the bot and the trainer[/]")
 
 
 def tape_panel(state, width: int, height: int):
@@ -598,4 +639,4 @@ def tape_panel(state, width: int, height: int):
         rows.append(line)
     if not rows:
         rows = [Text("nothing yet", style=f"{FAINT} on {BG}")]
-    return _panel(Group(*rows), "tape")
+    return _panel(Group(*rows), "event log")
