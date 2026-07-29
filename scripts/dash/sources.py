@@ -508,10 +508,8 @@ class EngineTail(Source):
         # file, so a record that does not belong to this game has to be
         # dropped rather than rendered. See dash/fusion.EngineBoard.
         game = self.state.get("game") or {}
-        if game.get("id") != self.last_game:
-            self.last_game, self.last_ply = game.get("id"), None
-            self.eboard.reset()
         history = game.get("history") or frozenset()
+        started = game.get("id") != self.last_game
         # The engine only searches on its own turn, so every record from our
         # game has us to move. When the other game has us on the other colour
         # -- about half the time, since matchmaking alternates -- that alone
@@ -520,6 +518,13 @@ class EngineTail(Source):
         # means the stream has not said which colour we are, and then this
         # filter does nothing rather than guessing.
         side = _our_side(game, self.user)
+
+        if started:
+            self.last_game, self.last_ply = game.get("id"), None
+            self.eboard.reset()
+            self.state.clear_curve()
+            if game.get("id") and history:
+                self._backfill(history, side)
 
         # Records held earlier that the stream has since confirmed are ours.
         # They are replayed before anything new, so the curve keeps the plies
@@ -541,21 +546,79 @@ class EngineTail(Source):
                 continue                     # the other game, or not yet ours
             self._absorb(rec)
 
-    def _absorb(self, rec: dict) -> None:
+    def _absorb(self, rec: dict, quiet: bool = False) -> None:
         """Publish one record that belongs to the game on screen."""
         self.state.set(self.field, rec)
         snap = self.eboard.snapshot()
         if snap:
             self.state.set("engine_board", snap)
-        if rec.get("ev") == "move" and rec.get("ply") != self.last_ply:
-            self.last_ply = rec.get("ply")
+        # Deduped on the position, not on the ply. Two games are at ply 12 as
+        # often as not, and keying this on the number alone meant that once a
+        # record from the other board had been let through -- which the opening
+        # still allows, when both games are within two plies of each other --
+        # our own record for that ply was discarded as a repeat and the other
+        # game's evaluation stayed on the curve.
+        key = (rec.get("ply"), (rec.get("fen") or "").split(" ")[0])
+        if rec.get("ev") == "move" and key != self.last_ply:
+            self.last_ply = key
             if rec.get("wp_white") is not None:
                 self.state.record_eval(rec["ply"], rec["wp_white"])
+            if quiet:
+                # Backfilled. The tape is a log of things as they happened and
+                # these did not happen now, so they do not go in it.
+                return
             self.state.note(
                 "move",
                 f"{rec.get('best','?')}  wp {rec.get('wp',0):.3f}  "
                 f"{rec.get('nodes',0)}n in {rec.get('elapsed',0):.2f}s",
             )
+
+    # How far back to look for the current game when attaching to one already
+    # in progress. A move record is ~600 bytes and a long game is eighty of
+    # them, so this covers several games and costs one read.
+    BACKFILL_BYTES = 256 * 1024
+
+    def _backfill(self, history: frozenset, side: str | None) -> None:
+        """Replay this game's moves out of the log when we attach to it.
+
+        The tailer deliberately starts at the end of the file, which is right
+        for a log that is mostly other people's business -- but it meant that
+        attaching to a game already in progress showed an empty search panel,
+        an empty evaluation chart and a board that would not move until the
+        engine's *next* move. Open it on a game whose opponent then flags, and
+        the dashboard shows nothing about that game for its entire life. It
+        reads as frozen, because from the outside it is indistinguishable from
+        frozen.
+
+        Everything needed is already in the file, and `history` is what makes
+        replaying it safe: the same anchor that separates the two games live
+        separates them in the past. Only `move` records, so this is a few
+        dozen positions rather than the ~6Hz narration.
+        """
+        try:
+            with self.tail.path.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - self.BACKFILL_BYTES))
+                raw = fh.read()
+        except OSError:
+            return
+        lines = raw.split(b"\n")
+        if size > self.BACKFILL_BYTES:
+            lines = lines[1:]              # first line is half a record
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("ev") != "move":
+                continue
+            if side and rec.get("stm") not in (None, side):
+                continue
+            if self.eboard.update(rec, history):
+                self._absorb(rec, quiet=True)
 
 
 def _our_side(game: dict, user: str) -> str | None:

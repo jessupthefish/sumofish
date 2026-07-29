@@ -229,6 +229,11 @@ class State:
                 self.curve = {}
             self.curve[ply] = wp_white
 
+    def clear_curve(self) -> None:
+        """Start a fresh curve, for a game that is not the last one."""
+        with self._lock:
+            self.curve = {}
+
     def curve_series(self) -> list[float]:
         with self._lock:
             return [self.curve[p] for p in sorted(self.curve)]
