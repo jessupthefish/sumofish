@@ -59,7 +59,7 @@ import torch
 from chessgpu.engines.neural_engine import load_policy
 from chessgpu.hlgauss import HLGauss
 from chessgpu.mcts import MCTS
-from chessgpu.model import build
+from chessgpu.model import ChessTransformer, ModelConfig
 from chessgpu.telemetry import Telemetry, perspective
 from chessgpu.uci import Limits, run
 from chessgpu.value_policy import ValuePolicy
@@ -113,7 +113,23 @@ def main() -> None:
 
     ck = torch.load(value_path, map_location="cuda:0", weights_only=False)
     bins = ck["cfg"]["output_size"]
-    vmodel = build("9M", output_size=bins, causal=ck["cfg"]["causal"])
+    # From the checkpoint's own config, never from a hardcoded preset name.
+    # This said `build("9M", ...)` and the width was therefore assumed rather
+    # than read: dropping any checkpoint that is not 9M into `runs/value.pt`
+    # made `load_state_dict` raise on a shape mismatch, which kills the engine
+    # at boot and leaves lichess-bot with nothing to play the game with. The
+    # checkpoint swap is advertised all over CLAUDE.md as a file copy needing
+    # no restart, and it would have been, right up until the first copy of a
+    # differently-shaped net.
+    # Filtered, because `ModelConfig(**cfg)` hard-binds every checkpoint ever
+    # written to the current dataclass signature: rename or drop one field and
+    # a TypeError kills the engine at boot for checkpoints that are otherwise
+    # perfectly loadable. The hardcoded preset it replaced was wrong but at
+    # least could not fail this way.
+    fields = {f.name for f in dataclasses.fields(ModelConfig)}
+    vmodel = ChessTransformer(
+        ModelConfig(**{k: v for k, v in ck["cfg"].items() if k in fields})
+    )
     state = ck.get("ema") or ck["model"]
     vmodel.load_state_dict({k: v.float() for k, v in state.items()})
     value = ValuePolicy(vmodel, HLGauss(bins=bins), device="cuda:0")
