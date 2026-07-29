@@ -846,6 +846,15 @@ class Results(Source):
         self.user = user
         self._stamp: float | None = None
 
+    def _since(self) -> float | None:
+        """Release boundary: the record on screen is this version's, not the
+        lifetime average of engines that no longer exist."""
+        registry = self.directory.parent.parent / "VERSIONS.jsonl"
+        if not registry.exists():
+            return None
+        rows = [json.loads(x) for x in registry.read_text().splitlines() if x.strip()]
+        return rows[-1]["ts"] if rows else None
+
     def tick(self) -> None:
         paths = sorted(self.directory.glob("*.pgn")) if self.directory.is_dir() else []
         if not paths:
@@ -891,6 +900,11 @@ class Results(Source):
                         "sort": f"{h.get('UTCDate', '')} {h.get('UTCTime', '')}",
                     })
         rows.sort(key=lambda r: r["sort"], reverse=True)
+        boundary = self._since()
+        if boundary is not None:
+            cut = datetime.fromtimestamp(boundary, timezone.utc).strftime(
+                "%Y.%m.%d %H:%M:%S")
+            rows = [r for r in rows if r["sort"] >= cut]
         self._stamp = stamp
         self.state.set(self.field, rows[: self.LIMIT])
 

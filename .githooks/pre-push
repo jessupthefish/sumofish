@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Remind me to cut a version when the push changes how the bot PLAYS.
+#
+# "A version per push" is the obvious rule and it is the wrong one. Most pushes
+# here are dashboards, tests and notes; none of those change a single move the
+# engine makes, and cutting a version for them would reset a win/loss record
+# that exists to measure how the bot plays. The record would then be scoped to
+# a boundary that means nothing, which is worse than not scoping it.
+#
+# So the trigger is the three things that actually change the player:
+#   chessgpu/            the engine and the search
+#   config/lichess-bot.yml   the time control and what it accepts
+#   the deployed checkpoint   (tracked via VERSIONS.jsonl, not the file itself)
+#
+# Warns, never blocks. A hook that refuses a push teaches you to use --no-verify.
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+REG="$ROOT/VERSIONS.jsonl"
+
+[ -s "$REG" ] || { echo "[release] no versions yet: scripts/release.py \"what this is\""; exit 0; }
+LAST_SHA=$(tail -1 "$REG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])' 2>/dev/null) || exit 0
+LAST_VER=$(tail -1 "$REG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null) || exit 0
+
+git merge-base --is-ancestor "$LAST_SHA" HEAD 2>/dev/null || exit 0
+CHANGED=$(git diff --name-only "$LAST_SHA..HEAD" -- chessgpu/ config/lichess-bot.yml 2>/dev/null)
+
+if [ -n "$CHANGED" ]; then
+  echo
+  echo "[release] this push changes how the bot PLAYS, and $LAST_VER does not cover it:"
+  echo "$CHANGED" | sed 's/^/            /'
+  echo "[release] cut a version so its record starts clean:"
+  echo "            scripts/release.py \"one line on what this version is\""
+  echo
+fi
+exit 0

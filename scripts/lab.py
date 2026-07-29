@@ -382,6 +382,23 @@ def decide_promote(facts: dict) -> dict:
         "promoted_at": time.time(),
         "rollback": "cp runs/value.pt.previous runs/value.pt",
     }, indent=2))
+    # A new net going live IS a new version -- it is the one change that alters
+    # every move the bot makes -- so the record starts clean automatically
+    # rather than waiting for someone to remember.
+    try:
+        subprocess.run(
+            [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/release.py"),
+             f"promoted {which}", "--layman",
+             f"A new neural network went live. It won a head-to-head match "
+             f"against the previous one by {verdict['elo']:+.0f} rating points "
+             f"over {verdict['n']} games played at the same time control the "
+             f"bot uses, and it passed a check that it loads, searches fast "
+             f"enough and never plays an illegal move. The win/loss record "
+             f"starts over here because this is a different player."],
+            cwd=ROOT, capture_output=True, text=True, timeout=600, check=False)
+    except Exception:                                    # noqa: BLE001
+        pass          # a missing changelog must not undo a good promotion
+
     return {"promoted": True, "promote_why":
             f"PROMOTED {which}: {verdict['elo']:+.1f} +-{verdict['err']:.1f} Elo "
             f"over {verdict['n']} games on a clock, and it passed the smoke "

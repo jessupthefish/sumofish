@@ -40,6 +40,21 @@ from rich.text import Text
 ROOT = Path(__file__).resolve().parent.parent
 GAMES = ROOT / "logs" / "games"
 RATING = ROOT / "logs" / "rating.jsonl"
+VERSIONS = ROOT / "VERSIONS.jsonl"
+
+
+def current_version() -> dict | None:
+    """The version in force, so the record shown is this bot's and not history's.
+
+    A lifetime record averages engines that no longer exist. SumoFish sat at 24%
+    lifetime while scoring 52% since the previous evening, and the gap was not
+    variance: it was a different search at a different time control. The games
+    are all still on disk; this only decides where counting starts.
+    """
+    if not VERSIONS.exists():
+        return None
+    rows = [json.loads(x) for x in VERSIONS.read_text().splitlines() if x.strip()]
+    return rows[-1] if rows else None
 
 WIN, LOSS, DRAW = "green", "red", "yellow"
 
@@ -142,7 +157,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("-n", "--limit", type=int, default=25)
     ap.add_argument("--since", default=None, help="12h, 3d, 90m, or 2026-07-28")
-    ap.add_argument("--all", action="store_true")
+    ap.add_argument("--all", action="store_true",
+                    help="every game ever, across all versions")
     ap.add_argument("--losses", action="store_true", help="only games it lost")
     ap.add_argument("--me", default=None, help="override the inferred bot name")
     ap.add_argument("--links", action="store_true", help="show the lichess game ids")
@@ -156,6 +172,12 @@ def main() -> None:
 
     me = args.me or infer_me(games)
     since = parse_since(args.since) if args.since else None
+    version = None
+    if since is None and not args.all:
+        # Default scope is the current version. Explicit --since or --all wins.
+        version = current_version()
+        if version:
+            since = datetime.fromtimestamp(version["ts"], timezone.utc)
     if since:
         games = [g for g in games if g["when"] and g["when"] >= since]
 
@@ -201,7 +223,8 @@ def main() -> None:
     # Abandoned and aborted games are shown but never scored: they dilute the
     # percentage with games nobody played.
     n = w + d + lo
-    label = f"since {args.since}" if since else "all time"
+    label = (f"since {args.since}" if args.since
+             else f"in {version['version']}" if version else "all time")
 
     console.print(table)
     console.print()
