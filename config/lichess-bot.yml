@@ -55,19 +55,30 @@ challenge:
   preference: "none"
   accept_bot: true
   only_bot: false
-  max_increment: 180              # lichess maximum
-  min_increment: 0
-  max_base: 10800                # lichess maximum (3h). 1800 declined a 105+10.
-  min_base: 60                     # Refuse absurdly short games from a home connection.
+  # 15+10 ONLY, incoming and outgoing. The engine is clock-bound: it plays
+  # whatever number of simulations fits in the time it is given, and a doubling
+  # of simulations was measured at +223 Elo (runs/matches/sims-800-vs-400, 240
+  # games, LOS 100%). Bullet was the worst possible setting for that -- roughly
+  # 0.4s a move, a few hundred simulations -- and rapid is the cheapest large
+  # strength gain available, costing nothing but patience.
+  #
+  # It also changes what a bigger network is worth. At 0.4s a move a heavier
+  # net loses more in simulations than it gains in judgement; at 30s a move
+  # that trade reverses, which is why the 136M run is worth having.
+  max_increment: 10
+  min_increment: 10
+  max_base: 900
+  min_base: 900
   max_days: 14
   min_days: 1
   variants:
     - standard
   time_controls:
-    - bullet                       # Re-enabled: #1184 is patched locally and
-    - blitz                        # WiFi powersave is off, which were the two
-    - rapid                        # reasons to avoid it. A 10ms engine is
-    - classical                    # well suited to bullet anyway.
+    - rapid                        # 15+10 lands here (900s + 40x10s ~ 22 min).
+                                   # Bullet, blitz and classical are off: the
+                                   # first two starve the search, and classical
+                                   # buys little more than rapid while halving
+                                   # the games per day.
   modes:
     - casual
     - rated                        # Now genuinely tries to win (search + a real
@@ -114,15 +125,22 @@ matchmaking:
                                    # game. Note lichess caps bot-vs-bot at ~100
                                    # games a day; at this rate that is the real
                                    # ceiling, not matchmaking.
-  challenge_initial_time:          # 1+0 / 2+1 / 3+2. Short on purpose: lichess
-    - 60                           # caps bot-vs-bot at 100 games/day, so the
-    - 120                          # budget should buy 100 fast games rather
-    - 180                          # than 100 slow ones. Faster games -> faster
-  challenge_increment:             # rating convergence and more signal per
-    - 0                            # tweak. The engine is clock-bound, so a
-    - 1                            # short control just means fewer simulations,
-    - 2                            # never a timeout.
-  opponent_max_rating: 2200        # Hard ceiling while the 3000 placeholder is
+  challenge_initial_time:          # 15+10, matching what we accept. This
+    - 900                          # reverses the previous reasoning, which
+  challenge_increment:             # bought 100 FAST games a day for quicker
+    - 10                           # rating convergence. Convergence speed is
+                                   # not the goal any more; strength is, and
+                                   # the engine converts time directly into it.
+                                   # Two concurrent 15+10 games is roughly 115
+                                   # a day, so this still saturates lichess's
+                                   # ~100 bot-vs-bot cap. Nothing is lost.
+  opponent_max_rating: 2200        # KEEP, and note it resets in effect: the
+                                   # bullet rating is settled (1957, RD 69) but
+                                   # RAPID starts from the placeholder again,
+                                   # provisional, so without this matchmaking
+                                   # reads 3000 as real all over again.
+                                   # Original note follows.
+                                   # Hard ceiling while the 3000 placeholder is
                                    # still provisional. Without it, matchmaking
                                    # reads 3000 as real and hunts 2500-3500.
                                    # Raise or delete once ~30 rated games have

@@ -47,6 +47,7 @@ like it ought to be.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import sys

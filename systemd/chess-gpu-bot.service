@@ -16,6 +16,13 @@ WorkingDirectory=/home/nomad/chess-gpu/lichess-bot
 # lichess-bot reads LICHESS_BOT_TOKEN and overrides the config.yml placeholder.
 EnvironmentFile=/home/nomad/.config/chess-gpu/bot.env
 
+# The simulation cap must not be what stops the search; the clock must.
+# At 15+10 the engine is handed roughly 30s on the first move, which at ~2,500
+# nodes/s is ~75,000 simulations -- close enough to the 100,000 default that it
+# would start binding on long thinks, and a search stopped by an arbitrary
+# counter is throwing away the time control we just paid for.
+Environment=CHESSGPU_SIMS=100000000
+
 ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
 
 Restart=always
