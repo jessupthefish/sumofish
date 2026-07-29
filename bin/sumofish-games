@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# What happened while you were asleep: every finished game, won and lost.
+#   sumofish-games                 last 25
+#   sumofish-games --since 12h     overnight
+#   sumofish-games --losses        only the defeats, for reading afterwards
+set -euo pipefail
+ROOT=/home/nomad/chess-gpu
+exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" "$ROOT/scripts/games.py" "$@"
