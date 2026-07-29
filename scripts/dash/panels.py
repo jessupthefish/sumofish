@@ -176,12 +176,24 @@ def header(state, user: str, width: int):
         # Up here rather than over the board: it is a thing you go and look at
         # once, not a thing you watch, and beside the picture it was clutter.
         right.append(f"lichess.org/{game['id']}   ", style=f"{FAINT} on {BG}")
-    right.append(f"{counts.get('win', 0)} won", style=f"{GOOD} on {BG}")
+    # This version's record, not the lifetime one. A lifetime tally averages
+    # engines that no longer exist -- 24% across bullet and blitz against 52%
+    # since the current build -- and the average describes nothing that ever
+    # played. Falls back to lichess's own totals before the first release.
+    rec = state.get("record") or {}
+    if rec.get("version"):
+        won, drew, lost = rec["w"], rec["d"], rec["l"]
+        total, scope = won + drew + lost, f"   in {rec['version']}   "
+    else:
+        won, drew, lost = (counts.get(k, 0) for k in ("win", "draw", "loss"))
+        total, scope = counts.get("all", 0), "   of {}   ".format(counts.get("all", 0))
+    right.append(f"{won} won", style=f"{GOOD} on {BG}")
     right.append(" \u00b7 ", style=f"{FAINT} on {BG}")
-    right.append(f"{counts.get('draw', 0)} drawn", style=f"{DIM} on {BG}")
+    right.append(f"{drew} drawn", style=f"{DIM} on {BG}")
     right.append(" \u00b7 ", style=f"{FAINT} on {BG}")
-    right.append(f"{counts.get('loss', 0)} lost", style=f"{BAD} on {BG}")
-    right.append(f"   of {counts.get('all', 0)}   ", style=f"{DIM} on {BG}")
+    right.append(f"{lost} lost", style=f"{BAD} on {BG}")
+    right.append(f"   {total} games{scope}" if rec.get("version") else scope,
+                 style=f"{DIM} on {BG}")
     right.append_text(track_tag(f, "lichess"))
     # A heartbeat independent of the data beside it: it proves the render loop
     # is alive even when nothing has changed, which is the difference between
@@ -578,7 +590,16 @@ def moves_panel(state, width: int, height: int):
     thought at each of its own turns.
     """
     game = state.get("game")
-    curve = [ours(state, v) for v in state.curve_series()]
+    # Stockfish's curve when there is one, because it covers the WHOLE game.
+    # The engine's own telemetry starts when the dashboard attaches, so opening
+    # the dash on move 40 gave a two-point sparkline and no sense of how the
+    # position got there. Both are win probabilities in White's frame and both
+    # go through `ours()`, so the axis does not change when the fallback fires.
+    sf = state.get("eval_curve") or {}
+    if sf:
+        curve = [ours(state, sf[ply]) for ply in sorted(sf)]
+    else:
+        curve = [ours(state, v) for v in state.curve_series()]
     rows = height - 4 - (1 if curve else 0)
     if not game or not game.get("moves"):
         body = [Text("no moves yet", style=f"{DIM} on {BG}")]
@@ -589,7 +610,7 @@ def moves_panel(state, width: int, height: int):
     if len(curve) >= 2:
         spark, lo, hi = sparkline(curve, width=min(GAUGE_MAX, max(8, width - 20)), style=PLUM)
         line = Text(no_wrap=True)
-        line.append("eval ", style=f"{DIM} on {BG}")
+        line.append("eval " if sf else "eval\u00b7", style=f"{DIM} on {BG}")
         line.append_text(spark)
         line.append(f" {lo:.2f}-{hi:.2f}", style=f"{FAINT} on {BG}")
         body.append(line)

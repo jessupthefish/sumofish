@@ -846,14 +846,14 @@ class Results(Source):
         self.user = user
         self._stamp: float | None = None
 
-    def _since(self) -> float | None:
-        """Release boundary: the record on screen is this version's, not the
-        lifetime average of engines that no longer exist."""
+    def _version(self) -> dict | None:
+        """The release in force. The record on screen is this version's, not
+        the lifetime average of engines that no longer exist."""
         registry = self.directory.parent.parent / "VERSIONS.jsonl"
         if not registry.exists():
             return None
         rows = [json.loads(x) for x in registry.read_text().splitlines() if x.strip()]
-        return rows[-1]["ts"] if rows else None
+        return rows[-1] if rows else None
 
     def tick(self) -> None:
         paths = sorted(self.directory.glob("*.pgn")) if self.directory.is_dir() else []
@@ -900,12 +900,22 @@ class Results(Source):
                         "sort": f"{h.get('UTCDate', '')} {h.get('UTCTime', '')}",
                     })
         rows.sort(key=lambda r: r["sort"], reverse=True)
-        boundary = self._since()
-        if boundary is not None:
-            cut = datetime.fromtimestamp(boundary, timezone.utc).strftime(
+        version = self._version()
+        if version is not None:
+            cut = datetime.fromtimestamp(version["ts"], timezone.utc).strftime(
                 "%Y.%m.%d %H:%M:%S")
             rows = [r for r in rows if r["sort"] >= cut]
         self._stamp = stamp
+        # The tally is computed over EVERY game in the version, then the list
+        # is capped. Counting the capped list would silently under-report the
+        # record the moment a version passed LIMIT games, which is a wrong
+        # number that looks right.
+        self.state.set("record", {
+            "w": sum(1 for r in rows if r["verdict"] == "win"),
+            "d": sum(1 for r in rows if r["verdict"] == "draw"),
+            "l": sum(1 for r in rows if r["verdict"] == "loss"),
+            "version": version["version"] if version else None,
+        })
         self.state.set(self.field, rows[: self.LIMIT])
 
 
@@ -1015,6 +1025,21 @@ class Grader(Source):
                     pass
                 self.engine = None
             raise
+
+        # The whole game as a curve, in White's frame, one point per ply.
+        #
+        # The engine's own telemetry can only ever cover moves it searched
+        # while the dashboard was attached, so opening the dash mid-game gave a
+        # two-point sparkline and no sense of how the game got there. Stockfish
+        # evaluates from move one regardless of when anyone started watching,
+        # which is the whole reason it can answer this and the engine cannot.
+        #
+        # Centipawns become a win probability with lichess's own accuracy
+        # curve, already in the tokenizer, so this plots on the same 0-1 scale
+        # as the engine's own number rather than a second unrelated axis.
+        from chessgpu.tokenizer import centipawns_to_win_probability as cp2wp
+        self.state.set("eval_curve",
+                       {ply: float(cp2wp(cp)) for ply, cp in self.evals.items()})
 
         # Loss for the move that left position `ply`, from the mover's side.
         out: dict[int, dict] = {}

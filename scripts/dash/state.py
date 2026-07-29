@@ -191,6 +191,11 @@ class State:
             # Stockfish's grade of each move. Lags the board by a tick
             # or two by design; it is a second opinion, not a live feed.
             ("grades", 60.0),
+            # Stockfish's eval of every ply, so the curve covers the whole
+            # game and not just what was watched.
+            ("eval_curve", 60.0),
+            # W/D/L for the CURRENT version, not lifetime.
+            ("record", 1800.0),
         ):
             self.fields[name] = Field(name, interval)
 
