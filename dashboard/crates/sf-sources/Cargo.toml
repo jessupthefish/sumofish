@@ -1,0 +1,29 @@
+[package]
+name = "sf-sources"
+version = "0.1.0"
+edition = "2024"
+
+# ALL I/O lives here. Note what is absent: sf-panels and sf-layout. A source cannot
+# see a panel and a panel cannot see a source; they meet only at `sf_model::Update`.
+[dependencies]
+sf-model = { workspace = true }
+
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+reqwest      = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tracing      = { workspace = true }
+jiff         = { workspace = true }
+indexmap     = { workspace = true }
+shakmaty     = { workspace = true }
+nvml-wrapper = { workspace = true }
+zbus         = { workspace = true }
+zbus_systemd = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

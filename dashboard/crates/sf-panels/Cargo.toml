@@ -18,3 +18,4 @@ sf-layout = { workspace = true }
 sf-model  = { workspace = true }
 sf-theme  = { workspace = true }
 jiff      = { workspace = true }
+shakmaty  = { workspace = true }

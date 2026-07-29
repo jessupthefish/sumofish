@@ -142,9 +142,13 @@ static MICRO: Composition = Composition {
             }),
         ],
     },
-    // One region, so everything folds into it and the panel with the most to say
-    // gets the screen.
-    remap: |_| RegionId::Full,
+    // Everything folds into one region and the panel with the most to say gets the
+    // screen -- except the header, which keeps its own band. Folding it in too
+    // leaves the band empty and the whole screen shifted down by three blank rows.
+    remap: |r| match r {
+        RegionId::Band => RegionId::Band,
+        _ => RegionId::Full,
+    },
 };
 
 static COMPACT: Composition = Composition {

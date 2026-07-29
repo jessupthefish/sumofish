@@ -226,46 +226,69 @@ fn fit(
     // Step 3: demote, then drop, until the set provably fits. `need` is a sum over
     // the same Vec that is about to be laid out -- you cannot forget a term in
     // that the way you can forget `- self.results_h` in a hand-written expression.
+    //
+    // **Demotion comes before dropping, and `Pinned` does not exempt a panel from
+    // it.** `Pinned` means "never dropped", not "never shrunk". Conflating the two
+    // is a real bug the size grid caught within seconds of a second pinned panel
+    // existing: at 24x10 both `header` and `board` picked their largest
+    // cross-fitting variant, their minimums no longer fit the height, neither was
+    // demotable, and the fallback dropped `board` -- so the board was present at 23
+    // columns and gone at 24. Growing the window removed a panel, which is the
+    // whole class this gate exists to forbid.
+    let cheapest = |cs: &[Candidate], want_demotable: bool| -> Option<usize> {
+        cs.iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                if want_demotable {
+                    c.chosen + 1 < c.variants.len()
+                } else {
+                    c.weight != Weight::Pinned
+                }
+            })
+            .min_by_key(|(_, c)| (c.weight, c.relevance, std::cmp::Reverse(c.order)))
+            .map(|(i, _)| i)
+    };
+
     loop {
         let need: u32 = candidates.iter().map(|c| main_of(c.variant()).0 as u32).sum();
         if need <= main_extent as u32 {
             break;
         }
-        // Cheapest first: lowest weight, then least relevant, then last declared.
-        let victim = candidates
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.weight != Weight::Pinned)
-            .min_by_key(|(_, c)| (c.weight, c.relevance, std::cmp::Reverse(c.order)))
-            .map(|(i, _)| i);
-        let Some(i) = victim else {
-            // Only reachable if the pinned set does not fit, which the registry
-            // test forbids. Drop the last pinned panel rather than clip or panic:
-            // a missing panel is honest and a clipped one is a lie.
-            let need_now = need as u16;
-            if let Some(c) = candidates.pop() {
-                out.dropped
-                    .push((c.id, DropReason::NoRoom { need: need_now, have: main_extent }));
-                continue;
-            }
-            return;
-        };
-        // Prefer showing less to showing nothing, but a demotion must re-satisfy
-        // the cross axis too.
-        let demoted = {
+        // Showing less beats showing nothing, so try every demotion first. A
+        // demotion must re-satisfy the cross axis too.
+        if let Some(i) = cheapest(&candidates, true) {
             let c = &mut candidates[i];
-            let mut ok = false;
+            let mut demoted = false;
             while c.demote() {
                 if cross_of(c.variant()) <= cross_extent {
-                    ok = true;
+                    demoted = true;
                     break;
                 }
             }
-            ok
-        };
-        if !demoted {
+            if demoted {
+                continue;
+            }
+            // It ran out of variants that fit across; it can only be dropped now.
             let c = candidates.remove(i);
             out.dropped.push((c.id, DropReason::NoRoom { need: need as u16, have: main_extent }));
+            continue;
+        }
+        // Nothing left to shrink. Drop the cheapest droppable panel.
+        if let Some(i) = cheapest(&candidates, false) {
+            let c = candidates.remove(i);
+            out.dropped.push((c.id, DropReason::NoRoom { need: need as u16, have: main_extent }));
+            continue;
+        }
+        // Every panel is pinned and at its smallest, and they still do not fit.
+        // `check_registry` forbids this at declaration time; reaching it means a
+        // composition's floor is wrong. Drop rather than clip -- a missing panel is
+        // honest and a clipped one is a lie -- and leave the reason behind.
+        let need_now = need as u16;
+        match candidates.pop() {
+            Some(c) => {
+                out.dropped.push((c.id, DropReason::NoRoom { need: need_now, have: main_extent }));
+            }
+            None => return,
         }
     }
 

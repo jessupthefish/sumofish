@@ -17,6 +17,7 @@
 
 sf_layout::panels! {
     header,
+    board,
 }
 
 #[cfg(test)]
