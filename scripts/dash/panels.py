@@ -27,10 +27,12 @@ from .sources import GATE
 from .theme import (
     ACCENT, BAD, BG, COOL, DIM, FAINT, FG, GAUGE_MAX, GOOD, INFO, PLUM, WARM,
 )
-from .widgets import bar, curve_chart, evalbar_h, ladder, sparkline, track_tag
+from .widgets import (bar, curve_chart, evalbar, ladder, sparkline,
+                      track_tag)
 
-# Columns for the evaluation gauge beside the board.
-EVAL_WIDTH = 2
+# Columns for the evaluation gauge, which lives in the evaluation panel
+# beside the history it is the latest point of.
+GAUGE_W = 2
 
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
           chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
@@ -262,6 +264,15 @@ def _engine_matches(eng: dict, board: chess.Board) -> bool:
         eng.get("ply") in (board.ply(), board.ply() - 1)
 
 
+def _we_are_black(state) -> bool:
+    """Which way round the evaluation should read, for this game."""
+    game = state.get("game")
+    if not game:
+        return False
+    players = game.get("meta", {}).get("players", {})
+    return _our_colour(players, "SumoFish", state.get("playing", []) or []) == "black"
+
+
 def _our_colour(players: dict, user: str, playing: list) -> str:
     name = (players.get("white", {}).get("user", {}) or {}).get("name", "")
     if name and name.lower() == user.lower():
@@ -414,17 +425,6 @@ def mind_panel(state, width: int, height: int):
     gauge.append(f" {used:5.2f}s of {budget:.2f}s", style=f"{DIM} on {BG}")
     rows.append(gauge)
 
-    # The evaluation gauge, beside the number it is a picture of. It lives
-    # here rather than under the board because this panel is pure text: a
-    # sixel image is next to nothing here, so an animated styled row cannot
-    # rewrite a line that the picture happens to occupy.
-    gauge_w = max(10, min(60, inner - 22))
-    gline = Text(no_wrap=True)
-    gline.append("them  ", style=f"{DIM} on {BG}")
-    gline.append_text(evalbar_h(state.eval_smooth.value, gauge_w))
-    gline.append("  us", style=f"{DIM} on {BG}")
-    rows.append(gline)
-
     stats = Text(no_wrap=True)
     stats.append("nodes ", style=f"{DIM} on {BG}")
     stats.append(f"{eng.get('nodes', 0):,}", style=f"{FG} on {BG}")
@@ -512,22 +512,29 @@ def moves_panel(state, width: int, height: int):
 # ---- training, machine, tape ---------------------------------------------
 
 def curve_panel(state, width: int, height: int):
-    """The whole game's evaluation, on a fixed 0..1 scale.
+    """Now and so far: a gauge of the current evaluation, then its history.
 
-    Fixed rather than auto-scaled on purpose. Renormalising to the game's own
-    range makes a dead-level draw look as dramatic as a collapse, which is the
-    standard way an evaluation chart lies. The drawn midline is 0.50, and the
-    vertical distance from it means the same thing in every game.
+    Both on one axis, and both from *our* side's point of view. They used to
+    disagree -- the gauge measured the side at the bottom of the board while
+    the chart plotted White -- which is invisible until we play Black and then
+    they point opposite ways. Side by side that would be indefensible, so the
+    whole panel is now "chance SumoFish wins" and the gauge is simply the
+    right-hand end of the curve, drawn tall enough to read.
+
+    The scale is fixed 0..1 and never fitted to the game's own range.
+    Renormalising makes a dead-level draw look like a collapse, which is the
+    usual way a chart of this kind lies.
     """
-    series = state.curve_series()
     inner_h = max(3, height - 4)
-    if len(series) < 2:
-        return _panel(Text("not enough moves yet", style=f"{DIM} on {BG}"),
-                      "evaluation")
-    rows = curve_chart(series, max(8, width - 10), inner_h)
-    # Axis anchors in text. A trace without a scale is decoration.
-    labelled = []
-    for i, row in enumerate(rows):
+    flip = _we_are_black(state)
+    series = [(1.0 - v) if flip else v for v in state.curve_series()]
+
+    gauge = evalbar(state.eval_smooth.value, inner_h, width=GAUGE_W)
+    chart_w = max(8, width - GAUGE_W - 10)
+    rows = curve_chart(series, chart_w, inner_h) if len(series) >= 2 else []
+
+    out = []
+    for i in range(inner_h):
         line = Text(no_wrap=True)
         if i == 0:
             line.append("1.0 ", style=f"{FAINT} on {BG}")
@@ -537,11 +544,18 @@ def curve_panel(state, width: int, height: int):
             line.append("0.0 ", style=f"{FAINT} on {BG}")
         else:
             line.append("    ", style=f"on {BG}")
-        line.append_text(row)
-        labelled.append(line)
-    last = series[-1]
-    return _panel(Group(*labelled), "evaluation",
-                  subtitle=f"[{FAINT}]P(white) now {last:.3f} · {len(series)} points[/]")
+        line.append_text(gauge[i])
+        line.append("  ", style=f"on {BG}")
+        if i < len(rows):
+            line.append_text(rows[i])
+        out.append(line)
+
+    now = state.eval_smooth.value
+    who = "SumoFish" if series or now is not None else "white"
+    sub = (f"chance {who} wins \u00b7 now "
+           f"{('%.3f' % now) if now is not None else '--'} "
+           f"\u00b7 {len(series)} moves")
+    return _panel(Group(*out), "evaluation", subtitle=f"[{FAINT}]{sub}[/]")
 
 
 def train_panel(state, width: int):
