@@ -107,6 +107,11 @@ class State:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # One event per source, so a source that learns something can nudge
+        # another out of its sleep instead of leaving it to find out on its own
+        # schedule. Used when a game ends: the stream knows immediately, the
+        # poller would otherwise take its full interval to catch up.
+        self._wake: dict[str, threading.Event] = {}
         self.tape = Tape()
         self.started = time.time()
         # ply -> P(White wins), for the game in progress. Kept in White's
@@ -115,10 +120,19 @@ class State:
         self.curve: dict[int, float] = {}
         self.fields: dict[str, Field] = {}
         for name, interval in (
-            ("profile", 45.0),      # lichess user profile: ratings, record
-            ("playing", 12.0),      # which game we are in, if any
-            ("game", 8.0),          # the game stream: pushed per move
-            ("engine", 6.0),        # the search's own narration
+            # These are "how often a healthy source updates this", which is
+            # what `Field.track` grades staleness against. They have to track
+            # the real cadences or the live/coast/lost tag lies.
+            ("profile", 45.0),      # polled every 45s
+            ("playing", 6.0),       # polled every 2s
+            # Pushed per move, so silence is normal and not a fault: the gap
+            # between moves is a player thinking. Generous enough not to cry
+            # wolf during a long think at the slowest time control this bot
+            # accepts, tight enough that a genuinely dead stream still shows.
+            ("game", 90.0),
+            # Written at ~6Hz *while searching* and not at all between moves,
+            # so the gap is however long the opponent takes.
+            ("engine", 30.0),
             ("train", 20.0),        # training run log
             ("rating_log", 120.0),  # local rating samples with deploy markers
             ("gpu", 3.0),
@@ -145,6 +159,13 @@ class State:
     def field(self, name: str) -> Field:
         with self._lock:
             return self.fields[name]
+
+    def waker(self, name: str) -> threading.Event:
+        with self._lock:
+            return self._wake.setdefault(name, threading.Event())
+
+    def wake(self, name: str) -> None:
+        self.waker(name).set()
 
     def note(self, kind: str, text: str) -> None:
         with self._lock:

@@ -79,7 +79,11 @@ class Source(threading.Thread):
                 self.tick()
             except Exception as exc:                     # noqa: BLE001
                 self.state.fail(self.field, f"{type(exc).__name__}: {exc}")
-            time.sleep(self.interval)
+            # Sleep on an event rather than the clock, so another source can
+            # cut the wait short when it learns something relevant.
+            waker = self.state.waker(self.field)
+            waker.wait(self.interval)
+            waker.clear()
 
     def tick(self) -> None:
         raise NotImplementedError
@@ -134,18 +138,21 @@ class Profile(Source):
 class Playing(Source):
     """Which game we are in. The only thing the token is used for here.
 
-    Deliberately slow, and slower still once a game is found. The board does
-    not come from here -- `GameStream` pushes it -- so this only has to notice
-    that a game *started*, and a few seconds of lag on that is invisible.
+    The board does not come from here -- `GameStream` pushes it -- but *which*
+    game to stream does, so this interval is the whole latency of noticing that
+    one game ended and another began. At six seconds, with games starting every
+    minute or two, a visible fraction of the time was spent showing a finished
+    game.
 
-    This matters more than it looks. lichess budgets requests per IP, and
-    lichess-bot is spending from the same budget to create challenges. The
-    previous dashboard polled the public profile endpoint every three seconds,
-    about 1200 requests an hour, and the bot was getting 429s on challenge
-    creation. A viewer must not out-compete the thing it is watching.
+    Two seconds, and `GameStream` nudges it awake the moment a stream ends, so
+    a transition is normally noticed in well under a second. Measured before
+    choosing that: `/api/account/playing` answered 6 of 6 calls at one-second
+    intervals with a 547ms median and no 429. It is authenticated and budgeted
+    separately from the public `/api/user/{name}` that the bot's matchmaking
+    exhausts, which is the endpoint this was originally slowed down to protect.
     """
 
-    field, interval = "playing", 6.0
+    field, interval = "playing", 2.0
 
     def __init__(self, state, token: str) -> None:
         super().__init__(state)
@@ -153,8 +160,6 @@ class Playing(Source):
         self.last_id = None
 
     def tick(self) -> None:
-        # Mid-game the stream is authoritative, so ask even less often.
-        self.interval = 12.0 if self.last_id else 6.0
         data, err = _get("/api/account/playing", self.token)
         if data is None:
             if err == 429:
@@ -219,12 +224,17 @@ class GameStream(threading.Thread):
             games = self.state.get("playing", [])
             gid = games[0]["gameId"] if games else None
             if not gid:
-                time.sleep(1.0)
+                time.sleep(0.4)
                 continue
             self.current = gid
             try:
                 self._stream(gid)
-                delay = 1.0
+                # The stream ended. Either the game finished or we were moved
+                # off it, and in both cases the poller's view of "which game"
+                # is now stale. It knows in under a second instead of up to a
+                # full interval, which is what the transition used to cost.
+                self.state.wake("playing")
+                delay = 0.5
             except (TimeoutError, socket.timeout):
                 # Expected on a quiet board. Reconnect without saying anything:
                 # the replay rebuilds the same state, and calling it a fault
