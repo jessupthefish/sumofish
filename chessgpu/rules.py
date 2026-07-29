@@ -82,3 +82,26 @@ def terminal_value(board: chess.Board) -> float | None:
         return 0.5
 
     return None
+
+
+def terminal_value_legacy(board: chess.Board) -> float | None:
+    """What the search used to do. Kept only so the change can be measured.
+
+    Identical to `terminal_value` except that it also treats a position as over
+    when a draw is merely *reachable* by one legal move. That is the half this
+    module argues is wrong for a tree search, and "wrong" was an argument, not
+    a measurement: the four search changes in this session landed on a stopwatch
+    with nothing showing they were strength-neutral.
+
+    The other three changes cannot move strength and are proved not to --
+    `tokenize_board` is byte-identical to `tokenize` over 100,836 positions and
+    the action-key table agrees with `MOVE_TO_ACTION` over 1.6M legal moves --
+    and tree reuse has its own switch. This is the only behavioural difference
+    left, so a fixed-simulation match between the two settles the whole claim.
+
+    Do not use it to play. It costs 573us a call.
+    """
+    outcome = board.outcome(claim_draw=True)
+    if outcome is None:
+        return None
+    return 0.0 if outcome.winner is not None else 0.5

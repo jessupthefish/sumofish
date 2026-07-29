@@ -139,6 +139,7 @@ class MCTS:
         dirichlet_weight: float = 0.0,
         fpu: float = -0.2,
         reuse: bool = True,
+        terminal=terminal_value,
     ) -> None:
         self.value_policy = value_policy
         self.policy = policy
@@ -154,6 +155,9 @@ class MCTS:
         # to the parent's own Q. Slightly pessimistic means the search finishes
         # investigating a promising line before wandering off to a sibling.
         self.fpu = fpu
+        # Injected so `rules.terminal_value_legacy` can be substituted for a
+        # match. Nothing but an experiment should ever pass this.
+        self.terminal = terminal
         self.evaluations = 0
 
         # Tree reuse. See `_reroot`. `_root_stack` is the move stack of the
@@ -236,7 +240,7 @@ class MCTS:
 
     def _expand(self, node: Node, board: chess.Board) -> float:
         """Create children and return this node's value, side-to-move relative."""
-        value = terminal_value(board)
+        value = self.terminal(board)
         if value is not None:
             node.terminal_value = value
             return value
@@ -356,7 +360,7 @@ class MCTS:
                     board.pop()
                 continue
 
-            value = terminal_value(board)
+            value = self.terminal(board)
             if value is not None:
                 leaf.terminal_value = value
                 self._backup(path, value)
