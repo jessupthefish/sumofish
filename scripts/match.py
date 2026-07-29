@@ -122,12 +122,25 @@ class Spec:
     reuse: bool
     legacy_draws: bool
     fixed_cpuct: bool
+    # Which search implementation. "python" is chessgpu.mcts; "rust" is
+    # sumofish_core, which is byte-identical to it in the plain configuration.
+    core: str = "python"
+    # The two speed flags. Each is identity-preserving in the SEARCH but changes
+    # the number of rows in the forward pass, and the network is not batch-shape
+    # invariant, so with real weights they change what gets played in about one
+    # position in eight. That is what this match exists to price.
+    dedup: bool = False
+    compile_nets: bool = False
 
     def describe(self) -> str:
         if self.searchless:
             return f"value={self.value} searchless"
         budget = f"{self.movetime}s" if self.movetime else f"{self.sims} sims"
+        flags = "".join(
+            c for c, on in (("D", self.dedup), ("C", self.compile_nets)) if on
+        )
         return (
+            f"core={self.core}{'+' + flags if flags else ''} "
             f"value={self.value} policy={self.policy} {budget} "
             f"batch={self.batch} cpuct={self.c_puct} fpu={self.fpu} "
             f"reuse={'on' if self.reuse else 'off'}"
@@ -180,6 +193,38 @@ class Player:
         self.value = load_value(spec.value, device)
         if spec.searchless:
             self.mcts = None
+        elif spec.core == "rust":
+            from chessgpu.rust_mcts import RustMCTS
+
+            self.mcts = RustMCTS(
+                self.value,
+                policy=load_prior(spec.policy, device),
+                c_puct=spec.c_puct,
+                fpu=spec.fpu,
+                simulations=10**9 if spec.movetime else spec.sims,
+                batch=spec.batch,
+                reuse=spec.reuse,
+                dedup=spec.dedup,
+                compile_nets=spec.compile_nets,
+                # MUST accompany compile_nets. Without it the row count is
+                # ragged (dedup makes it vary, and root expansion sends 1), so
+                # CUDA graphs record a fresh graph per distinct size -- torch
+                # warns "observed 9 distinct sizes" -- and the recompiles land
+                # inside a search on a running clock. Omitting it silently
+                # DEGRADES the arm being measured, which would understate the
+                # very thing this match exists to price.
+                pad_batches=spec.compile_nets,
+                # The Rust core has no injectable terminal hook, so
+                # --legacy-draws is not available to it. Fail rather than
+                # silently ignore the flag: a match that quietly did not test
+                # what was asked is worse than one that refused.
+                c_puct_base=None if spec.fixed_cpuct else 19652.0,
+            )
+            if spec.legacy_draws:
+                raise SystemExit(
+                    "--legacy-draws is not supported by the rust core "
+                    "(no injectable terminal hook)"
+                )
         else:
             self.mcts = MCTS(
                 self.value,
@@ -450,6 +495,10 @@ def play_game(
         # is indistinguishable from one that did not. Cheap insurance against
         # a silently invalidated result.
         "code": code_fingerprint(),
+        # Who ended an adjudicated game. None for a natural finish, the arbiter
+        # id otherwise, so a later re-scoring can tell which games were decided
+        # by whom rather than having to parse `reason`.
+        "adjudicated_by": arbiter_id if reason.startswith("adjudicated") else None,
     }
 
 
@@ -515,6 +564,15 @@ def main() -> None:
     ap.add_argument("--max-plies", type=int, default=300)
     ap.add_argument("--adjudicate-wp", type=float, default=0.97)
     ap.add_argument("--adjudicate-plies", type=int, default=10)
+    ap.add_argument("--core", default="python", choices=("python", "rust"),
+                    help="search implementation for both sides unless overridden")
+    for _s in ("a", "b"):
+        ap.add_argument(f"--{_s}-core", default=None, choices=("python", "rust"))
+        ap.add_argument(f"--{_s}-dedup", action="store_true",
+                        help="dedupe the network call for repeated leaves (rust only)")
+        ap.add_argument(f"--{_s}-compile", action="store_true",
+                        help="torch.compile the nets, padded to a static shape "
+                             "for CUDA graphs (rust only)")
     ap.add_argument("--no-adjudicate", action="store_true")
     ap.add_argument(
         "--arbiter",
@@ -561,6 +619,9 @@ def main() -> None:
             reuse=not getattr(args, f"{side}_no_reuse"),
             legacy_draws=getattr(args, f"{side}_legacy_draws"),
             fixed_cpuct=getattr(args, f"{side}_fixed_cpuct"),
+            core=pick("core"),
+            dedup=getattr(args, f"{side}_dedup"),
+            compile_nets=getattr(args, f"{side}_compile"),
         )
 
     a, b = spec("a"), spec("b")

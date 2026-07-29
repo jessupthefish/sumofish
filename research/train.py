@@ -36,6 +36,10 @@ sys.path.insert(0, str(ROOT))
 
 from chessgpu.data import make_loader  # noqa: E402
 from chessgpu.tokenizer import NUM_ACTIONS, SEQUENCE_LENGTH, VOCAB_SIZE  # noqa: E402
+# The metric, from outside the editable surface. This import is ABOVE the marker
+# so `check_frozen` covers it, and `run.py` also rejects a `def evaluate` below
+# the marker, because a later definition would shadow this name.
+from research import harness_eval  # noqa: E402
 
 # ============================================================================
 # FROZEN. run.py enforces these; changing them makes results incomparable.
@@ -137,22 +141,21 @@ def lr_at(step: int, total: int) -> float:
 
 @torch.no_grad()
 def evaluate(model: nn.Module, device: str) -> float:
-    """Held-out cross-entropy in bits per move. FROZEN, do not change."""
-    model.eval()
-    loader = make_loader(
-        VAL_BAG, batch_size=EVAL_BATCH_SIZE, num_workers=4, seed=SEED, infinite=True
+    """Held-out bits per move. Delegates to `research/harness_eval.py`.
+
+    Kept as a one-line shim so existing call sites still read `evaluate(...)`.
+    The body it used to contain is the yardstick and now lives outside this file;
+    see that module for why. Editing this shim to compute anything else is
+    exactly the move the harness exists to prevent, and `run.py` checks for it.
+    """
+    return harness_eval.evaluate(
+        model, device,
+        make_loader=make_loader,
+        val_bag=VAL_BAG,
+        eval_batches=EVAL_BATCHES,
+        eval_batch_size=EVAL_BATCH_SIZE,
+        seed=SEED,
     )
-    it = iter(loader)
-    total, n = 0.0, 0
-    for _ in range(EVAL_BATCHES):
-        tokens, actions = next(it)
-        tokens, actions = tokens.to(device), actions.to(device)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model(tokens)
-        total += F.cross_entropy(logits.float(), actions, reduction="sum").item()
-        n += actions.numel()
-    model.train()
-    return total / n / math.log(2)
 
 
 def main() -> None:

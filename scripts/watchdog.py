@@ -94,6 +94,19 @@ def restart() -> None:
     subprocess.run(["systemctl", "--user", "restart", UNIT], check=False)
 
 
+def unit_state() -> str:
+    """`systemctl is-active` output: active, inactive, failed, activating...
+
+    Reported rather than reduced to a boolean, because `failed` and `inactive`
+    need opposite responses and the old code collapsed them into "not active".
+    """
+    r = subprocess.run(
+        ["systemctl", "--user", "is-active", UNIT],
+        capture_output=True, text=True, check=False,
+    )
+    return (r.stdout or r.stderr).strip() or "unknown"
+
+
 def main() -> int:
     token = os.environ.get("LICHESS_BOT_TOKEN")
     if not token:
@@ -101,9 +114,28 @@ def main() -> int:
         return 1
 
     if not unit_active():
-        # systemd's own Restart=always owns this case. Restarting here would
-        # just race it.
-        log(f"{UNIT} is not active; leaving it to systemd")
+        # `Restart=always` does NOT own every inactive state, and believing it did
+        # is what cost ninety minutes of rated downtime once already.
+        #
+        # The unit carries StartLimitBurst=10 in StartLimitIntervalSec=300. A
+        # crash loop -- a NameError at import, say, which has happened here --
+        # burns through those ten restarts in five minutes and systemd gives up,
+        # leaving the unit `failed`. That is not active, so the old code logged
+        # "leaving it to systemd" and returned, deferring to the one mechanism
+        # that had already stopped trying. Nothing else watched unit state.
+        #
+        # So: distinguish the states. `failed` needs reset-failed to clear the
+        # rate limit before start will do anything; anything else inactive is
+        # either deliberate (someone stopped it) or transient (activating), and
+        # neither is ours to touch.
+        state = unit_state()
+        if state != "failed":
+            log(f"{UNIT} is {state}; not ours to restart")
+            return 0
+        log(f"{UNIT} has FAILED -- systemd hit its start limit and gave up. "
+            f"Clearing the limit and starting it.")
+        subprocess.run(["systemctl", "--user", "reset-failed", UNIT], check=False)
+        subprocess.run(["systemctl", "--user", "start", UNIT], check=False)
         return 0
 
     games = fetch_playing(token)

@@ -30,7 +30,18 @@ ROOT = Path(__file__).resolve().parent.parent
 # showed a run being dutifully supervised. train.py publishes runs/active.json
 # at startup; that is the only source of truth for which run is live.
 ACTIVE = ROOT / "runs" / "active.json"
-UNIT = "chess-gpu-train.service"
+
+# Training has no unit of its own. It is a SUBPROCESS of chess-gpu-lab.service,
+# which owns the GPU roadmap and starts training runs itself.
+#
+# This said `chess-gpu-train.service` until 2026-07-29, which stopped existing
+# when the lab took over. The result was worse than a no-op: `is-active` returned
+# non-zero, so main() logged "not active; nothing to watch" and returned, every
+# five minutes, forever. The journal showed a watchdog dutifully running and it
+# had never once looked at a training run -- including a 37-hour one, the exact
+# case it was written for. A green timer is indistinguishable from a working
+# watchdog, which is why this one now watches the PROCESS.
+LAB_UNIT = "chess-gpu-lab.service"
 STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "chess-gpu/train_watchdog.json"
 
 # Generous: a puzzle eval plus a checkpoint write plus a torch.compile after a
@@ -43,10 +54,31 @@ def log(msg: str) -> None:
     print(f"[train-watchdog] {msg}", flush=True)
 
 
-def unit_active() -> bool:
-    return subprocess.run(
-        ["systemctl", "--user", "is-active", "--quiet", UNIT], check=False
-    ).returncode == 0
+def training_pid() -> int | None:
+    """PID of the live training process, or None if there is not one.
+
+    Reads `runs/active.json`, which `train.py` publishes at startup, then checks
+    /proc directly. Two guards, both learned the hard way:
+
+    * `/proc/<pid>/cmdline` must actually contain `train.py`. A PID is reused, and
+      a watchdog that restarts the lab because some unrelated process inherited
+      the number would be worse than no watchdog.
+    * Never compare this against the unit's MainPID. ExecStart runs python under
+      `systemd-inhibit`, so MainPID is the wrapper and never matches -- a check
+      that once disabled the supervision it was added to provide.
+    """
+    try:
+        info = json.loads(ACTIVE.read_text())
+        pid = int(info["pid"])
+    except Exception:
+        return None
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+    except OSError:
+        return None            # process is gone
+    if "train.py" not in cmdline:
+        return None            # PID reused by something else
+    return pid
 
 
 def active_log() -> Path | None:
@@ -95,8 +127,9 @@ def last_step() -> int | None:
 
 
 def main() -> int:
-    if not unit_active():
-        log(f"{UNIT} not active; nothing to watch")
+    pid = training_pid()
+    if pid is None:
+        log("no live training process; nothing to watch")
         return 0
 
     now = time.time()
@@ -130,8 +163,17 @@ def main() -> int:
         log(f"stalled but restarted {int(now-last_restart)}s ago; holding off")
         return 0
 
-    log(f"STALLED at step {step:,} for {stalled_for/60:.1f} min; restarting {UNIT}")
-    subprocess.run(["systemctl", "--user", "restart", UNIT], check=False)
+    # Restart the LAB, not the training process directly.
+    #
+    # SIGTERMing train.py looks more surgical and is wrong: train.py checkpoints
+    # and exits 0 on SIGTERM, so lab.py would see a clean exit, mark the job
+    # COMPLETED, and move to the next one -- silently abandoning the rest of the
+    # run. Restarting the lab makes it resume its plan from runs/lab/state.json
+    # and re-run the job, and train.py's --auto-resume picks up from the last
+    # checkpoint. That is the recovery the two were designed for.
+    log(f"STALLED at step {step:,} for {stalled_for/60:.1f} min "
+        f"(pid {pid}); restarting {LAB_UNIT}")
+    subprocess.run(["systemctl", "--user", "restart", LAB_UNIT], check=False)
     state.update({"last_restart": now, "time": now})
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state))

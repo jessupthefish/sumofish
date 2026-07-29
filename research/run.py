@@ -104,6 +104,114 @@ def load_results() -> list[dict]:
     return [json.loads(line) for line in RESULTS.read_text().splitlines() if line.strip()]
 
 
+def check_editable_region(text: str) -> list[str]:
+    """Reject edits that move the yardstick even though they are "below the line".
+
+    `check_frozen` hashes the region above the EDITABLE marker, which covers the
+    constants and the import of the metric. It cannot see two moves that defeat
+    the metric from inside the editable region:
+
+    * `def evaluate(...)` -- Python lets a later definition shadow the imported
+      name, so redefining it here silently replaces the yardstick.
+    * rebinding a frozen constant -- `EVAL_BATCHES = 4` below the marker shadows
+      the frozen one at runtime, and averaging over a tenth of the held-out set
+      is not the same measurement.
+
+    Both are cheap to detect syntactically and neither has a legitimate use.
+    """
+    import ast as _ast
+
+    marker = text.find(FROZEN_MARKER)
+    if marker < 0:
+        return ["the EDITABLE marker is missing entirely"]
+    # Line number where the editable region starts.
+    start_line = text[:marker].count("\n") + 1
+
+    frozen_names = {
+        "TIME_BUDGET_S", "SEED", "EVAL_BATCHES", "EVAL_BATCH_SIZE",
+        "TRAIN_BAG", "VAL_BAG",
+    }
+    problems: list[str] = []
+    try:
+        tree = _ast.parse(text)
+    except SyntaxError as exc:
+        return [f"train.py does not parse: {exc}"]
+
+    for node in _ast.walk(tree):
+        lineno = getattr(node, "lineno", 0)
+        if lineno <= start_line:
+            continue
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if node.name == "evaluate" and not _is_shim(node):
+                problems.append(
+                    f"line {lineno}: `def evaluate` in the editable region. The "
+                    f"metric lives in research/harness_eval.py and redefining it "
+                    f"here would shadow the import and move the yardstick."
+                )
+        if isinstance(node, _ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, _ast.Name) and tgt.id in frozen_names:
+                    problems.append(
+                        f"line {lineno}: rebinds the frozen constant {tgt.id}. The "
+                        f"value above the marker is checked; this shadows it."
+                    )
+    return problems
+
+
+def _is_shim(node) -> bool:
+    """True for the one-line delegation to harness_eval, which is allowed."""
+    for sub in node.body:
+        if isinstance(sub, __import__("ast").Return):
+            src = __import__("ast").dump(sub)
+            if "harness_eval" in src:
+                return True
+    return False
+
+
+def check_incumbent(results: list[dict]) -> list[str]:
+    """Does `best.py` match the run the ledger says is the incumbent?
+
+    `best_so_far` reads the last FIRST/KEEP from `results.jsonl` and uses its
+    score as the bar. That is only meaningful if the FILE on disk is the file that
+    run produced. On 2026-07-29 they disagreed: the last KEEP was exp 5 (bpm
+    4.71635, a 0.00026 delta -- noise), while `best.py` was byte-identical to the
+    baseline attempt 0001. So the bar sat about a sigma BELOW the incumbent's true
+    mean, and clearing it required roughly 4 sigma. Nothing could be promoted, and
+    the leaderboard read as a run of failed hypotheses rather than a locked
+    harness.
+
+    Verdicts recorded under an older rule cannot be trusted, so this refuses to
+    guess and asks for a deliberate reset instead.
+    """
+    inc = best_so_far(results)
+    if inc is None:
+        return []
+    # The field is `snapshot`, e.g. "0005-e62086c33030.py". It is the copy of
+    # train.py as that run saw it, which is exactly what best.py should equal if
+    # that run really is the incumbent.
+    attempt = inc.get("snapshot")
+    if not attempt:
+        return ["the incumbent record names no snapshot, so it cannot be checked"]
+    apath = ATTEMPTS / attempt if not str(attempt).startswith("/") else Path(attempt)
+    if not apath.exists():
+        return [f"the incumbent's attempt file is missing: {apath}"]
+    if _digest(BEST.read_bytes()) != _digest(apath.read_bytes()):
+        return [
+            f"best.py does NOT match the ledger's incumbent ({attempt}).\n"
+            f"    The bar and the file on disk disagree, so no promotion is "
+            f"possible and the leaderboard is misleading.\n"
+            f"    Fix deliberately: either restore best.py from {attempt}, or "
+            f"re-baseline by recording a fresh FIRST for what is actually on disk."
+        ]
+    return []
+
+
+def _digest(b: bytes) -> str:
+    import hashlib as _h
+
+    return _h.sha256(b).hexdigest()
+
+
 def best_so_far(results: list[dict]) -> dict | None:
     """The score of whatever is actually in `best.py`, not the global minimum.
 
@@ -127,6 +235,23 @@ def run_once(note: str = "") -> dict:
     ATTEMPTS.mkdir(exist_ok=True)
     check_frozen()
     source = TRAIN.read_text()
+
+    # Two guards beyond the frozen-block hash. Both refuse rather than warn: a
+    # harness that reports a number it cannot stand behind is worse than one that
+    # stops, and every failure this project has had came from something that
+    # carried on.
+    problems = check_editable_region(source)
+    if problems:
+        for prob in problems:
+            print(f"REFUSING: {prob}", file=sys.stderr)
+        raise SystemExit(2)
+
+    stale = check_incumbent(load_results())
+    if stale:
+        for prob in stale:
+            print(f"REFUSING: {prob}", file=sys.stderr)
+        raise SystemExit(2)
+
     digest = hashlib.sha256(source.encode()).hexdigest()[:12]
     results = load_results()
     exp_id = len(results) + 1
