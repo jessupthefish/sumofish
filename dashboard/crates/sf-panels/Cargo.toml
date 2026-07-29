@@ -1,0 +1,20 @@
+[package]
+name = "sf-panels"
+version = "0.1.0"
+edition = "2024"
+
+# THE ENFORCEMENT POINT.
+#
+# There is no tokio here, no reqwest, no nvml, no zbus, no sf-sources, and there
+# never will be. In the Python, `panels.py:28` did `from .sources import GATE` and
+# read a source-module global at render time, and `panels.py:103` opened and
+# YAML-parsed a config file twelve times a second from inside `header()` -- both in
+# a module whose own docstring said "Nothing here does I/O, sleeps, or blocks".
+# Neither is preventable by convention. Both are unrepresentable here: the build
+# fails, for everyone, every time.
+[dependencies]
+ratatui   = { workspace = true }
+sf-layout = { workspace = true }
+sf-model  = { workspace = true }
+sf-theme  = { workspace = true }
+jiff      = { workspace = true }

@@ -1,10 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["xtask"]
+members = ["crates/*", "xtask"]
 
 # Every version is pinned once, here. Verified against crates.io/docs.rs on 2026-07-29;
 # see docs/plan.md for why each was chosen and what was rejected.
 [workspace.dependencies]
+# --- our own crates ---
+sf-model  = { path = "crates/sf-model" }
+sf-theme  = { path = "crates/sf-theme" }
+sf-layout = { path = "crates/sf-layout" }
+sf-panels = { path = "crates/sf-panels" }
+sf-board  = { path = "crates/sf-board" }
+sf-term   = { path = "crates/sf-term" }
+sf-sources = { path = "crates/sf-sources" }
+
 # --- ui ---
 ratatui   = "0.30.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }

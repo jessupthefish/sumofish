@@ -1,0 +1,10 @@
+[package]
+name = "sf-layout"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui  = { workspace = true }
+sf-model = { workspace = true }
+sf-theme = { workspace = true }
+jiff     = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "sf-model"
+version = "0.1.0"
+edition = "2024"
+
+# Deliberately no tokio, no ratatui, no reqwest, no nvml, no zbus. This crate is
+# the domain, and it is where `Update` lives so that sf-sources and sf-panels can
+# both name it without either being able to see the other.
+[dependencies]
+shakmaty = { workspace = true }
+serde    = { workspace = true }
+indexmap = { workspace = true }
+jiff     = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
