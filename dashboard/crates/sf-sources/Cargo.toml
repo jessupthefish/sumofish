@@ -27,3 +27,6 @@ zbus_systemd = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `start_paused` needs a virtual clock. It is what makes "no bucket is ever
+# exceeded" a deterministic assertion instead of a slow flaky one.
+tokio = { workspace = true, features = ["test-util"] }

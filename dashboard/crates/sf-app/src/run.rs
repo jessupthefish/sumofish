@@ -45,6 +45,12 @@ pub async fn run(cfg: Config, args: Args) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     spawn_sources(&cfg, &args, updates_tx.clone(), shutdown_rx.clone());
+    spawn_machine(&cfg, updates_tx.clone(), shutdown_rx.clone());
+    if !args.offline {
+        spawn_lichess(&cfg, updates_tx.clone(), shutdown_rx.clone());
+    } else {
+        tracing::info!("offline: no lichess connection will be opened");
+    }
     spawn_encoder(want_rx, paint_tx);
 
     // --- terminal ---
@@ -293,6 +299,93 @@ fn spawn_sources(
                                 }
                             }
                             Err(e) => tracing::warn!(bot = %id, error = %e, "telemetry poll failed"),
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// The GPU and the units. Global, not per-bot: there is one machine.
+fn spawn_machine(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiver<bool>) {
+    let names = cfg.machine.units.clone();
+    let mut shutdown_gpu = shutdown.clone();
+    let tx_gpu = tx.clone();
+    tokio::spawn(async move {
+        // NVML is a blocking FFI call of a few milliseconds. Off the UI task, on its
+        // own cadence.
+        let gpu = tokio::task::spawn_blocking(sf_sources::GpuSource::new).await.ok();
+        let Some(gpu) = gpu else { return };
+        let gpu = Arc::new(gpu);
+        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            tokio::select! {
+                _ = shutdown_gpu.changed() => break,
+                _ = ticker.tick() => {
+                    let g = gpu.clone();
+                    if let Ok(update) = tokio::task::spawn_blocking(move || g.poll()).await {
+                        if tx_gpu.send(update).await.is_err() { return; }
+                    }
+                }
+            }
+        }
+    });
+
+    let mut shutdown_units = shutdown;
+    tokio::spawn(async move {
+        let units = sf_sources::UnitsSource::new(names).await;
+        let mut ticker = tokio::time::interval(Duration::from_secs(6));
+        loop {
+            tokio::select! {
+                _ = shutdown_units.changed() => break,
+                _ = ticker.tick() => {
+                    if tx.send(units.poll().await).await.is_err() { return; }
+                }
+            }
+        }
+    });
+}
+
+/// One governor for the whole process, and one polling task per watched bot. The
+/// governor is what makes "add more bots" affordable: the endpoint budgets are
+/// shared, so the effective cadence degrades rather than the IP getting throttled.
+fn spawn_lichess(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiver<bool>) {
+    let fetcher = match sf_sources::HttpFetcher::new() {
+        Ok(f) => Arc::new(f),
+        Err(e) => {
+            tracing::error!(error = %e, "no HTTP client; lichess sources disabled");
+            return;
+        }
+    };
+    let (call_tx, call_rx) = mpsc::channel(64);
+    tokio::spawn(sf_sources::Governor::new(cfg.api.min_gap(), fetcher).run(call_rx));
+    let api = sf_sources::Api::new(call_tx);
+
+    for bot in &cfg.bots {
+        if !bot.watch {
+            continue;
+        }
+        let id = BotId(bot.id.clone());
+        // Read once at startup, held in memory, and never logged or displayed.
+        let token = bot
+            .token_file
+            .as_deref()
+            .and_then(|f| crate::config::read_token(f, &bot.token_var));
+        if token.is_none() {
+            tracing::warn!(bot = %id, "no token; only public endpoints will work");
+        }
+        let mut src = sf_sources::LichessSource::new(id.clone(), token, api.clone());
+        let tx = tx.clone();
+        let mut shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => break,
+                    _ = ticker.tick() => {
+                        for u in src.tick(Instant::now()).await {
+                            if tx.send(u).await.is_err() { return; }
                         }
                     }
                 }

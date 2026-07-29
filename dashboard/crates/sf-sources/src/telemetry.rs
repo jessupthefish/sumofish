@@ -144,8 +144,10 @@ pub struct TelemetrySource {
     /// Sticky pid -> game, so `think` records land on the right game before and
     /// after `game` appears in the stream.
     pid_game: HashMap<Pid, GameId>,
-    /// The last position each pid was searching, so a `move` record's `done`+`uci`
-    /// can be applied even if its own `fen` is missing.
+    /// Attribute every game to this bot, whoever it belongs to. For `--replay`,
+    /// where there is no `/api/account/playing` to ask and the point is to exercise
+    /// the resolver against a real recorded log.
+    adopt_all: Option<BotId>,
     pub stats: Stats,
 }
 
@@ -155,8 +157,16 @@ impl TelemetrySource {
             tailer: Tailer::new(path),
             game_owner: HashMap::new(),
             pid_game: HashMap::new(),
+            adopt_all: None,
             stats: Stats::default(),
         }
+    }
+
+    /// Replay mode: adopt every game seen. Never used against a live feed, where
+    /// guessing an owner is exactly the mistake that put two games on one curve.
+    pub fn adopt_all(mut self, bot: BotId) -> Self {
+        self.adopt_all = Some(bot);
+        self
     }
 
     /// Tell the reader which bot a game belongs to. Called whenever a bot's
@@ -239,7 +249,8 @@ impl TelemetrySource {
             self.stats.unattributed += 1;
             return;
         };
-        let Some(bot) = self.game_owner.get(&game).cloned() else {
+        let owner = self.game_owner.get(&game).cloned().or_else(|| self.adopt_all.clone());
+        let Some(bot) = owner else {
             // We know the game but not whose it is yet. Not an error: telemetry is
             // faster than `/api/account/playing`, which is the entire point of the
             // source ranking. It will be attributed on the next poll.
