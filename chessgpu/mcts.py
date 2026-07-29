@@ -70,6 +70,30 @@ from dataclasses import dataclass, field
 import chess
 import numpy as np
 
+from chessgpu.rules import terminal_value
+from chessgpu.tokenizer import ACTION_BY_MOVE_KEY, move_key
+
+
+def _softmax_over_legal(row: np.ndarray, legal: list[chess.Move]) -> list[float]:
+    """Renormalise a full 1968-move logit row onto the legal moves only.
+
+    The masking is load-bearing, not a tidy-up: without it the prior leaks mass
+    onto moves that cannot be played, and the search spends simulations
+    proportional to that mass on children it will never create.
+
+    A move outside the action space cannot happen -- the space is a superset of
+    every legal move in any position and `tests/verify_data.py` checks that over
+    real data -- but -1e9 keeps it survivable rather than a KeyError mid-game.
+    """
+    scores = np.array(
+        [
+            row[action] if (action := ACTION_BY_MOVE_KEY[move_key(m)]) >= 0 else -1e9
+            for m in legal
+        ]
+    )
+    exp = np.exp(scores - scores.max())
+    return (exp / exp.sum()).tolist()
+
 
 @dataclass
 class Node:
@@ -114,6 +138,7 @@ class MCTS:
         dirichlet_alpha: float = 0.3,
         dirichlet_weight: float = 0.0,
         fpu: float = -0.2,
+        reuse: bool = True,
     ) -> None:
         self.value_policy = value_policy
         self.policy = policy
@@ -131,6 +156,72 @@ class MCTS:
         self.fpu = fpu
         self.evaluations = 0
 
+        # Tree reuse. See `_reroot`. `_root_stack` is the move stack of the
+        # board `_root` was searched from, copied because the caller's board
+        # keeps moving.
+        self.reuse = reuse
+        self.reused = 0
+        self._root: Node | None = None
+        self._root_stack: list[chess.Move] = []
+
+    def reset(self) -> None:
+        """Forget the tree. Call between games, never within one."""
+        self._root = None
+        self._root_stack = []
+        self.reused = 0
+
+    # ---- tree reuse ------------------------------------------------------
+    #
+    # Every move, the search built a tree of a few thousand nodes, chose a
+    # move, and threw the tree away. Then the opponent replied with a move the
+    # search had usually already considered, and the next search rebuilt from
+    # scratch a subtree it had just deleted.
+    #
+    # The statistics are still valid: every value in a node is stored from that
+    # node's own side-to-move perspective, which does not depend on how the
+    # position was reached. So the subtree under (our move, their reply) is
+    # exactly the tree the next search wants, already partly built.
+    #
+    # The only hard part is proving the new board really is that node, and the
+    # move stack proves it exactly. Comparing FENs would not: two different
+    # lines can transpose into the same position with different repetition
+    # histories, and reusing across a transposition would import a subtree whose
+    # threefold evaluations were computed against the wrong history.
+
+    def _reroot(self, board: chess.Board) -> Node | None:
+        """The stored node for `board`, or None to start fresh.
+
+        Declines rather than guesses. A new game, a jumped-to position, an
+        analysis GUI walking backwards, or the caller handing us a board built
+        without a move stack all land here and all get a fresh root, which is
+        merely the old behaviour.
+        """
+        if self._root is None:
+            return None
+
+        stack = board.move_stack
+        played = len(stack) - len(self._root_stack)
+        # Two plies is the normal case: our move and their reply. One covers
+        # the engine being asked to move twice in a row (analysis). More than
+        # that and we have missed part of the game.
+        if not 1 <= played <= 2:
+            return None
+        if stack[: len(self._root_stack)] != self._root_stack:
+            return None
+
+        node = self._root
+        for move in stack[len(self._root_stack):]:
+            child = node.children.get(move)
+            # An unexpanded child has no subtree worth keeping, and `search`
+            # would have to expand it anyway.
+            if child is None or not child.expanded:
+                return None
+            node = child
+
+        # It is a root now, so nothing scores it by its prior any more.
+        node.prior = 1.0
+        return node
+
     # ---- phase 2: expand -------------------------------------------------
 
     def _priors(self, board: chess.Board) -> dict[chess.Move, float]:
@@ -140,24 +231,15 @@ class MCTS:
         if self.policy is None:
             return {m: 1.0 / len(legal) for m in legal}
 
-        from chessgpu.tokenizer import MOVE_TO_ACTION
-
         row = self.policy._logprobs([board])[0].cpu().numpy()
-        scores = np.array(
-            [row[MOVE_TO_ACTION[m.uci()]] if m.uci() in MOVE_TO_ACTION else -1e9 for m in legal]
-        )
-        exp = np.exp(scores - scores.max())
-        probs = exp / exp.sum()
-        return dict(zip(legal, probs.tolist(), strict=True))
+        return dict(zip(legal, _softmax_over_legal(row, legal), strict=True))
 
     def _expand(self, node: Node, board: chess.Board) -> float:
         """Create children and return this node's value, side-to-move relative."""
-        outcome = board.outcome(claim_draw=True)
-        if outcome is not None:
-            # Terminal. A player never delivers mate on their own move, so if
-            # the game is over and someone won, the side to move here LOST.
-            node.terminal_value = 0.0 if outcome.winner is not None else 0.5
-            return node.terminal_value
+        value = terminal_value(board)
+        if value is not None:
+            node.terminal_value = value
+            return value
 
         for move, prior in self._priors(board).items():
             node.children[move] = Node(prior=prior, to_move=not node.to_move)
@@ -274,10 +356,10 @@ class MCTS:
                     board.pop()
                 continue
 
-            outcome = board.outcome(claim_draw=True)
-            if outcome is not None:
-                leaf.terminal_value = 0.0 if outcome.winner is not None else 0.5
-                self._backup(path, leaf.terminal_value)
+            value = terminal_value(board)
+            if value is not None:
+                leaf.terminal_value = value
+                self._backup(path, value)
                 for _ in range(undo):
                     board.pop()
                 continue
@@ -311,8 +393,6 @@ class MCTS:
                 {m: 1.0 / max(1, len(list(b.legal_moves))) for m in b.legal_moves}
                 for b in boards
             ]
-        from chessgpu.tokenizer import MOVE_TO_ACTION
-
         rows = self.policy._logprobs(boards).cpu().numpy()
         out = []
         for row, b in zip(rows, boards, strict=True):
@@ -320,10 +400,7 @@ class MCTS:
             if not legal:
                 out.append({})
                 continue
-            s = np.array([row[MOVE_TO_ACTION[m.uci()]] if m.uci() in MOVE_TO_ACTION else -1e9
-                          for m in legal])
-            e = np.exp(s - s.max())
-            out.append(dict(zip(legal, (e / e.sum()).tolist(), strict=True)))
+            out.append(dict(zip(legal, _softmax_over_legal(row, legal), strict=True)))
         return out
 
     def search(
@@ -346,9 +423,18 @@ class MCTS:
         anything it raises is swallowed: a spectator must never be able to cost
         the engine a move. It defaults to None and off.
         """
-        root = Node(prior=1.0, to_move=board.turn)
         self.evaluations = 0
-        self._expand(root, board)
+
+        # A reused root arrives already expanded and already carrying visits.
+        # Expanding it again would overwrite its children and destroy the whole
+        # point, so the expand is conditional, which it did not need to be when
+        # every root was brand new.
+        root = self._reroot(board) if self.reuse else None
+        self.reused = root.visits if root is not None else 0
+        if root is None:
+            root = Node(prior=1.0, to_move=board.turn)
+        if not root.expanded:
+            self._expand(root, board)
 
         if self.dirichlet_weight > 0 and root.children:
             noise = np.random.dirichlet([self.dirichlet_alpha] * len(root.children))
@@ -386,6 +472,10 @@ class MCTS:
                 if on_progress is not None and i % 16 == 0:
                     report(i)
 
+        if self.reuse:
+            self._root = root
+            self._root_stack = list(board.move_stack)
+
         return root, {m: c.visits for m, c in root.children.items()}
 
     # ---- what the engine calls ------------------------------------------
@@ -420,7 +510,8 @@ class MCTS:
         ranked = sorted(root.children.items(), key=lambda kv: -kv[1].visits)
         if not ranked:
             return {"move": None, "win_prob": root.q, "evaluations": self.evaluations,
-                    "pv": [], "top": [], "mate": board.is_checkmate()}
+                    "reused": self.reused, "pv": [], "top": [],
+                    "mate": board.is_checkmate()}
 
         # Principal variation: the line the search actually believes in, read
         # off by following most-visited children down from the root. SAN has to
@@ -439,6 +530,10 @@ class MCTS:
             "move": ranked[0][0],
             "win_prob": root.q,
             "evaluations": self.evaluations,
+            # Simulations inherited from the previous move's tree. `evaluations`
+            # counts only what this search paid for, so nps stays honest; this
+            # is the head start that made it cheaper.
+            "reused": self.reused,
             "pv": pv,
             # Reported as visit share of the total, because that is what the
             # search actually spent, and it is what the move choice is made on.

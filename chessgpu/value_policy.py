@@ -34,7 +34,8 @@ import torch
 
 from chessgpu.hlgauss import HLGauss
 from chessgpu.model import ChessTransformer
-from chessgpu.tokenizer import tokenize
+from chessgpu.rules import terminal_value
+from chessgpu.tokenizer import tokenize_board
 
 
 class ValuePolicy:
@@ -57,7 +58,7 @@ class ValuePolicy:
     @torch.inference_mode()
     def evaluate(self, boards: list[chess.Board]) -> tuple[np.ndarray, np.ndarray]:
         """Win probability for the side to move, and the model's uncertainty."""
-        tokens = np.stack([tokenize(b.fen()) for b in boards])
+        tokens = np.stack([tokenize_board(b) for b in boards])
         x = torch.from_numpy(tokens).long().to(self.device, non_blocking=True)
         with torch.autocast(self.device.split(":")[0], dtype=self.dtype):
             logits = self.model(x).float()
@@ -87,11 +88,13 @@ class ValuePolicy:
 
         for mv in legal:
             board.push(mv)
-            outcome = board.outcome(claim_draw=True)
-            if outcome is not None:
-                # Scored from our side: we just moved, so a checkmate here is
-                # ours. A draw is 0.5 regardless of who claims it.
-                scores[mv] = 1.0 if outcome.winner is not None else 0.5
+            # `terminal_value` answers from the side to move in the child, who
+            # is the opponent, so ours is one minus it: their 0.0 (they are
+            # mated) is our 1.0, and a draw is 0.5 either way. Same conversion
+            # the model results below get, for the same reason.
+            child = terminal_value(board)
+            if child is not None:
+                scores[mv] = 1.0 - child
             else:
                 to_evaluate.append(mv)
                 children.append(board.copy(stack=False))

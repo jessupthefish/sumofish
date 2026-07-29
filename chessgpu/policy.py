@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from chessgpu.model import ChessTransformer
-from chessgpu.tokenizer import MOVE_TO_ACTION, tokenize
+from chessgpu.tokenizer import MOVE_TO_ACTION, tokenize_board
 
 
 class NeuralPolicy:
@@ -41,7 +41,7 @@ class NeuralPolicy:
         normalizer. Use model(x, log_softmax=True) if a true probability is
         needed.
         """
-        tokens = np.stack([tokenize(b.fen()) for b in boards])
+        tokens = np.stack([tokenize_board(b) for b in boards])
         x = torch.from_numpy(tokens).long().to(self.device, non_blocking=True)
         with torch.autocast(self.device.split(":")[0], dtype=self.dtype):
             return self.model(x).float()

@@ -25,6 +25,7 @@ import functools
 
 import chess
 import numpy as np
+from chess import SQUARE_NAMES
 
 # Vocabulary. Order is load-bearing: these indices are what the model learns.
 CHARACTERS = [
@@ -86,6 +87,96 @@ def tokenize(fen: str) -> np.ndarray:
     return np.asarray(indices, dtype=np.uint8)
 
 
+# --- the same 77 tokens, taken straight off the board ---------------------
+#
+# `tokenize(board.fen())` is the obvious call and it is the third largest cost
+# in the search: 13% of a profiled 5-second run, against 5% for the neural
+# network the tokens are for. All of it is a round trip through a string.
+# `board.fen()` walks 64 squares building a list of characters, joins them,
+# counts runs of empty squares into digits, and glues six fields together with
+# spaces; `tokenize` then splits that back apart, expands the digits it just
+# created, and looks up every character in a dict.
+#
+# Nothing in the middle is wanted. The board already holds a bitboard per piece
+# type, so the pieces can be scanned out directly -- 32 iterations over the
+# occupied squares rather than 64 over every square, with no string built and
+# none parsed.
+#
+# `tokenize` itself is deliberately untouched. It is the function that was
+# verified byte-exact against DeepMind's implementation over 12,000 real
+# positions, so it stays as the reference, and this is checked against it
+# rather than against the paper. `tests/verify_search.py` diffs the two over
+# tens of thousands of positions from real games; if they ever disagree, this
+# one is wrong.
+
+_SIDE_TOKEN = {chess.WHITE: CHARACTERS_INDEX["w"], chess.BLACK: CHARACTERS_INDEX["b"]}
+
+# FEN writes rank 8 first and python-chess numbers a1 as square 0, so the two
+# orders are reversed by rank and agree by file. The +1 is the side-to-move
+# token that upstream prepends to the board.
+_SQUARE_TO_TOKEN_INDEX = tuple(
+    1 + (7 - (square >> 3)) * 8 + (square & 7) for square in range(64)
+)
+
+# (token, piece type, colour) for all twelve pieces, resolved once.
+_PIECES = tuple(
+    (
+        CHARACTERS_INDEX[
+            chess.piece_symbol(piece_type).upper()
+            if colour == chess.WHITE
+            else chess.piece_symbol(piece_type)
+        ],
+        piece_type,
+        colour,
+    )
+    for piece_type in chess.PIECE_TYPES
+    for colour in (chess.WHITE, chess.BLACK)
+)
+
+# Field offsets, in the layout documented at the top of this module.
+_CASTLING_AT, _EP_AT, _HALFMOVE_AT, _FULLMOVE_AT = 65, 69, 71, 74
+
+
+def tokenize_board(board: chess.Board) -> np.ndarray:
+    """The 77-token encoding of `board`, identical to `tokenize(board.fen())`."""
+    tokens = [_PAD] * SEQUENCE_LENGTH
+    tokens[0] = _SIDE_TOKEN[board.turn]
+
+    for token, piece_type, colour in _PIECES:
+        for square in chess.scan_reversed(board.pieces_mask(piece_type, colour)):
+            tokens[_SQUARE_TO_TOKEN_INDEX[square]] = token
+
+    # `castling_xfen` is what `Board.fen()` itself calls, so this inherits its
+    # handling of Chess960 and of rights that are present but unusable.
+    castling = board.castling_xfen()
+    if castling != "-":
+        for offset, char in enumerate(castling):
+            tokens[_CASTLING_AT + offset] = CHARACTERS_INDEX[char]
+
+    # Also matching `Board.fen()`: the square is only part of the position when
+    # the capture is actually available. `has_legal_en_passant` generates
+    # moves, so it is guarded by the cheap test it would do anyway.
+    if board.ep_square is not None and board.has_legal_en_passant():
+        name = SQUARE_NAMES[board.ep_square]
+        tokens[_EP_AT] = CHARACTERS_INDEX[name[0]]
+        tokens[_EP_AT + 1] = CHARACTERS_INDEX[name[1]]
+
+    for at, number in (
+        (_HALFMOVE_AT, board.halfmove_clock),
+        (_FULLMOVE_AT, board.fullmove_number),
+    ):
+        digits = str(number)
+        if len(digits) > 3:
+            # Three characters is all the format has. `tokenize` raises on the
+            # same input rather than silently overflowing into the next field,
+            # and so does this.
+            raise ValueError(f"{number} does not fit the 3-digit field: {board.fen()}")
+        for offset, char in enumerate(digits):
+            tokens[at + offset] = CHARACTERS_INDEX[char]
+
+    return np.asarray(tokens, dtype=np.uint8)
+
+
 @functools.lru_cache(maxsize=1)
 def _action_space() -> tuple[dict[str, int], tuple[str, ...]]:
     """All moves any piece could make on an empty board, plus promotions.
@@ -134,6 +225,29 @@ def _action_space() -> tuple[dict[str, int], tuple[str, ...]]:
 MOVE_TO_ACTION: dict[str, int] = _action_space()[0]
 ACTION_TO_MOVE: tuple[str, ...] = _action_space()[1]
 NUM_ACTIONS = len(ACTION_TO_MOVE)
+
+# The same mapping, keyed on a move's parts rather than on its UCI string.
+#
+# `MOVE_TO_ACTION[move.uci()]` is how the search turns a legal move into a
+# column of the policy's output, and it does it for every legal move at every
+# node it expands: 510,000 calls to `Move.uci()` in a profiled 5-second search,
+# 4% of the whole thing, every one of them building a four-character string and
+# hashing it only to throw it away.
+#
+# A move is already three small integers. Packing them into one and indexing a
+# flat list skips the string and the hash entirely. 16 bits is exactly enough:
+# 6 for the origin square, 6 for the destination, 4 for the promotion piece
+# type (0 when there is none).
+ACTION_BY_MOVE_KEY: list[int] = [-1] * (1 << 16)
+
+
+def move_key(move: chess.Move) -> int:
+    """Pack a move into the index `ACTION_BY_MOVE_KEY` is keyed on."""
+    return move.from_square | (move.to_square << 6) | ((move.promotion or 0) << 12)
+
+
+for _action, _uci in enumerate(ACTION_TO_MOVE):
+    ACTION_BY_MOVE_KEY[move_key(chess.Move.from_uci(_uci))] = _action
 
 
 def centipawns_to_win_probability(centipawns: float) -> float:
