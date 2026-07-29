@@ -302,34 +302,6 @@ def decide_scale(facts: dict) -> dict:
             f"regardless and letting the fixed-time match decide"}
 
 
-def decide_tuning(facts: dict) -> dict:
-    """Read the three tuning matches and say what to set, or that nothing moved.
-
-    Reports rather than applies: these are defaults in `search_engine.py` and
-    `mcts.py`, and the lab does not edit code. It also records the values it was
-    measured against, because the Coroner's ledger is explicit that a tuned
-    constant is valid only for the (policy, value) pair it was tuned on -- swap
-    the net and it has to be re-measured.
-    """
-    out, wins = {}, []
-    for job, name, param, tried, base in (
-        ("cpuct-high", "cpuct-3.0-vs-2.0", "c_puct", "3.0", "2.0"),
-        ("cpuct-low", "cpuct-1.25-vs-2.0", "c_puct", "1.25", "2.0"),
-        ("fpu", "fpu-0.5-vs-0.2", "fpu", "-0.5", "-0.2"),
-    ):
-        st = match_verdict(name)
-        out[job] = {"elo": round(st["elo"], 1), "err": round(st["err"], 1),
-                    "pairs": st["pairs"], "decisive": st["decisive"]}
-        if st["decisive"] and st["elo"] > 0:
-            wins.append(f"{param}={tried} beats {base} by {st['elo']:+.0f} "
-                        f"+-{st['err']:.0f} Elo")
-
-    return {"tuning": out, "tuning_why": (
-        "; ".join(wins) if wins else
-        "no tuning change was decisive at 1200 sims; leave c_puct=2.0, fpu=-0.2"
-    ) + " (measured against the 9M value net; re-measure after any net change)"}
-
-
 def decide_stage(facts: dict) -> dict:
     """Stage a winning checkpoint. Never swap the live one.
 
@@ -440,43 +412,21 @@ PLAN: list[Job] = [
         decide=decide_scale,
         needs=["sims-400-200", "sims-800-400", "sims-1600-800", "forward-bench"]),
 
-    # Search constants, tuned at a budget the bot actually plays at.
+    # The three c_puct / FPU matches that stood here are GONE, and the reason
+    # is worth keeping. They were specified when the bot played bullet at ~400
+    # simulations a move. It now plays 15+10 at roughly 60,000, and a constant
+    # tuned at one is wrong at the other: the exploration term scales with
+    # sqrt(N_parent), so the balance point moves with the budget.
     #
-    # A Council audit cut these, on the grounds that a node able to estimate a
-    # child before visiting it deletes FPU rather than tunes it. That argument
-    # is right and it is weeks away; these are hours away and they apply to
-    # whatever net is deployed in the meantime. Reinstated deliberately, with
-    # the objective changed to Elo.
+    # Re-specifying them at the new budget is not affordable either. 60,000
+    # visits is ~25 seconds a move, so a 400-game match is eleven hours a game.
+    # At the visit counts a match CAN reach, the AlphaZero schedule and the old
+    # constant nearly agree, so the affordable experiment tests the one regime
+    # where the answer does not matter.
     #
-    # What the audit got right, and is fixed here: the old jobs measured at 400
-    # simulations while the bot is clock-bound at roughly 2,400. Optimal c_puct
-    # grows with visit count -- the exploration term decays as
-    # sqrt(N_parent)/(1+N_child), so the balance point moves -- and a constant
-    # tuned at 400 is tuned for a search that never ships.
-    #
-    # Three points per parameter, not two: two points cannot tell you the sign
-    # of the curvature, so if 3.0 loses to 2.0 you still do not know whether
-    # 1.25 wins.
-    Job(id="cpuct-high", what="c_puct 3.0 vs 2.0 at a deployment-like budget",
-        argv=lambda f: match_argv("cpuct-3.0-vs-2.0", "--a-cpuct", "3.0",
-                                  "--b-cpuct", "2.0", "--a-label", "cpuct3",
-                                  "--b-label", "cpuct2", games=200,
-                                  budget=("--sims", "1200")),
-        probe=lambda: match_progress("cpuct-3.0-vs-2.0"), timeout=6 * HOUR),
-    Job(id="cpuct-low", what="c_puct 1.25 vs 2.0, the other side of the curve",
-        argv=lambda f: match_argv("cpuct-1.25-vs-2.0", "--a-cpuct", "1.25",
-                                  "--b-cpuct", "2.0", "--a-label", "cpuct125",
-                                  "--b-label", "cpuct2", games=200,
-                                  budget=("--sims", "1200")),
-        probe=lambda: match_progress("cpuct-1.25-vs-2.0"), timeout=6 * HOUR),
-    Job(id="fpu", what="first-play urgency -0.5 vs -0.2, same budget",
-        argv=lambda f: match_argv("fpu-0.5-vs-0.2", "--a-fpu", "-0.5",
-                                  "--b-fpu", "-0.2", "--a-label", "fpu05",
-                                  "--b-label", "fpu02", games=200,
-                                  budget=("--sims", "1200")),
-        probe=lambda: match_progress("fpu-0.5-vs-0.2"), timeout=6 * HOUR),
-    Job(id="tuning", what="what the search constants should be set to",
-        decide=decide_tuning, needs=["cpuct-high", "cpuct-low", "fpu"]),
+    # So the schedule ships on AlphaZero's published constants rather than on
+    # evidence from this engine (see MCTS.c_puct_at), and the GPU those matches
+    # would have burned goes to training instead, which is where it was wanted.
 
     Job(id="train-136m", what="the 136M state-value run, only if `scale` said so",
         argv=lambda f: python(
@@ -507,7 +457,7 @@ PLAN: list[Job] = [
         # After the tuning matches, deliberately. They are six hours and
         # certain to produce a usable number; this is thirty-five and
         # gated on arithmetic. Cheap certain Elo first.
-        needs=["scale", "tuning"]),
+        needs=["scale"]),
 
     # The other way to spend unlimited compute, and the one with no downside at
     # play time. The 9M is UNDERFITTING, measured: held-out loss 2.1438 against
@@ -529,13 +479,13 @@ PLAN: list[Job] = [
             "--val-batches", "32", "--compile", "1",
             "--run", "9M-sv-long", "--auto-resume"),
         probe=lambda: train_progress("9M-sv-long"),
-        timeout=40 * HOUR, truncation_is_failure=False, needs=["tuning"]),
+        timeout=40 * HOUR, truncation_is_failure=False),
     Job(id="match-9m-long", what="the longer-trained 9M against the live one, on a clock",
         argv=lambda f: match_argv("lab-9m-long-vs-current",
                                   "--a-value", str(ROOT / "runs/9M-sv-long/best.pt"),
                                   "--b-value", str(ROOT / "runs/value.pt"),
                                   "--a-label", "9M-long", "--b-label", "live-9M",
-                                  games=400, budget=("--time", "0.5")),
+                                  games=200, budget=("--time", "3.0")),
         probe=lambda: match_progress("lab-9m-long-vs-current"),
         timeout=12 * HOUR, needs=["train-9m-long"]),
 
@@ -549,7 +499,7 @@ PLAN: list[Job] = [
                                   "--a-value", str(ROOT / "runs/136M-sv/best.pt"),
                                   "--b-value", str(ROOT / "runs/value.pt"),
                                   "--a-label", "136M", "--b-label", "live-9M",
-                                  games=400, budget=("--time", "0.5")),
+                                  games=200, budget=("--time", "3.0")),
         probe=lambda: match_progress("lab-136m-vs-current"),
         timeout=20 * HOUR, needs=["train-136m"]),
     Job(id="stage", what="stage a candidate if the match earned it. Never promote",
