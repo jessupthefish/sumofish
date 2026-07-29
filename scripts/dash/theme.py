@@ -64,7 +64,13 @@ LOST    = BAD
 # means, and matches the colour the history line already uses when we are
 # ahead.
 EVAL_WHITE = "#b8bb26"   # our share
-EVAL_BLACK = "#32302f"   # theirs: a ground, not an opposing colour
+EVAL_BLACK = "#504945"   # theirs: a ground, not an opposing colour
+#
+# That ground has to be visible against the panel it sits on. It was #32302f,
+# which measures 1.12:1 against the #282828 panel -- indistinguishable -- so a
+# gauge reading 95% looked like a green stripe floating in space rather than a
+# bar filled nearly to the top. #504945 is 1.67:1 against the panel and 4.27:1
+# against the fill, so both the gauge's extent and its level are legible.
 EVAL_MID   = "#7c6f64"   # the level line: must read against both of the above
 EVAL_EDGE  = "#504945"   # the bar's own outline, so it is a gauge not a smear
 

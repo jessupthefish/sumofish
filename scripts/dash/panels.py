@@ -30,9 +30,10 @@ from .theme import (
 from .widgets import (bar, curve_chart, evalbar, ladder, sparkline,
                       track_tag)
 
-# Columns for the evaluation gauge, which lives in the evaluation panel
-# beside the history it is the latest point of.
-GAUGE_W = 2
+# Columns for the evaluation gauge, which lives in the evaluation panel beside
+# the history it is the latest point of. Three rather than two: at two it is
+# taller than it is wide by a factor of twelve and reads as a rule, not a bar.
+GAUGE_W = 3
 
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
           chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
