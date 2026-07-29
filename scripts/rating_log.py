@@ -50,12 +50,57 @@ def fingerprint() -> dict:
     return out
 
 
+def _token() -> str | None:
+    """The bot's token, by name only. Never printed, never logged."""
+    tok = os.environ.get("LICHESS_BOT_TOKEN")
+    if tok:
+        return tok
+    env = Path.home() / ".config/chess-gpu/bot.env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if line.startswith("LICHESS_BOT_TOKEN="):
+                return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def _fetch(path: str, token: str | None):
+    headers = {"User-Agent": "sumofish-rating (local, read-only)",
+               "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"https://lichess.org{path}", headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
 def sample() -> dict | None:
-    try:
-        with urllib.request.urlopen(f"https://lichess.org/api/user/{USER}", timeout=15) as r:
-            data = json.load(r)
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
-        print(f"[rating] lichess unreachable ({type(e).__name__}); skipping")
+    """Our own profile, from the endpoint that will actually answer.
+
+    `/api/user/{name}` is public, and **429s from this machine even at one
+    request every fifteen minutes**: lichess-bot is talking to lichess from the
+    same address and the public per-IP budget is shared and small. This sampler
+    used it and had been failing silently since 14:31 -- "lichess unreachable
+    (HTTPError); skipping", four times an hour, for seven and a half hours --
+    which meant that the one record of whether a deployment helped had no
+    samples on either side of it. The dashboard already learned this and moved
+    to `/api/account`, which is authenticated, returns the identical shape for
+    our own account, and is budgeted separately. The public endpoint stays as a
+    fallback so this still works with no token at all.
+    """
+    token = _token()
+    attempts = [("/api/account", token)] if token else []
+    attempts.append((f"/api/user/{USER}", None))
+    data = None
+    for path, tok in attempts:
+        try:
+            data = _fetch(path, tok)
+            break
+        except (urllib.error.URLError, TimeoutError, ValueError) as e:
+            code = getattr(e, "code", None)
+            print(f"[rating] {path} unavailable ({type(e).__name__}"
+                  f"{f' {code}' if code else ''})")
+    if data is None:
+        print("[rating] no sample taken")
         return None
 
     perfs = data.get("perfs", {})
