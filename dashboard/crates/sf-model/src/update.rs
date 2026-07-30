@@ -400,7 +400,17 @@ fn with_game(
         .games
         .entry(game.clone())
         .or_insert_with(|| GameState::new(game.clone(), shakmaty::Color::White));
-    f(g)
+    let applied = f(g);
+    // If nothing is focused, focus this. Telemetry reaches us before the poll does
+    // -- that is the entire reason `EngineSearching` outranks `Playing` -- so waiting
+    // for `/api/account/playing` to nominate a game means the board sits on "waiting
+    // for a game" while records for it are already arriving. Offline and in replay
+    // that poll never comes at all, and the board stayed empty over a log with five
+    // games in it.
+    if b.focus_game.is_none() {
+        b.focus_game = Some(game.clone());
+    }
+    applied
 }
 
 #[cfg(test)]
@@ -483,6 +493,52 @@ mod tests {
         // Only when it genuinely leaves the list do we move.
         apply(&mut st, Update::Playing { bot: BotId("a".into()), games: vec![mk(&g2)] }, now);
         assert_eq!(st.bots["a"].focus_game, Some(g2));
+    }
+
+    /// Telemetry arrives before the poll, so the board must not wait for
+    /// `/api/account/playing` to nominate a game. Offline and in replay that poll
+    /// never comes, and the board sat empty over a log containing five games.
+    #[test]
+    fn telemetry_alone_is_enough_to_put_a_game_on_the_board() {
+        let (mut st, now) = seeded();
+        let game = GameId("fromtelemetry".into());
+        apply(
+            &mut st,
+            Update::Position {
+                bot: BotId("a".into()),
+                obs: Obs::EngineSearching {
+                    pid: Pid(1),
+                    game: game.clone(),
+                    pos: parse_fen(START).unwrap(),
+                    at: now,
+                },
+            },
+            now,
+        );
+        assert_eq!(st.bots["a"].focus_game, Some(game), "no poll needed");
+        assert!(st.focused_game().is_some(), "and the board can find it");
+    }
+
+    /// But it must not steal focus from a game the poll already chose.
+    #[test]
+    fn telemetry_does_not_steal_focus_from_the_chosen_game() {
+        let (mut st, now) = seeded();
+        let chosen = GameId("chosen".into());
+        st.bots.get_mut("a").unwrap().focus_game = Some(chosen.clone());
+        apply(
+            &mut st,
+            Update::Position {
+                bot: BotId("a".into()),
+                obs: Obs::EngineSearching {
+                    pid: Pid(1),
+                    game: GameId("other".into()),
+                    pos: parse_fen(START).unwrap(),
+                    at: now,
+                },
+            },
+            now,
+        );
+        assert_eq!(st.bots["a"].focus_game, Some(chosen));
     }
 
     #[test]
