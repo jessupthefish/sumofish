@@ -333,6 +333,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Adding a bot must not add lichess traffic unless you ask for it. `watch =
+    /// false` is the knob that makes "add more bots as it grows" affordable, and it
+    /// has to be checkable rather than assumed: the endpoint budgets are shared
+    /// per-IP, so an unwatched bot that quietly polled would cost the watched one.
+    #[test]
+    fn an_unwatched_bot_costs_no_api_budget() {
+        let toml = r#"
+            [[bot]]
+            id = "live"
+            user = "SumoFish"
+            telemetry = "/x"
+            [[bot]]
+            id = "control"
+            user = "SumoFishBC"
+            telemetry = "/y"
+            watch = false
+        "#;
+        let c: Config = toml::from_str(toml).unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.bots.len(), 2, "both bots exist and both are on screen");
+        assert_eq!(
+            c.bots.iter().filter(|b| b.watch).count(),
+            1,
+            "but only one of them is polled"
+        );
+    }
+
     #[test]
     fn fps_is_bounded() {
         let mut c = Config::builtin();

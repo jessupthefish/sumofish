@@ -1,0 +1,30 @@
+# Two bots, to prove the multi-bot path end to end. The second is the searchless
+# behavioural-cloning engine, which is the cheapest realistic second bot: it is
+# already a complete deployable UCI binary and needs no new engine code.
+[dash]
+board = "kitty"
+
+[[bot]]
+id = "sumofish"
+user = "SumoFish"
+label = "live v1, searching"
+unit = "chess-gpu-bot.service"
+telemetry = "/home/nomad/chess-gpu/logs/engine.jsonl"
+pgn_dir = "/home/nomad/chess-gpu/logs/games"
+versions = "/home/nomad/chess-gpu/VERSIONS.jsonl"
+rating_log = "/home/nomad/chess-gpu/logs/rating.jsonl"
+
+[[bot]]
+id = "searchless"
+user = "SumoFishBC"
+label = "searchless control"
+telemetry = "/home/nomad/chess-gpu/logs/engine.jsonl"
+# Not watched: no lichess budget is spent on it at all. This is the knob that
+# makes "add more bots as it grows" affordable, and a bot with no data because it
+# is switched off must not look like a bot that has died.
+watch = false
+
+[machine]
+lab_state = "/home/nomad/chess-gpu/runs/lab/state.json"
+train_active = "/home/nomad/chess-gpu/runs/active.json"
+matches_dir = "/home/nomad/chess-gpu/runs/matches"
