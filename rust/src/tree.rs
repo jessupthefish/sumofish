@@ -654,7 +654,10 @@ impl Mcts {
         Some(0)
     }
 
-    /// Run `simulations` simulations from `pos`. Returns the root index.
+    /// Run `simulations` simulations from `pos`, or stop early once
+    /// `max_seconds` has elapsed (checked between batches, not mid-batch, so a
+    /// large `batch` can overshoot by up to one batch's worth of work).
+    /// `None` runs the full `simulations` budget with no clock at all.
     ///
     /// `pos` must carry the game's history, because repetition depends on the
     /// moves before the root. A `Position` built from a bare FEN has an empty
@@ -664,7 +667,9 @@ impl Mcts {
         pos: &mut Position,
         simulations: u32,
         ev: &mut E,
+        max_seconds: Option<f64>,
     ) -> Result<usize, String> {
+        let deadline = max_seconds.map(|s| std::time::Instant::now() + std::time::Duration::from_secs_f64(s.max(0.0)));
         self.evaluations = 0;
         self.unique_evaluations = 0;
 
@@ -711,6 +716,11 @@ impl Mcts {
             let n = std::cmp::min(self.batch as u32, simulations - done);
             self.simulate_batch(root_ix, pos, n as usize, ev)?;
             done += n;
+            if let Some(dl) = deadline {
+                if std::time::Instant::now() >= dl {
+                    break;
+                }
+            }
         }
 
         if self.reuse {
@@ -818,7 +828,7 @@ mod vloss_fix_tests {
         mcts.vloss_fix = vloss_fix;
         let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
         let mut ev = FixedEval { value };
-        mcts.search(&mut pos, sims, &mut ev).unwrap();
+        mcts.search(&mut pos, sims, &mut ev, None).unwrap();
         mcts
     }
 

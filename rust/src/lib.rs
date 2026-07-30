@@ -271,17 +271,24 @@ impl PyMcts {
     /// before the root, so a Position built from a bare FEN will disagree with
     /// Python about threefold draws. It is cloned, so the caller's object is
     /// left untouched.
+    ///
+    /// `max_seconds`, when given, stops early once elapsed (checked between
+    /// batches). `chessgpu/rust_mcts.py::search` always passes this
+    /// positionally, even when it is `None` -- this parameter existing at all,
+    /// with this name, in this position, is load-bearing for that call site.
+    #[pyo3(signature = (position, simulations, evaluate, max_seconds = None))]
     fn search(
         &mut self,
         position: &PyPosition,
         simulations: u32,
         evaluate: &Bound<'_, PyAny>,
+        max_seconds: Option<f64>,
     ) -> PyResult<Vec<(String, i64)>> {
         let mut pos = position.inner.clone();
         let mut ev = PyEvaluator { func: evaluate };
         let root = self
             .inner
-            .search(&mut pos, simulations, &mut ev)
+            .search(&mut pos, simulations, &mut ev, max_seconds)
             .map_err(PyRuntimeError::new_err)?;
         Ok(self.inner.root_visits(root))
     }
