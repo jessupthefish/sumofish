@@ -35,3 +35,29 @@ fn the_real_pgn_directory_yields_our_games() {
          failure looks exactly like having nothing to show"
     );
 }
+
+/// The version reader, against the real registry. Takes the LAST line, which is the
+/// current version -- the Python read only its timestamp, as a cutoff, and its label.
+#[test]
+fn the_real_versions_file_yields_the_current_version() {
+    let p = std::path::Path::new("/home/nomad/chess-gpu/VERSIONS.jsonl");
+    if !p.exists() {
+        eprintln!("SKIP: no VERSIONS.jsonl");
+        return;
+    }
+    let v = sf_sources::files::read_version(p).expect("read the registry");
+    println!("{} — {}", v.version, v.title);
+    println!("  checkpoint {:?} step {:?}", v.checkpoint_sha, v.step);
+    assert!(!v.version.is_empty());
+    assert!(!v.title.is_empty(), "a version with no title says nothing on screen");
+    // The one field that answers "is the bot playing what this version shipped".
+    assert!(v.checkpoint_sha.is_some(), "a version must pin its checkpoint");
+    // And it must be the LAST entry, not the first.
+    let lines = std::fs::read_to_string(p).unwrap();
+    let last = lines.lines().filter(|l| !l.trim().is_empty()).next_back().unwrap();
+    assert!(
+        last.contains(&format!("\"{}\"", v.version)),
+        "read {} but the registry's last line is {last}",
+        v.version
+    );
+}
