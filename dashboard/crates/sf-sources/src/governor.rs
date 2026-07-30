@@ -190,7 +190,14 @@ impl From<GovernorStatus> for sf_model::state::ApiState {
                     wanted_interval: Some(Duration::from_secs_f64(
                         60.0 / (*rpm).max(1) as f64,
                     )),
-                    effective_interval: (*used > 0)
+                    // Only reported once the bucket is actually CONSTRAINING. A
+                    // naive `60 / calls` divides by a window that has not elapsed
+                    // yet: two seconds after start, one call reads as "60s (wanted
+                    // 2s)" and looks like severe throttling when nothing is wrong at
+                    // all. Below the budget every source gets the cadence it asked
+                    // for, and saying otherwise is the kind of alarming-but-false
+                    // number this whole rewrite exists to stop printing.
+                    effective_interval: (*used >= *rpm && *rpm > 0)
                         .then(|| Duration::from_secs_f64(60.0 / *used as f64)),
                     last_429: None,
                     penalty_until: None,
@@ -513,5 +520,47 @@ mod tests {
             assert_eq!(rpm, e.default_rpm());
             assert_eq!(throttles, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    fn status(used: u32, rpm: u32) -> sf_model::state::ApiState {
+        GovernorStatus {
+            per_endpoint: vec![(Endpoint::AccountPlaying, used, rpm, 0)],
+            in_flight: None,
+            penalised: vec![],
+        }
+        .into()
+    }
+
+    /// The bug this test pins: a naive `60 / calls` divides by a minute that has not
+    /// happened yet, so one call two seconds after start reads as "60s (wanted 2s)"
+    /// and looks like severe throttling when the source is perfectly healthy.
+    #[test]
+    fn a_healthy_endpoint_reports_no_degradation() {
+        for used in 0..30 {
+            let s = status(used, 30);
+            assert!(
+                s.endpoints["account/playing"].effective_interval.is_none(),
+                "{used}/30 is inside budget and must not claim to be throttled"
+            );
+        }
+    }
+
+    /// And when the bucket really is full, the degradation is reported -- that is
+    /// the whole point of the panel with more than one bot.
+    #[test]
+    fn a_saturated_endpoint_reports_its_real_cadence() {
+        let s = status(30, 30);
+        let e = &s.endpoints["account/playing"];
+        assert_eq!(e.effective_interval, Some(Duration::from_secs(2)));
+        assert_eq!(e.wanted_interval, Some(Duration::from_secs(2)));
+        // Two bots sharing one 30/min bucket: each gets half the cadence.
+        let s = status(30, 15);
+        assert_eq!(s.endpoints["account/playing"].effective_interval, Some(Duration::from_secs(2)));
+        assert_eq!(s.endpoints["account/playing"].wanted_interval, Some(Duration::from_secs(4)));
     }
 }
