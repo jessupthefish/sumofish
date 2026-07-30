@@ -265,6 +265,23 @@ impl PyMcts {
         self.inner.reused
     }
 
+    /// The root's value estimate, from the root's own side-to-move
+    /// perspective: `value_sum / visits`, matching `chessgpu/mcts.py`'s
+    /// `Node.q` exactly, including its zero-visits fallback (0.0, not a
+    /// panic or a misleading 0.5). `chessgpu/rust_mcts.py::_Root.q` reads
+    /// this as `self._core.root_q`; `scripts/match.py::Player.move` returns
+    /// it as the win probability used for adjudication and the per-ply
+    /// curve. Never wired up before now -- `search()` raised on every real
+    /// call until this session's earlier fix, so this getter's absence was
+    /// unreachable until a match actually got past the warm-up move.
+    #[getter]
+    fn root_q(&self) -> f64 {
+        match self.inner.nodes.first() {
+            Some(root) if root.visits > 0 => root.value_sum / root.visits as f64,
+            _ => 0.0,
+        }
+    }
+
     /// Search from `position` and return `[(uci, visits), ...]` in child order.
     ///
     /// `position` must carry the game's history: repetition depends on the moves
