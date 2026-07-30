@@ -43,11 +43,17 @@ pub async fn run(cfg: Config, args: Args) -> Result<()> {
     let (paint_tx, mut paint_rx) = mpsc::channel::<Painted>(4);
     let (want_tx, want_rx) = mpsc::channel::<(ImageKey, Request)>(4);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // UI -> sources. The grader needs the move list, which lives in AppState and
+    // which no source may read; the state owner publishes it instead. This is the
+    // one place the arrow points back, and `watch` is the right channel for it:
+    // only the latest value matters.
+    let (moves_tx, moves_rx) = watch::channel::<Option<(BotId, sf_model::GameId, Vec<String>)>>(None);
 
     spawn_sources(&cfg, &args, updates_tx.clone(), shutdown_rx.clone());
     spawn_machine(&cfg, updates_tx.clone(), shutdown_rx.clone());
     spawn_files(&cfg, updates_tx.clone(), shutdown_rx.clone());
     spawn_journal(&cfg, updates_tx.clone(), shutdown_rx.clone());
+    spawn_grader(updates_tx.clone(), moves_rx, shutdown_rx.clone());
     if !args.offline {
         spawn_lichess(&cfg, updates_tx.clone(), shutdown_rx.clone());
     } else {
@@ -78,6 +84,7 @@ pub async fn run(cfg: Config, args: Args) -> Result<()> {
         &mut updates_rx,
         &mut paint_rx,
         want_tx,
+        moves_tx,
     )
     .await;
 
@@ -96,6 +103,7 @@ async fn event_loop(
     updates: &mut mpsc::Receiver<Update>,
     paints: &mut mpsc::Receiver<Painted>,
     want: mpsc::Sender<(ImageKey, Request)>,
+    moves_tx: watch::Sender<Option<(BotId, sf_model::GameId, Vec<String>)>>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / fps as f64));
@@ -119,6 +127,23 @@ async fn event_loop(
                     applied = applied.merge(apply(state, next, now));
                 }
                 dirty |= applied.state_changed;
+                // Hand the grader whatever the focused game's move list is now.
+                // Cheap: `watch` keeps only the latest and the grader caches per ply.
+                if let Some((bot, game)) = state
+                    .focus
+                    .clone()
+                    .and_then(|b| Some((b.clone(), state.bots.get(&b)?.focus_game.clone()?)))
+                {
+                    let moves = state
+                        .bots
+                        .get(&bot)
+                        .and_then(|b| b.games.get(&game))
+                        .map(|g| g.moves.iter().map(|m| m.uci.clone()).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    if !moves.is_empty() {
+                        let _ = moves_tx.send(Some((bot, game, moves)));
+                    }
+                }
             }
             Some(p) = paints.recv() => {
                 ready = Some(p);
@@ -329,6 +354,47 @@ fn spawn_sources(
             }
         });
     }
+}
+
+/// Stockfish, grading every move in the focused game.
+///
+/// Last of the sources deliberately: it is the only one whose absence costs nothing,
+/// and it is the only one that spawns a second chess engine on a machine that is
+/// already sharing a GPU between a bot and a trainer.
+fn spawn_grader(
+    tx: mpsc::Sender<Update>,
+    mut moves_rx: watch::Receiver<Option<(BotId, sf_model::GameId, Vec<String>)>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let binary = sf_sources::stockfish::default_binary(std::path::Path::new(
+            "/home/nomad/chess-gpu",
+        ));
+        let engine = match sf_sources::Stockfish::spawn(&binary).await {
+            Ok(Some(e)) => e,
+            Ok(None) => return, // absent, and that is fine
+            Err(e) => {
+                tracing::warn!(error = %e, "stockfish failed to start; no move grading");
+                return;
+            }
+        };
+        // Depth 12 is what the Python used. Deeper is a better verdict and a slower
+        // one, and this is running beside a bot that needs the CPU.
+        let mut grader = sf_sources::stockfish::Grader::new(engine, 12);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                r = moves_rx.changed() => {
+                    if r.is_err() { return; }
+                    let snapshot = moves_rx.borrow_and_update().clone();
+                    let Some((bot, game, moves)) = snapshot else { continue };
+                    for u in grader.grade(&bot, &game, &moves).await {
+                        if tx.send(u).await.is_err() { return; }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// What lichess-bot says about itself. One long-lived `journalctl` pipe per bot

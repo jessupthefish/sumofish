@@ -10,6 +10,7 @@ pub mod governor;
 pub mod journal;
 pub mod lichess;
 pub mod machine;
+pub mod stockfish;
 pub mod tailer;
 pub mod telemetry;
 
@@ -18,5 +19,6 @@ pub use governor::{Api, Endpoint, Governor};
 pub use journal::JournalSource;
 pub use lichess::{HttpFetcher, LichessSource};
 pub use machine::{GpuSource, UnitsSource};
+pub use stockfish::{Stockfish, Verdict, grade_of};
 pub use tailer::{Batch, Tailer};
 pub use telemetry::TelemetrySource;
