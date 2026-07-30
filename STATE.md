@@ -197,8 +197,10 @@ scripts/match.py     head-to-head match play. the measurement instrument
 scripts/elo.py       its statistics, separate so lab.py need not import torch
 scripts/lab.py       the experiment queue: the plan, the runner, the viewer
 scripts/promote.py   swap the live bot to a checkpoint
-scripts/watch.py     the `sumofish` dashboard (composition root)
-scripts/dash/        its three layers: sources -> state -> panels
+dashboard/           the `sumofish` dashboard, in Rust. Read dashboard/CLAUDE.md.
+                     Nine crates; sf-panels is the enforcement point (it depends on
+                     nothing that can do I/O). Its own gate sweeps every terminal
+                     size and asserts panel presence is monotone.
   sprites.py         GENERATED cburnett piece bitmaps; make_sprites.py rebuilds it
 systemd/             four --user units, symlinked into ~/.config/systemd/user
 reference/           upstream source, gitignored, for diffing. read-only.
@@ -282,7 +284,8 @@ back to the text renderer when anything is missing.
 **The pieces are cburnett, not an approximation of it.** (Still true, and it is
 what draws the board wherever sixel is unavailable.) That is the set
 lichess draws by default, and `python-chess` already ships the SVGs, so
-`scripts/dash/make_sprites.py` rasterises them straight to the pixel grid the
+`dashboard/xtask/codegen_cburnett.py` lifts them out of python-chess, and the
+board is rasterised at the pixel grid the
 terminal can afford (8, 16 or 24 px per square) and checks the result in as
 `sprites.py`. Two bytes per pixel, luminance and alpha, so the renderer can
 substitute any two inks and keep the artwork. `rsvg-convert` and ImageMagick

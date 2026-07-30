@@ -260,7 +260,7 @@ and say so, because a note that was believed for a month is itself evidence.
   compare it before emitting, and accept the board being briefly absent rather
   than briefly wrong. `ESC[2J` on a geometry change clears whatever did get
   stranded (verified: it does erase image data in Konsole).
-- `pkill -f "scripts/watch.py"` from a shell whose own command line contains
+- `pkill -f "<the dashboard>"` from a shell whose own command line contains
   that string kills the shell, and `-f "watch.py"` also matches the *live*
   dashboard, not just the fixture you started. Both happened in one session:
   the second one closed the window the user was watching the bot in. Match on

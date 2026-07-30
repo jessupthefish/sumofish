@@ -37,7 +37,7 @@ The engine reports what it is thinking twice over, to two different audiences:
     speaks. lichess picks the score up and `!eval` in chat answers from it.
     This happens whether or not anything local is watching.
   * **JSON-lines telemetry** to `logs/engine.jsonl`, emitted *during* the
-    search as well as at the end of it, which is what `scripts/watch.py` reads
+    search as well as at the end of it, which is what the `sumofish` dashboard reads
     to show the tree developing live rather than only its conclusion.
 
 Neither can block the search or take it down. See `chessgpu/telemetry.py` for
