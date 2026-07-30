@@ -158,6 +158,38 @@ pub fn populated(now: Instant) -> AppState {
     );
 
     // --- the search, mid-think ---
+    //
+    // Sent as a SEQUENCE, because `apply` derives `best_changes` from consecutive
+    // snapshots rather than trusting the field. Setting it directly gave a fixture
+    // where the "changed its mind" row could never appear -- which the snapshot
+    // caught, and which is exactly the never-exercised branch a hand-built fixture
+    // hides.
+    for earlier in ["c3", "d3"] {
+        apply(
+            &mut st,
+            Update::Search {
+                bot: bot.clone(),
+                game: game.clone(),
+                snapshot: SearchSnapshot {
+                    ply: 8,
+                    nodes: 9000,
+                    unique_per_s: 3100,
+                    sims: 10000,
+                    elapsed: Duration::from_millis(5000),
+                    budget: Duration::from_millis(29800),
+                    wp_white: 0.57,
+                    best: Some(earlier.into()),
+                    pv: vec![earlier.into()],
+                    top: vec![],
+                    mate: false,
+                    done: false,
+                    reused: Some(8213),
+                    best_changes: 0,
+                },
+            },
+            now,
+        );
+    }
     apply(
         &mut st,
         Update::Search {
@@ -181,7 +213,8 @@ pub fn populated(now: Instant) -> AppState {
                 mate: false,
                 done: false,
                 reused: Some(8213),
-                best_changes: 2,
+                // Derived by `apply` from the sequence above, not asserted here.
+                best_changes: 0,
             },
         },
         now,

@@ -6,7 +6,7 @@ expression: as_text(&buf)
 │ SEARCHING    59.9% us   ●                                  │
 │time  ███████▎                   21.42s of 29.80s           │
 │nodes 38,708   unique/s 3,324   sims 45,120   dedup 14%     │
-│                                                            │
+│changed its mind 2×    reused 8,213                         │
 │                                                            │
 │Re1    ██████████████████████████  13926  q 0.396  p 0.213  │
 │c3     ███████████████▏             8104  q 0.371  p 0.180  │
