@@ -233,7 +233,7 @@ pub struct PyMcts {
 #[pymethods]
 impl PyMcts {
     #[new]
-    #[pyo3(signature = (c_puct = 2.0, c_puct_base = Some(19652.0), c_puct_init = 1.25, fpu = -0.2, batch = 1, reuse = false, dedup = false, mate_distance = false))]
+    #[pyo3(signature = (c_puct = 2.0, c_puct_base = Some(19652.0), c_puct_init = 1.25, fpu = -0.2, batch = 1, reuse = false, dedup = false, mate_distance = false, vloss_fix = false))]
     #[allow(clippy::too_many_arguments)] // it mirrors mcts.py's constructor
     fn new(
         c_puct: f64,
@@ -244,11 +244,13 @@ impl PyMcts {
         reuse: bool,
         dedup: bool,
         mate_distance: bool,
+        vloss_fix: bool,
     ) -> Self {
         let mut inner = tree::Mcts::new(c_puct, c_puct_base, c_puct_init, fpu, batch);
         inner.reuse = reuse;
         inner.dedup = dedup;
         inner.mate_distance = mate_distance;
+        inner.vloss_fix = vloss_fix;
         PyMcts { inner }
     }
 

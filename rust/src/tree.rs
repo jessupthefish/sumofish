@@ -6,19 +6,28 @@
 //!
 //! # Defects reproduced on purpose
 //!
-//! Three known problems in the Python search are preserved here:
+//! Three known problems in the Python search are preserved here, behind flags,
+//! each OFF by default so the faithful port stays byte-identical unless asked:
 //!
 //! 1. **No leaf deduplication.** Two descents that reach the same unexpanded
 //!    leaf produce two `pending` entries and two network rows. This is the
 //!    mechanism behind the measured 98.6% duplicated work at batch 1024.
-//! 2. **Virtual loss corrupts Q, not just N.** `backup(path, 1.0)` adds to
-//!    `value_sum`, so the exploitation term is distorted, where Lc0 keeps a
-//!    separate in-flight counter that only affects the PUCT denominator.
+//!    Fixed by `dedup` (see `simulate_batch`), off by default.
+//! 2. **Virtual loss corrupts Q, not just N.** `backup(path, 1.0)` used to add
+//!    straight to `value_sum`, so the exploitation term was distorted, where
+//!    Lc0 keeps a separate in-flight counter that only affects the PUCT
+//!    denominator. Fixed by `vloss_fix` (see `Node::pending`,
+//!    `apply_virtual_loss`, `remove_virtual_loss`, `select_child`), off by
+//!    default.
 //! 3. **No mate distance.** A mate in 2 and a mate in 14 back up identically.
+//!    Fixed by `mate_distance` (see `prove`, `select_child`, `best_move`), off
+//!    by default.
 //!
-//! Fixing any of them here would destroy the identity test, which is the only
-//! cheap proof this port is correct. They get fixed afterwards, separately, each
-//! measured on its own. Do not "improve" this file.
+//! Turning any of them on here is a genuine behaviour change and will fail the
+//! identity test on purpose -- that is what the flag is for. Leaving all three
+//! off reproduces the original faithful port exactly. Each is measured on its
+//! own, separately, against the pair-match harness. Do not "improve" this file
+//! by changing a default.
 //!
 //! # Sign convention
 //!
@@ -59,10 +68,20 @@ pub enum Proven {
 pub struct Node {
     /// P: the policy's probability for the move that reached here.
     pub prior: f64,
-    /// N. Signed because virtual loss is removed by backing up with sign -1.
+    /// N. Signed because with `vloss_fix` off, virtual loss is still removed by
+    /// backing up with sign -1 -- see `pending` for the fixed path instead.
     pub visits: i64,
-    /// W, accumulated from this node's OWN side-to-move perspective.
+    /// W, accumulated from this node's OWN side-to-move perspective. With
+    /// `vloss_fix` on, this is touched ONLY by real backups: virtual loss no
+    /// longer passes through here at all, so it can never corrupt Q.
     pub value_sum: f64,
+    /// In-flight simulations, `vloss_fix` only. Lc0's virtual loss: it widens
+    /// the PUCT denominator so a second descent in the same batch is
+    /// discouraged from re-selecting a child another descent is already
+    /// heading into, without moving `value_sum`/`visits` at all. Applied in
+    /// `apply_virtual_loss`, undone in `remove_virtual_loss`, read only in
+    /// `select_child`'s denominator term. Always 0 when `vloss_fix` is off.
+    pub pending: i64,
     /// Ordered, mirroring Python's insertion-ordered dict. Index into the arena.
     pub children: Vec<(Move, usize)>,
     /// Set for checkmate/stalemate/draw; never re-evaluated once set.
@@ -78,6 +97,7 @@ impl Node {
             prior,
             visits: 0,
             value_sum: 0.0,
+            pending: 0,
             children: Vec::new(),
             terminal_value: None,
             proven: None,
@@ -163,6 +183,15 @@ pub struct Mcts {
     ///
     /// This is identity-preserving when done correctly -- see `simulate_batch`.
     pub dedup: bool,
+    /// Give virtual loss its own counter (`Node::pending`) instead of routing
+    /// it through `value_sum`/`visits`. Off by default, because the faithful
+    /// port must reproduce the Python's Q corruption during a batch.
+    ///
+    /// This is NOT identity-preserving even at fixed simulations: with it on,
+    /// mid-batch selection sees different (uncorrupted) Q values, so later
+    /// descents in the same batch can choose different children. That is the
+    /// fix, not a bug in it -- see `apply_virtual_loss`/`remove_virtual_loss`.
+    pub vloss_fix: bool,
     /// Distinct positions actually sent to the evaluator. With `dedup` off this
     /// equals `evaluations`; with it on, the gap IS the duplication.
     pub unique_evaluations: u64,
@@ -192,6 +221,7 @@ impl Mcts {
             evaluations: 0,
             mate_distance: false,
             dedup: false,
+            vloss_fix: false,
             unique_evaluations: 0,
             reuse: false,
             reused: 0,
@@ -230,7 +260,17 @@ impl Mcts {
     fn select_child(&self, node_ix: usize) -> (Move, usize) {
         let node = &self.nodes[node_ix];
 
-        let c_sqrt = self.c_puct_at(node.visits) * (node.visits as f64).sqrt();
+        // `effective_n` folds in-flight simulations into N, same as `visits`
+        // alone would if virtual loss still ran through `backup`. Without
+        // this, a parent sitting at 0 REAL visits (true for every node until
+        // its first batch finishes) would score sqrt(0) = 0 for the whole
+        // exploration term, and every descent in the batch would pile onto
+        // the same first child instead of being spread by the in-flight
+        // count below -- silently defeating the point of virtual loss. Only
+        // `fpu_q`, which is this node's own Q, stays on REAL visits: that is
+        // the one place `vloss_fix` must not touch, or it is not the fix.
+        let effective_n = node.visits + node.pending;
+        let c_sqrt = self.c_puct_at(effective_n) * (effective_n as f64).sqrt();
         let mut fpu_q = if node.visits != 0 {
             node.value_sum / node.visits as f64 + self.fpu
         } else {
@@ -283,7 +323,14 @@ impl Mcts {
             } else {
                 fpu_q
             };
-            let score = q + c_sqrt * child.prior / (1 + visits) as f64;
+            // `child.pending` is always 0 with `vloss_fix` off, so this is a
+            // no-op for the faithful port. With it on, a child another descent
+            // in this same batch is already heading into looks less inviting
+            // to PUCT's exploration term -- exactly Lc0's denominator-only
+            // virtual loss -- while `q` above stays untouched, read from real
+            // `value_sum`/`visits` only.
+            let denom = (1 + visits + child.pending) as f64;
+            let score = q + c_sqrt * child.prior / denom;
             if score > best_score {
                 best_score = score;
                 best = Some((mv, child_ix));
@@ -365,6 +412,24 @@ impl Mcts {
             if self.mate_distance && sign > 0 {
                 self.prove(ix);
             }
+        }
+    }
+
+    /// `vloss_fix` virtual loss: mark every node on `path` as having one more
+    /// in-flight simulation. Touches `pending` only -- never `visits` or
+    /// `value_sum` -- so it cannot corrupt Q the way `backup(path, 1.0, 1)`
+    /// does for the faithful port. See `Node::pending` and `select_child`.
+    fn apply_virtual_loss(&mut self, path: &[usize]) {
+        for &ix in path {
+            self.nodes[ix].pending += 1;
+        }
+    }
+
+    /// Undo `apply_virtual_loss` for the same path, once the real value is
+    /// ready to back up for real.
+    fn remove_virtual_loss(&mut self, path: &[usize]) {
+        for &ix in path {
+            self.nodes[ix].pending -= 1;
         }
     }
 
@@ -460,7 +525,15 @@ impl Mcts {
                 }
             };
             pending.push(Pending { path: path.clone(), slot });
-            self.backup(&path, 1.0, 1); // virtual loss, removed below
+            // Faithful port: virtual loss IS a real backup with sign 1,
+            // reverted below with sign -1 -- that is the defect (it passes
+            // through `value_sum`). Fixed: it only marks `pending`, which
+            // `select_child` reads and real backup never touches.
+            if self.vloss_fix {
+                self.apply_virtual_loss(&path);
+            } else {
+                self.backup(&path, 1.0, 1); // virtual loss, removed below
+            }
             for _ in 0..undo {
                 pos.pop();
             }
@@ -500,7 +573,11 @@ impl Mcts {
                 }
                 self.expand_from(leaf_ix, &priors[p.slot], &moves.clone());
             }
-            self.backup(&p.path, 1.0, -1); // remove the virtual loss
+            if self.vloss_fix {
+                self.remove_virtual_loss(&p.path);
+            } else {
+                self.backup(&p.path, 1.0, -1); // remove the virtual loss
+            }
             self.backup(&p.path, values[p.slot], 1); // add the real result
         }
 
@@ -696,5 +773,113 @@ impl Mcts {
             }
         }
         best.map(|(mv, _)| mv.uci())
+    }
+}
+
+#[cfg(test)]
+mod vloss_fix_tests {
+    //! `vloss_fix` is otherwise only proven correct by construction (it never
+    //! calls `backup` with the virtual-loss sign, so it structurally cannot
+    //! touch `value_sum`). These tests catch the two ways that could still be
+    //! wrong in practice: the flag silently doing nothing (a wiring bug), and
+    //! virtual loss leaking (an unpaired apply/remove).
+    use super::*;
+    use crate::board::Board;
+
+    const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    /// Returns a fixed value and uniform priors for every position, so any
+    /// drift in `value_sum` can only have come from virtual loss, never from
+    /// the (nonexistent) skill of the evaluator.
+    struct FixedEval {
+        value: f64,
+    }
+
+    impl Evaluator for FixedEval {
+        fn evaluate(
+            &mut self,
+            fens: &[String],
+            actions: &[Vec<i32>],
+        ) -> Result<(Vec<Vec<f64>>, Vec<f64>), String> {
+            let priors = actions
+                .iter()
+                .map(|a| {
+                    let n = a.len().max(1) as f64;
+                    vec![1.0 / n; a.len()]
+                })
+                .collect();
+            let values = vec![self.value; fens.len()];
+            Ok((priors, values))
+        }
+    }
+
+    fn run(vloss_fix: bool, sims: u32, batch: usize, value: f64) -> Mcts {
+        let mut mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, batch);
+        mcts.vloss_fix = vloss_fix;
+        let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev = FixedEval { value };
+        mcts.search(&mut pos, sims, &mut ev).unwrap();
+        mcts
+    }
+
+    #[test]
+    fn off_never_leaves_pending_nonzero_because_it_never_sets_it() {
+        let mcts = run(false, 256, 32, 0.5);
+        assert!(mcts.nodes.iter().all(|n| n.pending == 0));
+    }
+
+    #[test]
+    fn on_removes_every_virtual_loss_it_applies() {
+        // A batch this size against a branching root guarantees several
+        // descents share ancestors before any evaluation returns, which is
+        // exactly the window where a leak would show up.
+        let mcts = run(true, 512, 64, 0.5);
+        assert!(
+            mcts.nodes.iter().all(|n| n.pending == 0),
+            "virtual loss left residue: apply/remove is not paired"
+        );
+    }
+
+    #[test]
+    fn on_never_lets_value_sum_carry_anything_but_real_backups() {
+        // 0.5 is its own complement (1.0 - 0.5 == 0.5), so the alternating
+        // sign-flip in `backup` contributes exactly 0.5 per visit at every
+        // depth. If ANY virtual loss (which always adds/removes 1.0, not the
+        // evaluator's value) had leaked into `value_sum`, this exact equality
+        // would fail -- there is no rounding budget for it to hide in, since
+        // 0.5 and integers are exactly representable.
+        let mcts = run(true, 512, 64, 0.5);
+        for n in &mcts.nodes {
+            if n.visits > 0 {
+                let expected = n.visits as f64 * 0.5;
+                assert_eq!(
+                    n.value_sum, expected,
+                    "value_sum {} != visits*0.5 = {} (visits={}): virtual loss touched it",
+                    n.value_sum, expected, n.visits
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fix_is_not_a_silent_no_op() {
+        // Same position, same evaluator, same seed-free deterministic search,
+        // batch > 1 so mid-batch selection is actually exercised. If wiring
+        // the flag through PyMcts/RustMCTS/simulate_batch had a bug that left
+        // it inert, this would be the one thing that could not tell the
+        // difference -- so assert there IS one.
+        let off = run(false, 800, 64, 0.5);
+        let on = run(true, 800, 64, 0.5);
+        assert_ne!(
+            off.root_visits(0),
+            on.root_visits(0),
+            "vloss_fix changed nothing: it is wired to a no-op"
+        );
+    }
+
+    #[test]
+    fn default_construction_is_off_and_unaffected() {
+        let mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        assert!(!mcts.vloss_fix);
     }
 }

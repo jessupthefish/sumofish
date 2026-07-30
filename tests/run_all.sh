@@ -27,6 +27,10 @@
 #                                       much duplicated work it removes
 #  10. mate distance                 -- proofs checked against an EXHAUSTIVE
 #                                       solver, and the node reduction
+#  11. virtual loss (vloss_fix)      -- Rust unit tests: no leaked virtual
+#                                       loss, value_sum untouched by it, and
+#                                       the flag is proven to change search
+#                                       (not silently wired to a no-op)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -42,6 +46,10 @@ echo "=== oracle 1: perft vs published counts ==="
 if [ "$DEEP" = "--deep" ]; then
     ( cd rust && cargo test --release --test perft -- --ignored --nocapture 2>&1 | tail -9 )
 fi
+
+echo
+echo "=== oracle 1b: rust unit tests (softmax, tokenizer, vloss_fix) ==="
+( cd rust && cargo test --release --lib 2>&1 | tail -20 )
 
 echo
 echo "=== oracle 2: differential vs python-chess, order-sensitive ==="

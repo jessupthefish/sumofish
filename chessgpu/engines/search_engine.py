@@ -175,12 +175,21 @@ def main() -> None:
         # positive -- at a fixed clock it buys ~2x the simulations -- but "almost
         # certainly" is the reasoning this project's own philosophy forbids, and
         # the instrument to settle it now exists.
+        #
+        # `mate_distance` and `vloss_fix` are a different kind of flag: neither
+        # changes the number of rows sent to the network, so neither is a speed
+        # question at all. Both are search-QUALITY fixes (a mate-in-2 no longer
+        # scores the same as a mate-in-14; virtual loss no longer corrupts Q) and
+        # both are also off by default, for the same reason -- a defect fixed in
+        # the tree still needs an Elo verdict from the pair-match harness before
+        # it earns a default, exactly like the speed flags above.
         mcts = mcts_cls(
             value, policy=policy, simulations=sims, batch=batch,
             dedup=os.environ.get("CHESSGPU_DEDUP", "0") != "0",
             compile_nets=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
             pad_batches=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
             mate_distance=os.environ.get("CHESSGPU_MATE_DISTANCE", "0") != "0",
+            vloss_fix=os.environ.get("CHESSGPU_VLOSS_FIX", "0") != "0",
         )
     else:
         mcts = MCTS(value, policy=policy, simulations=sims, batch=batch)

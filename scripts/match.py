@@ -131,11 +131,12 @@ class Spec:
     # position in eight. That is what this match exists to price.
     dedup: bool = False
     compile_nets: bool = False
-    # A search-quality fix (rust only). It does not touch the forward pass
-    # shape, so it is not a speed question -- but it is a genuine behaviour
-    # change against the faithful port and needs the same Elo verdict from
-    # this harness before it earns a default.
+    # Two search-quality fixes (rust only). Neither touches the forward pass
+    # shape, so neither is a speed question -- but both are genuine behaviour
+    # changes against the faithful port and need the same Elo verdict from
+    # this harness before either earns a default.
     mate_distance: bool = False
+    vloss_fix: bool = False
 
     def describe(self) -> str:
         if self.searchless:
@@ -146,6 +147,7 @@ class Spec:
                 ("D", self.dedup),
                 ("C", self.compile_nets),
                 ("M", self.mate_distance),
+                ("V", self.vloss_fix),
             ) if on
         )
         return (
@@ -216,6 +218,7 @@ class Player:
                 dedup=spec.dedup,
                 compile_nets=spec.compile_nets,
                 mate_distance=spec.mate_distance,
+                vloss_fix=spec.vloss_fix,
                 # MUST accompany compile_nets. Without it the row count is
                 # ragged (dedup makes it vary, and root expansion sends 1), so
                 # CUDA graphs record a fresh graph per distinct size -- torch
@@ -587,6 +590,10 @@ def main() -> None:
                         help="prefer the shortest proven mate instead of "
                              "backing up mate-in-2 and mate-in-14 identically "
                              "(rust only)")
+        ap.add_argument(f"--{_s}-vloss-fix", action="store_true",
+                        help="virtual loss affects only the PUCT selection "
+                             "denominator, not the backed-up value_sum "
+                             "(rust only)")
     ap.add_argument("--no-adjudicate", action="store_true")
     ap.add_argument(
         "--arbiter",
@@ -637,6 +644,7 @@ def main() -> None:
             dedup=getattr(args, f"{side}_dedup"),
             compile_nets=getattr(args, f"{side}_compile"),
             mate_distance=getattr(args, f"{side}_mate_distance"),
+            vloss_fix=getattr(args, f"{side}_vloss_fix"),
         )
 
     a, b = spec("a"), spec("b")

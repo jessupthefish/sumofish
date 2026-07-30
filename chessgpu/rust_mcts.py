@@ -7,12 +7,17 @@ than a revert and the two can be A/B'd directly.
 # Why this is allowed to exist before the Elo instrument is trusted
 
 Every other change on the roadmap needs a measurement to justify. This one does
-not, because `sumofish_core` is a *faithful* port: with `dedup` and
-`mate_distance` off it produces byte-identical root visit vectors to
+not, because `sumofish_core` is a *faithful* port: with `dedup`, `mate_distance`
+and `vloss_fix` off it produces byte-identical root visit vectors to
 `chessgpu.mcts`, verified over 40 positions x 800 simulations at five batch sizes,
 and across whole games with tree reuse on. Identical visits means identical moves.
 So this is pure speed with provably no strength change, which is the only claim on
 the board that does not depend on the exchange rate that was retracted.
+
+`vloss_fix` fixes a third known defect (virtual loss corrupting `value_sum`
+instead of only the PUCT selection denominator, Lc0-style) and, like the other
+two, is off by default and IS a genuine behaviour change when on -- it is not
+part of the identity claim above. See `rust/src/tree.rs` for the mechanism.
 
 `tests/identity_engine.py` re-checks that with the REAL networks rather than the
 mock used during the port, because a mock cannot catch a mismatch in how the two
@@ -158,6 +163,7 @@ class RustMCTS:
         reuse: bool = True,
         dedup: bool = False,
         mate_distance: bool = False,
+        vloss_fix: bool = False,
         compile_nets: bool = False,
         pad_batches: bool = False,
     ) -> None:
@@ -180,6 +186,7 @@ class RustMCTS:
             reuse=reuse,
             dedup=dedup,
             mate_distance=mate_distance,
+            vloss_fix=vloss_fix,
         )
         self.evaluations = 0
         self.reused = 0
