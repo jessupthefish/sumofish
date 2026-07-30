@@ -219,21 +219,75 @@ class RustMCTS:
 
         `deadline` arrives as a `time.perf_counter()` absolute, matching
         `mcts.MCTS.search`; the Rust side wants a duration, so it is converted
-        here. `on_progress` is accepted and IGNORED -- see the note in
-        `search_engine` about what that costs the dashboard.
+        here.
+
+        `on_progress`, when given (together with a real `deadline`), is
+        honoured by slicing the move's think time into `progress_every`-sized
+        calls to `self._core.continue_search()` instead of one long blocking
+        `self._core.search()` call, reporting between slices. This used to be
+        silently ignored -- the Rust core wrote only the FINAL "move"
+        telemetry record per move and nothing during it, so a dashboard
+        watching the engine think showed the PREVIOUS move's finished search
+        for the entire ~15-30s of the next one, including, misleadingly,
+        candidates that had already been played. Reported directly,
+        2026-07-30.
+
+        The reason this is safe rather than a re-entrant callback into Rust's
+        own batch loop: `continue_search` does no reroot/reset (see its
+        docstring in `rust/src/tree.rs`), so a short slice's tree is exactly
+        as far along as one long call would have been at the same point --
+        proven byte-identical against an unsliced call of the same total
+        simulation count in `rust::tree::continue_search_tests`. `on_progress`
+        itself is called between two separate Rust calls, with no Rust call
+        in flight, so it can freely query `self._core`'s live state (via
+        `report()`, exactly as the final record already does) without any GIL
+        re-entrancy concern.
         """
         import time as _time
 
-        max_seconds = None
-        if deadline is not None:
-            max_seconds = max(0.0, deadline - _time.perf_counter())
-
         pos = self._position(board)
-        pairs = self._core.search(pos, self.simulations, self._evaluate, max_seconds)
+
+        if deadline is None or on_progress is None:
+            # No clock, or nobody's listening: one call, unchanged from
+            # before this could slice at all. Also the exact fast path
+            # `search_engine`'s own comment already documents for telemetry
+            # off: no observer, no extra FFI round trips.
+            max_seconds = None
+            if deadline is not None:
+                max_seconds = max(0.0, deadline - _time.perf_counter())
+            pairs = self._core.search(pos, self.simulations, self._evaluate, max_seconds)
+            self.evaluations = self._core.evaluations
+            self.reused = self._core.reused
+            visits = {chess.Move.from_uci(u): v for u, v in pairs}
+            return _Root(self._core, board), visits
+
+        root = _Root(self._core, board)
+        slice_s = max(0.01, progress_every)
+        first = max(0.0, min(slice_s, deadline - _time.perf_counter()))
+        pairs = self._core.search(pos, self.simulations, self._evaluate, first)
         self.evaluations = self._core.evaluations
         self.reused = self._core.reused
+
+        while _time.perf_counter() < deadline:
+            # Root visits sum to the cumulative simulation count, the same
+            # quantity `chessgpu/mcts.py::search`'s own `done` tracks -- an
+            # approximation (off by the root's own initial visit, if any),
+            # good enough for a progress readout, not used for anything that
+            # needs to be exact.
+            done = sum(v for _, v in pairs)
+            try:
+                on_progress(root, done)
+            except Exception:  # noqa: BLE001 -- a spectator must never cost the engine a move
+                pass
+            remaining = deadline - _time.perf_counter()
+            if remaining <= 0:
+                break
+            this_slice = min(slice_s, remaining)
+            pairs = self._core.continue_search(pos, self.simulations, self._evaluate, this_slice)
+            self.evaluations = self._core.evaluations
+
         visits = {chess.Move.from_uci(u): v for u, v in pairs}
-        return _Root(self._core, board), visits
+        return root, visits
 
     def play(self, board: chess.Board, deadline: float | None = None) -> chess.Move:
         _root, visits = self.search(board, deadline=deadline)

@@ -711,6 +711,24 @@ impl Mcts {
         // ever needed, it must use the same RNG stream as numpy's to preserve
         // the identity test, which is a real cost worth knowing about up front.
 
+        self.run_batches(root_ix, pos, simulations, ev, deadline)?;
+        Ok(root_ix)
+    }
+
+    /// Keep simulating the position `search`/`continue_search` already
+    /// established at `root_ix`, for another `simulations` (bounded by
+    /// `deadline`, already resolved to an absolute `Instant`). Split out of
+    /// `search` so `continue_search` can reuse the exact same batching and
+    /// deadline logic without also reproducing the reroot/expand preamble,
+    /// which would defeat the entire point of an in-progress continuation.
+    fn run_batches<E: Evaluator>(
+        &mut self,
+        root_ix: usize,
+        pos: &mut Position,
+        simulations: u32,
+        ev: &mut E,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
         let mut done = 0u32;
         while done < simulations {
             let n = std::cmp::min(self.batch as u32, simulations - done);
@@ -728,6 +746,36 @@ impl Mcts {
             self.has_tree = true;
         }
 
+        Ok(())
+    }
+
+    /// Keep searching the SAME position `search` (or a prior `continue_search`)
+    /// already has a tree for, without treating this as a new move: no reroot,
+    /// no reset, no root re-expansion. This exists for one purpose --
+    /// periodic progress telemetry during a single move's think time, called
+    /// in short slices from `chessgpu/rust_mcts.py::RustMCTS.search` instead
+    /// of one long blocking call, so a caller can query `top()`/`pv()`/
+    /// `root_q` (all read-only, already exposed) BETWEEN calls, when no Rust
+    /// call is in flight, rather than needing a callback re-entrant into
+    /// Rust's own batch loop.
+    ///
+    /// `pos` must be the UNCHANGED position `search` was called with -- this
+    /// does not check that, the same way `simulate_batch` does not check its
+    /// own preconditions; the caller is this crate's own Python wrapper, not
+    /// third-party code. Errors if no tree exists yet (nothing to continue).
+    pub fn continue_search<E: Evaluator>(
+        &mut self,
+        pos: &mut Position,
+        simulations: u32,
+        ev: &mut E,
+        max_seconds: Option<f64>,
+    ) -> Result<usize, String> {
+        if self.nodes.is_empty() {
+            return Err("continue_search called with no tree to continue; call search first".to_string());
+        }
+        let deadline = max_seconds.map(|s| std::time::Instant::now() + std::time::Duration::from_secs_f64(s.max(0.0)));
+        let root_ix = 0usize;
+        self.run_batches(root_ix, pos, simulations, ev, deadline)?;
         Ok(root_ix)
     }
 
@@ -783,6 +831,61 @@ impl Mcts {
             }
         }
         best.map(|(mv, _)| mv.uci())
+    }
+
+    /// Top-N children by visits, as `(uci, visits, q, prior)`. Stable sort,
+    /// descending: ties keep child order, matching
+    /// `chessgpu/mcts.py::report`'s `sorted(..., key=lambda kv: -kv[1].visits)`
+    /// (Python's `sorted` is stable). `q` is each child's own Q --
+    /// `value_sum / visits`, from that child's side-to-move perspective, same
+    /// convention and same zero-visits fallback as `root_q`.
+    pub fn top(&self, root_ix: usize, n: usize) -> Vec<(String, i64, f64, f64)> {
+        let mut ranked: Vec<(Move, usize)> = self.nodes[root_ix].children.clone();
+        ranked.sort_by(|a, b| self.nodes[b.1].visits.cmp(&self.nodes[a.1].visits));
+        ranked
+            .into_iter()
+            .take(n)
+            .map(|(mv, ix)| {
+                let node = &self.nodes[ix];
+                let q = if node.visits != 0 {
+                    node.value_sum / node.visits as f64
+                } else {
+                    0.0
+                };
+                (mv.uci(), node.visits, q, node.prior)
+            })
+            .collect()
+    }
+
+    /// The principal variation: most-visited child, root down, stopping at
+    /// `max_len` or the first unvisited child. Visits only -- deliberately
+    /// does NOT apply `best_move`'s mate-distance proof rule, matching
+    /// `chessgpu/mcts.py::report`'s own PV walk
+    /// (`max(node.children.items(), key=lambda kv: kv[1].visits)`), which
+    /// doesn't either. The PV is "the line the search actually spent visits
+    /// on," not "the line that's proven," and those can disagree once a
+    /// shallow proof exists in a branch the search barely explored.
+    pub fn pv(&self, root_ix: usize, max_len: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut ix = root_ix;
+        while out.len() < max_len {
+            let mut best: Option<(Move, usize, i64)> = None;
+            for &(mv, cix) in &self.nodes[ix].children {
+                let v = self.nodes[cix].visits;
+                match best {
+                    Some((_, _, bv)) if v <= bv => {}
+                    _ => best = Some((mv, cix, v)),
+                }
+            }
+            match best {
+                Some((mv, cix, v)) if v > 0 => {
+                    out.push(mv.uci());
+                    ix = cix;
+                }
+                _ => break,
+            }
+        }
+        out
     }
 }
 
@@ -891,5 +994,91 @@ mod vloss_fix_tests {
     fn default_construction_is_off_and_unaffected() {
         let mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
         assert!(!mcts.vloss_fix);
+    }
+}
+
+#[cfg(test)]
+mod continue_search_tests {
+    //! `continue_search` exists so `chessgpu/rust_mcts.py::RustMCTS.search`
+    //! can slice one move's think time into short calls and report live
+    //! progress between them (see its own docstring for why that is safe and
+    //! a Rust-side re-entrant callback is not the design used). The identity
+    //! bar here is the same one this whole file is held to elsewhere: not
+    //! "looks about right", a byte-identical result against the equivalent
+    //! single call.
+    use super::*;
+    use crate::board::Board;
+
+    const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    struct FixedEval {
+        value: f64,
+    }
+
+    impl Evaluator for FixedEval {
+        fn evaluate(
+            &mut self,
+            fens: &[String],
+            actions: &[Vec<i32>],
+        ) -> Result<(Vec<Vec<f64>>, Vec<f64>), String> {
+            let priors = actions
+                .iter()
+                .map(|a| {
+                    let n = a.len().max(1) as f64;
+                    vec![1.0 / n; a.len()]
+                })
+                .collect();
+            let values = vec![self.value; fens.len()];
+            Ok((priors, values))
+        }
+    }
+
+    #[test]
+    fn slicing_into_several_calls_matches_one_call_at_the_same_total() {
+        let mut sliced = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        let mut pos_a = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev_a = FixedEval { value: 0.5 };
+        sliced.search(&mut pos_a, 128, &mut ev_a, None).unwrap();
+        // Three more slices of 128, unbounded by any clock (None), so the
+        // total simulation count -- not wall time -- is what's compared.
+        for _ in 0..3 {
+            sliced.continue_search(&mut pos_a, 128, &mut ev_a, None).unwrap();
+        }
+
+        let mut whole = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        let mut pos_b = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev_b = FixedEval { value: 0.5 };
+        whole.search(&mut pos_b, 512, &mut ev_b, None).unwrap();
+
+        assert_eq!(
+            sliced.root_visits(0),
+            whole.root_visits(0),
+            "4x128 sliced via continue_search must equal one search(512) call"
+        );
+        assert_eq!(sliced.evaluations, whole.evaluations, "evaluations accumulate across slices");
+    }
+
+    #[test]
+    fn continue_search_before_any_search_is_an_error_not_a_silent_reset() {
+        let mut mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev = FixedEval { value: 0.5 };
+        assert!(mcts.continue_search(&mut pos, 128, &mut ev, None).is_err());
+    }
+
+    #[test]
+    fn continue_search_keeps_accumulating_visits_not_resetting_them() {
+        let mut mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev = FixedEval { value: 0.5 };
+        mcts.search(&mut pos, 64, &mut ev, None).unwrap();
+        let after_first: i64 = mcts.nodes[0].visits;
+        mcts.continue_search(&mut pos, 64, &mut ev, None).unwrap();
+        let after_second: i64 = mcts.nodes[0].visits;
+        assert!(
+            after_second > after_first,
+            "continue_search must add to the existing root visit count \
+             ({after_first}), not restart it (got {after_second})"
+        );
     }
 }

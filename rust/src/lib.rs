@@ -310,6 +310,29 @@ impl PyMcts {
         Ok(self.inner.root_visits(root))
     }
 
+    /// Keep simulating the position the last `search`/`continue_search` call
+    /// left the tree at, for live progress telemetry -- see
+    /// `tree::Mcts::continue_search`'s docstring for why this exists as a
+    /// separate call rather than a callback into a single long `search()`.
+    /// `position` must be the same position `search` was called with; this
+    /// does not check that.
+    #[pyo3(signature = (position, simulations, evaluate, max_seconds = None))]
+    fn continue_search(
+        &mut self,
+        position: &PyPosition,
+        simulations: u32,
+        evaluate: &Bound<'_, PyAny>,
+        max_seconds: Option<f64>,
+    ) -> PyResult<Vec<(String, i64)>> {
+        let mut pos = position.inner.clone();
+        let mut ev = PyEvaluator { func: evaluate };
+        let root = self
+            .inner
+            .continue_search(&mut pos, simulations, &mut ev, max_seconds)
+            .map_err(PyRuntimeError::new_err)?;
+        Ok(self.inner.root_visits(root))
+    }
+
     /// The root's proven mate, if the search found one: `(is_win, plies)`.
     fn root_proven(&self) -> Option<(bool, u16)> {
         if self.inner.nodes.is_empty() {
@@ -324,6 +347,31 @@ impl PyMcts {
             return None;
         }
         self.inner.best_move(0)
+    }
+
+    /// Top-N root children by visits: `(uci, visits, q, prior)`. Never
+    /// exposed here before now -- `chessgpu/rust_mcts.py::report` has called
+    /// this since the wrapper was written, a path only reachable through a
+    /// real `move()`/UCI call, not the identity/perft suite. Found live: the
+    /// bot's UCI `chooser` caught the `AttributeError` and fell back to the
+    /// first legal move rather than crashing outright, which is worse than a
+    /// crash -- it plays on, just badly, with no error visible on the board.
+    #[pyo3(signature = (n = 5))]
+    fn top(&self, n: usize) -> Vec<(String, i64, f64, f64)> {
+        if self.inner.nodes.is_empty() {
+            return Vec::new();
+        }
+        self.inner.top(0, n)
+    }
+
+    /// The principal variation, root down, as UCI moves. Same
+    /// never-exposed-until-now history as `top`.
+    #[pyo3(signature = (max_len = 12))]
+    fn pv(&self, max_len: usize) -> Vec<String> {
+        if self.inner.nodes.is_empty() {
+            return Vec::new();
+        }
+        self.inner.pv(0, max_len)
     }
 
     #[getter]

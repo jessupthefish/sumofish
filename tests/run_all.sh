@@ -128,6 +128,10 @@ echo "=== Rust-only CHESSGPU_* flags warn instead of silently no-op on Python co
 $PY tests/verify_rust_flag_guard.py | tail -12
 
 echo
+echo "=== RustMCTS.search() reports live progress via continue_search slicing ==="
+$PY tests/verify_progress_slicing.py | tail -12
+
+echo
 echo "=== speed: move generation ==="
 $PY tests/bench_movegen.py | tail -12
 
