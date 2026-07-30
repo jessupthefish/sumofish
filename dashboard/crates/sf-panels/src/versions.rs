@@ -109,6 +109,19 @@ impl Panel for Versions {
                         ),
                         if drift { Styles::ink(sf_theme::WARM) } else { Styles::body() },
                     ));
+                    // Which search core. The rollback is one environment variable
+                    // and a restart, so this is a fact about the running bot rather
+                    // than about the repo.
+                    if let Some(core) = b.core.as_deref() {
+                        row.push(Span::styled(
+                            format!("  core {core}"),
+                            if core == "rust" {
+                                Styles::ink(sf_theme::COOL)
+                            } else {
+                                Styles::dim()
+                            },
+                        ));
+                    }
                     if drift {
                         row.push(Span::styled("  DRIFT", Styles::ink(sf_theme::BAD)));
                     }

@@ -353,6 +353,12 @@ pub struct EngineProc {
 
 #[derive(Clone, Debug, Default)]
 pub struct EngineBoot {
+    /// Which search core is running: `python` or `rust`. Added to the telemetry when
+    /// the Rust port was deployed to rated play on 2026-07-29, and as important as
+    /// the checkpoint -- the rollback is `CHESSGPU_CORE=python` and a restart, so
+    /// "which core is actually playing" is a question you need answered on screen
+    /// rather than by reading a unit file.
+    pub core: Option<String>,
     pub params: Option<u64>,
     pub policy_step: Option<u64>,
     pub value_step: Option<u64>,

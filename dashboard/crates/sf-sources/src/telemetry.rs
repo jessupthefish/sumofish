@@ -86,6 +86,9 @@ pub struct Record {
     pub reused: Option<u64>,
 
     // --- boot only ---
+    /// `python` or `rust`.
+    #[serde(default)]
+    pub core: Option<String>,
     #[serde(default)]
     pub params: Option<u64>,
     #[serde(default)]
@@ -219,6 +222,7 @@ impl TelemetrySource {
             out.push(Update::EngineBooted {
                 pid,
                 boot: EngineBoot {
+                    core: rec.core.clone(),
                     params: rec.params,
                     policy_step: rec.policy_step,
                     value_step: rec.value_step,
@@ -434,12 +438,32 @@ mod tests {
             })
             .expect("a boot update");
         assert_eq!(boot.params, Some(8911024));
+        assert_eq!(boot.core.as_deref(), None, "an old record has no core field");
         assert_eq!(boot.value_step, Some(280000));
         assert_eq!(boot.batch, Some(64));
     }
 
     /// The whole of multi-bot attribution: `game` labels a partition, `pid`
     /// separates the interleaved streams.
+    /// The real boot record the Rust core writes, copied from logs/engine.jsonl.
+    /// It carries a field the earlier Python core did not, and dropping it would
+    /// leave "which core is playing" answerable only by reading a unit file.
+    #[test]
+    fn the_rust_cores_boot_record_reports_which_core_it_is() {
+        let mut s = src();
+        let boot = r#"{"ev":"boot","policy_step":280000,"value_step":280000,"bins":64,"sims":100000000,"batch":64,"core":"rust","params":8911024,"t":1785373967.9,"pid":1576070}"#;
+        let ups = s.absorb(batch(&[boot]), Instant::now());
+        let b = ups
+            .iter()
+            .find_map(|u| match u {
+                Update::EngineBooted { boot, .. } => Some(boot),
+                _ => None,
+            })
+            .expect("a boot update");
+        assert_eq!(b.core.as_deref(), Some("rust"));
+        assert_eq!(b.value_step, Some(280000));
+    }
+
     #[test]
     fn two_games_interleaved_stay_separate() {
         let mut s = TelemetrySource::new("/dev/null");
