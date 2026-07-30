@@ -479,8 +479,17 @@ fn parse_pgn_headers(block: &str, user: &str) -> Option<FinishedGame> {
     let mut h: BTreeMap<&str, &str> = BTreeMap::new();
     for line in block.lines() {
         let line = line.trim();
-        let rest = line.strip_prefix('[')?.strip_suffix(']').unwrap_or(line);
-        let (k, v) = rest.split_once(' ')?;
+        // SKIP non-header lines, do not abort on them. An earlier version used `?`
+        // here, so the first line of movetext -- or the blank line before it --
+        // returned None for the whole game. Every real PGN has movetext; the
+        // fixture this was tested against did not, so it passed while finding zero
+        // games in the four sitting on disk. A silent parse failure and having
+        // nothing to show look identical from outside the function, which is why
+        // `tests/results_live.rs` now reads the real directory.
+        let Some(rest) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) else {
+            continue;
+        };
+        let Some((k, v)) = rest.split_once(' ') else { continue };
         h.insert(k, v.trim().trim_matches('"'));
     }
     let white = *h.get("White")?;
@@ -601,7 +610,7 @@ pub fn read_watchdog(path: &Path) -> Result<WatchdogState> {
     let text = std::fs::read_to_string(path).context("read watchdog state")?;
     let w: WatchdogJson = serde_json::from_str(&text).context("parse watchdog state")?;
     let last = w.last_restart.and_then(ts);
-    let today = jiff::Timestamp::now().as_second() - 86_400;
+    let _today = jiff::Timestamp::now().as_second() - 86_400;
     Ok(WatchdogState {
         last_restart: last,
         // Deliberately NOT counted here. This file records only the most recent
@@ -733,7 +742,9 @@ mod tests {
 [ECO "B45"]
 [Opening "Sicilian Defense"]
 [TimeControl "60+2"]
-[Termination "Normal"]"#;
+[Termination "Normal"]
+
+1. e4 c5 2. Nf3 Nc6 3. Bb5 g6 4. O-O Bg7 0-1"#;
 
     #[test]
     fn a_pgn_yields_the_fields_the_python_dropped() {

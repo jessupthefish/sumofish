@@ -47,6 +47,7 @@ use tokio::sync::mpsc;
 struct JournalLine {
     #[serde(rename = "MESSAGE")]
     message: Option<serde_json::Value>,
+    #[allow(dead_code)] // read by the resume path once a supervised restart exists
     #[serde(rename = "__CURSOR")]
     cursor: Option<String>,
     #[serde(rename = "__REALTIME_TIMESTAMP")]
