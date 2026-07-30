@@ -168,6 +168,42 @@ impl Bucket {
 pub struct GovernorStatus {
     pub per_endpoint: Vec<(Endpoint, u32, u32, u32)>, // endpoint, used, rpm, throttles
     pub in_flight: Option<Endpoint>,
+    pub penalised: Vec<Endpoint>,
+}
+
+impl From<GovernorStatus> for sf_model::state::ApiState {
+    fn from(g: GovernorStatus) -> Self {
+        let mut endpoints = indexmap::IndexMap::new();
+        let mut total = 0;
+        let mut throttled = 0;
+        for (e, used, rpm, thr) in &g.per_endpoint {
+            total += used;
+            throttled += thr;
+            endpoints.insert(
+                e.name().to_string(),
+                sf_model::state::EndpointState {
+                    calls_last_minute: *used,
+                    rpm_budget: *rpm,
+                    // What each source ASKED for against what the shared bucket can
+                    // actually give it. With two bots the second number doubles, and
+                    // that is the honest answer to "what does another bot cost".
+                    wanted_interval: Some(Duration::from_secs_f64(
+                        60.0 / (*rpm).max(1) as f64,
+                    )),
+                    effective_interval: (*used > 0)
+                        .then(|| Duration::from_secs_f64(60.0 / *used as f64)),
+                    last_429: None,
+                    penalty_until: None,
+                },
+            );
+        }
+        sf_model::state::ApiState {
+            endpoints,
+            in_flight: g.in_flight.map(|e| e.name().to_string()),
+            total_last_minute: total,
+            throttled,
+        }
+    }
 }
 
 pub struct Governor {
@@ -175,6 +211,7 @@ pub struct Governor {
     buckets: HashMap<Endpoint, Bucket>,
     fetcher: std::sync::Arc<dyn Fetcher>,
     last_call: Option<Instant>,
+    report: Option<tokio::sync::watch::Sender<GovernorStatus>>,
 }
 
 impl Governor {
@@ -184,7 +221,15 @@ impl Governor {
             buckets: Endpoint::ALL.into_iter().map(|e| (e, Bucket::new(e.default_rpm()))).collect(),
             fetcher,
             last_call: None,
+            report: None,
         }
+    }
+
+    /// Publish the budget after every call, so the `api` panel can show the
+    /// degradation rather than leaving it to be inferred.
+    pub fn reporting(mut self, tx: tokio::sync::watch::Sender<GovernorStatus>) -> Self {
+        self.report = Some(tx);
+        self
     }
 
     pub fn with_rpm(mut self, endpoint: Endpoint, rpm: u32) -> Self {
@@ -201,7 +246,13 @@ impl Governor {
                 per.push((e, b.calls.len() as u32, b.rpm, b.throttles));
             }
         }
-        GovernorStatus { per_endpoint: per, in_flight: None }
+        let penalised = Endpoint::ALL
+            .into_iter()
+            .filter(|e| {
+                self.buckets.get(e).is_some_and(|b| b.penalty_until.is_some_and(|u| u > now))
+            })
+            .collect();
+        GovernorStatus { per_endpoint: per, in_flight: None, penalised }
     }
 
     /// Serve calls until the channel closes. One at a time, forever.
@@ -246,6 +297,13 @@ impl Governor {
                 );
             }
             let _ = call.reply.send(result);
+
+            if self.report.is_some() {
+                let status = self.status();
+                if let Some(tx) = self.report.as_ref() {
+                    let _ = tx.send(status);
+                }
+            }
         }
     }
 }

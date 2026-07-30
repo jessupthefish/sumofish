@@ -31,146 +31,147 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
-## Where things stand (2026-07-29, end of session 5)
+## Where things stand (2026-07-29, end of session 6)
 
-**Read this section first. Two things were built today and NEITHER IS IN USE.**
+**The engine is Rust, provably identically, and 3.6x faster. The two extra
+speed flags were measured and cost 168 Elo, so they are off.**
 
-**1. The measurement loop is honest now, and it is merged.** `scripts/match.py`
-no longer caps `--time` at `--sims` (it did, so every "clock" match ran at 400
-simulations), refuses to resume across a spec change, and adjudicates only when a
-fixed-node full-strength Stockfish agrees. `scripts/verify_replays.py` audits the
-archive and currently reports **0 of 8 matches trusted, 4 REPLAYED**. See
-`docs/2026-07-29-ladder-retraction.md` for what that invalidated, and
-`docs/induced-failures.md` for the two bugs found by deliberately inducing the
-new guard's refusal -- including one where a refusal exited 0, which `lab.py`
-gates on as success.
+**1. The Rust core is integrated and live-capable.** `CHESSGPU_CORE=rust`
+selects `chessgpu/rust_mcts.py`; unset keeps Python, so rollback is an
+environment variable. Ten oracles plus `tests/identity_engine.py` (which uses
+the REAL nets, not the port's mock) show byte-identical root visit vectors.
+Identical visits means identical moves, which is why this shipped without a
+match: it is the one claim on the board that does not depend on the retracted
+exchange rate.
 
-**Consequence: no proposal may be justified by an Elo-per-doubling figure.** The
-ladder can be re-earned for ~10 GPU-hours, with a distinct seed per rung, and it
-buys the ordinal only.
+Measured **3.6x** on the engine profile, which is **4.5x more search on the
+same clock**. The earlier "8.9x" was extrapolated from the *Python* profile
+where the network was 9% of wall clock; with the tree in Rust the network is
+**89.3%** and the tree is 1.3%, so the same arithmetic gives a different answer.
+Re-profile after every port.
 
-**2. The hot path is ported to Rust and verified, but NOTHING CALLS IT.** Ten
-independent oracles, byte-identical to `chessgpu/` throughout. Measured 8.9x on
-the engine profile; the tree alone is ~300x. `rust/README.md` has the numbers and,
-more usefully, the three findings that only a benchmark could produce -- including
-that the prior softmax **cannot** be ported, because numpy's float32 `exp` is not
-correctly rounded and differs on 39.7% of inputs.
+**2. `dedup` and `compile` are OFF, and that is a measured decision, not
+caution.** Both are faster per call and both preserve the tree at a fixed
+simulation count. At a fixed *clock* they cost **-168 Elo** (20 games, W0 D11
+L9, LOS 0.0%). The diagnostic: at 0.5s the fast arm ran 7,297 nominal
+simulations against plain's 4,161 and got **3,464 unique evaluations against
+plain's 4,160**. It bought 75% more claimed search and 17% less knowledge,
+because dedup frees network time, the search spends it on more descents, and
+those descents collapse onto leaves already evaluated. Duplicates still back up
+values, so visits and Q inflate on no new information.
 
-Two real fixes landed there behind flags: **leaf dedup**, which turned out to be
-identity-PRESERVING (dedupe the evaluation, not the backup) and removes 66.4% of
-network rows at the live batch of 64; and **mate distance** via MCTS-Solver, with
-sound proofs and a 24-49% smaller tree.
+The general rule this produced is now in PHILOSOPHY: **an identity proof at
+fixed simulations says nothing about strength at a fixed clock.** They are
+different experiments, and only the second one gets played.
 
-**What is NOT done: integration.** The live engine still runs Python. The 8.9x is
-potential. Integrating it changes what a rated bot plays, so it wants the
-re-earned ladder first.
+**3. The measurement loop is honest, and the archive is not.**
+`scripts/match.py` no longer caps `--time` at `--sims`, refuses to resume across
+a spec change (fingerprinting code + config, exiting 2), and adjudicates only
+when a fixed-node Stockfish agrees. `scripts/verify_replays.py` reports **0 of 8
+matches trusted, 4 REPLAYED, 4 unprovenanced**. See
+`docs/2026-07-29-ladder-retraction.md` for what that invalidated and
+`docs/induced-failures.md` for the two bugs found by inducing the guard.
 
-**The 136M is still training** (~step 66,000 of 400,000 as of this writing) and is
-compromised twice over: `--init-from` transferred **0 of 93 tensors** because the
-donor is width 256 and the target is 1024, so it is a cold start its own job
-comment said must not happen; and it is scheduled for 102.4M positions, 19.3% of
-an epoch, against the 9M's 307M. A loss from its promotion match is uninformative.
-Decide whether to sever its outputs before that match runs.
+**Consequence, still in force: no proposal may be justified by an
+Elo-per-doubling figure.** The ladder can be re-earned for ~10 GPU-hours,
+visit-denominated, with a distinct seed per rung. It buys the ordinal only.
+
+**4. Six supervisors were no-ops and are fixed.** `train_watchdog.py` watched a
+unit that does not exist; `watchdog.py` could not restart a unit in `failed`
+because it never called `reset-failed`; `promote.py` wrote `runs/current.pt`,
+which nothing reads, gated on a metric PHILOSOPHY forbids selecting on, and
+restarted the bot for a swap that needs no restart. `research/run.py` now
+enforces the frozen constants and the editable region it always claimed to.
+
+**5. The 136M run was killed.** `--init-from` transferred **0 of 93 tensors**
+(donor width 256, target 1024), so it was the cold start its own job comment
+said must not happen, and it was scheduled for 102.4M positions, 19.3% of an
+epoch, against the 9M's 307M. A promotion match against it would have measured
+the defect, not the width.
+
+**6. CUDA streams are not the shortcut.** Two streams alone is 1.04x; 1.19x on
+top of `compile`. Halving the two forward passes honestly costs the ~40
+GPU-hours a shared-trunk two-head net needs to train. At 89% network share that
+is now the single largest speed item, which is a reversal: it was item 4 when
+the network was 9%.
 
 ## Next session, in order
 
-**1. Read the lab first: `sumofish-lab`, then `runs/lab/report.md`.** Two
-training runs and two clock matches were in flight at handoff. If a candidate
-won and passed the smoke gate it was promoted automatically and a version was
-cut, so check `VERSIONS.jsonl` and `sumofish-games` before assuming the bot is
-still v1.
+**1. Deploy the Rust core to rated play.** `CHESSGPU_CORE=rust`, both speed
+flags off. This is a strength change (4.5x the search on the clock) with a
+proof rather than a match behind it, and it touches rated games, so it is a
+human decision. Nothing else on this list is blocked by it.
 
-**2. Play the acceptance test. It has never been run.**
-`scripts/acceptance.py --games 20`. Twenty blind games, one rating each,
-arms hidden until `reveal`. Every other number in this repo measures strength,
-which PHILOSOPHY ranks third. This is the only thing pointed at goal two, it
-needs a human by construction, and no amount of GPU substitutes for it.
+**2. Play the acceptance test. It has still never been run.**
+`scripts/acceptance.py --games 20`. Twenty blind games, one rating each, arms
+hidden until `reveal`. Every other number here measures strength, which
+PHILOSOPHY ranks third; this is the only thing pointed at goal two, and it
+needs a human by construction.
 
-**3. Finish what Stockfish is for.** Live move grading is done and in the moves
-panel. Three uses remain, and the second is the most valuable:
+**3. Re-earn the exchange ladder** (~10 GPU-h). Visit-denominated, distinct seed
+per rung, on an idle machine. Until it exists, every "worth N Elo" in any plan
+is a guess, and the plan's ordering is unfalsifiable.
 
-  - **A third-party adjudicator for `match.py`.** Today the engine under test
-    judges its own adjudicated wins, so a net that is more *confident* rather
-    than more correct banks more of them, and miscalibration and strength
-    become the same number. That decided 65 of 300 games in one match.
-  - **An absolute Elo anchor.** Every match here is relative, A against B, so
-    the whole ladder floats. Stockfish at a pinned Skill Level and depth turns
-    "+21 over the previous build" into a number that survives a rebuild.
-  - **An outside notion of "sharp position"** for the blunder-locality proxy,
-    which is contaminated when read off the engine's own eval curve.
+**4. Stockfish as an absolute anchor**, at pinned nodes. Every match here is
+relative, so the whole ladder floats. The adjudicator half is done.
 
-**4. Merge `search-and-lab` into `main`** once the lab is quiet. 29 commits.
-Nothing may edit `chessgpu/` while a match runs -- use a worktree.
+**5. Retrain the policy prior.** Frozen at 40.9% puzzles since session 1 and it
+is the biggest neglected lever: it sets the shape of every search, and
+`c_puct`/FPU/temperature tuning is not worth doing before it, since the right
+values depend on the prior's sharpness.
 
-**5. The search is still the lever, and it is CPU-bound.** After this session's
-2.6x, `board.push`/`pop` is ~24% of wall clock and move generation ~20%. That
-is 44% inside python-chess and the network is 9%. At roughly +50 Elo per
-doubling at the deployed budget, halving that overhead is worth real rating.
-Kernels remain the wrong target until it is fixed.
+**6. Shared-trunk two-head net** (~40 GPU-h). Worth ~1.8x now that the network
+is 89% of the search. Warm-start it: 91 of 93 tensors transfer from the 9M body.
 
-**Open, in rough priority order:**
+**7. Cross-game batching.** N games feeding one evaluation service. The engine
+is launch-bound below ~128 rows -- one row costs the same 7.2ms as 128 -- so
+this is close to free throughput and it is a measurement multiplier before it
+is a strength one.
 
-0. ~~No way to measure whether a checkpoint is better.~~ **Done:
-   `scripts/match.py`.** Kept here because the reasoning still governs how to
-   read every other number in this file: puzzle accuracy is a progress metric
-   with a +-1.5% sigma at n=1000, the bullet rating has an RD of +-72, and the
-   old 7-17-0 searchless result was 24 games, good for about +-200 Elo. None of
-   those can see a 20-Elo change. The harness can, by playing more games.
-1. Remove `opponent_max_rating: 2200` from `config/lichess-bot.yml` once the
-   rating is non-provisional (~30 rated games). It is a training wheel that
-   exists only because lichess starts every BOT at a fake 3000.
-2. Two harness bugs from the code audit, neither affecting the live bot:
-   `research/run.py::best_so_far` returns the global minimum bpm rather than
-   the score belonging to `best.py`, so NOISE runs permanently raise the bar
-   and nothing can ever be promoted again. And nothing actually enforces the
-   "FROZEN" constants in `research/train.py` -- an agent editing it could
-   lengthen the budget or rewrite the eval undetected.
-3. ~~Free search speed in `mcts.py`.~~ **Done, 2.6x.** See the top of this
-   file. What is left of it: `CHESSGPU_BATCH` still defaults to 64 and 256 is
-   36% faster, but batch size trades against search quality (more virtual loss
-   in flight, more collisions) and that trade has not been played out yet.
-   Settle it with the harness before changing the default.
-3b. **The selection loop is now the bottleneck: `_puct` plus its `max()` is
-   29% of the search.** Children are a `dict[Move, Node]` scored by a Python
-   function per child per ply per simulation. Lay a node's children out as
-   parallel arrays (prior, visits, value_sum) and score them with one numpy
-   expression. This is the memory-layout work PHILOSOPHY.md step 3 names, and
-   it is the last big algorithmic win before kernels are worth writing.
-4. One net with two heads, not two nets. `_simulate_batch` runs two forward
-   passes per batch, `_priors_batch` through the policy net and `evaluate`
-   through the value net. A shared trunk with a 1968-logit policy head and a
-   64-bin HL-Gauss value head halves per-node GPU cost, frees VRAM, and is the
-   architecture self-play RL (roadmap step 5) needs anyway. Warm-start it: 91
-   of 93 tensors transfer.
-5. Scale to the 136M preset. The 9M is capacity-bound, not data-bound -- train
-   loss was still falling at 300k (2.2422 at 200k, 2.2133 at 292k) while
-   puzzles went flat, and 307M samples is under one epoch of a 36GB bag, so
-   overfitting is not possible. Same 8 layers at width 1024, and 9M runs at
-   ~11% MFU, so benchmark 200 steps rather than assuming 15x wall clock.
-6. CUDA kernels, *after* 3-5, when the GPU is actually the bottleneck.
-7. Tune `c_puct` (2.0) and `fpu` (-0.2). Never measured. Needs the harness.
-8. The value net enables what the policy net could not: resignation, draw
-   offers, and calibrated difficulty ("play the move X worse than best").
+**8. The scaling curve has zero points.** A width sweep (~6 GPU-h) at matched
+tokens is what makes "scale it up" an argument instead of a preference.
+
+**9. `d(loss)/d(params)`, then kernels.** Not before 5-8.
+
+**Open, smaller:**
+
+- Remove `opponent_max_rating: 2200` from `config/lichess-bot.yml` once the
+  rating is non-provisional (~30 rated games). A training wheel that exists
+  only because lichess starts every BOT at a fake 3000.
+- Virtual loss is applied to N and not Q. The last port fix with no proxy
+  behind it; it needs Elo, so it waits for the ladder.
+- A blocking pre-push hook running `verify_replays.py --check`,
+  `tests/verify_data.py`, and `tests/run_all.sh`.
+- Write down the operating point: opponent pool, time control, and how the
+  budget is distributed. Several arguments have quietly assumed different ones.
+- `CHESSGPU_BATCH` defaults to 64 and 256 is faster per call, but batch size
+  trades against search quality (more virtual loss in flight, more collisions).
+  Given item 2 above, settle it on `unique/s` and then in a game, never on nps.
+- Time management: ponder, early stopping, instamove. Untouched.
+- The value net enables resignation, draw offers, and calibrated difficulty.
 
 **Numbers worth remembering:**
-- Behavioural cloning, 8.5h, 307M positions -> 40.9% puzzles. That model is now
-  the search's policy prior, not dead weight.
+- Behavioural cloning, 8.5h, 307M positions -> 40.9% puzzles. Now the search's
+  policy prior.
 - State value warm-started from its body -> 57.4% puzzles at 12% trained.
-- Search beat searchless 7-17-0 (64.6%) with a value net 3% trained.
-- First human game: won in 9 moves, real Sicilian theory.
-- The whole 9M state-value curve: 48.6% at 10k, 64.8% at 100k, 67.0% at 150k,
-  68.7% at 280k, and adjacent evals bounce by 0.77 points. Flat from ~200k.
-- The engine gets ~1600 nps at 12% GPU, and it is **CPU-bound in python-chess**,
-  not launch-bound. The network is 5% of the search's wall clock.
-- Puzzle accuracy at n=1000 has a binomial sigma of +-1.5%, which is larger
-  than the entire 150k->300k gain anyone was trying to read off it. `train.py`
-  logs no held-out loss at all; add one on `data/test/state_value_data.bag`.
+- The 9M state-value curve: 48.6% at 10k, 64.8% at 100k, 67.0% at 150k, 68.7%
+  at 280k; adjacent evals bounce 0.77 points. Flat from ~200k, while train loss
+  was still falling (2.2422 at 200k, 2.2133 at 292k). That is **underfitting**,
+  not capacity-bound -- 307M samples is under one epoch of a 36GB bag, so
+  overfitting is not available as an explanation. An earlier version of this
+  file asserted the opposite and steered a 37-hour run.
+- Puzzle accuracy at n=1000 has a binomial sigma of +-1.5%, larger than the
+  entire 150k->300k gain anyone was reading off it.
+- Post-port profile: network **89.3%**, tree 1.3%. Launch-bound below ~128 rows.
+- The prior softmax **cannot** be ported: numpy's float32 `exp` is not correctly
+  rounded and differs from a correctly-rounded double `exp` on 39.7% of inputs,
+  which reaches 95.4% of positions getting at least one differing prior. A
+  1-ULP prior only changes a move on a PUCT tie, so it is exactly the error
+  class that passes a casual test. `rust/src/softmax.rs` documents it.
 
-**Left unanswered:** what looks wrong about the evaluation panel. The chart
-bug behind "one side is winning when it is not" is fixed (two games on one
-curve), but there was an earlier complaint about that box that was never
+**Left unanswered:** what looks wrong about the evaluation panel. The two-games-
+on-one-curve bug is fixed, but an earlier complaint about that box was never
 pinned down. Ask for a screenshot of just that panel rather than guessing.
-
 
 ## Layout
 

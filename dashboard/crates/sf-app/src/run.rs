@@ -148,6 +148,18 @@ async fn event_loop(
                                 painter.forget();
                                 dirty = true;
                             }
+                            // Direct selection, so you do not have to Tab past a bot
+                            // to reach the one you want. The numbers are on screen.
+                            (KeyCode::Char(c @ '1'..='9'), _) => {
+                                let n = c as usize - '1' as usize;
+                                if let Some(id) = state.bots.keys().nth(n).cloned() {
+                                    if state.focus.as_ref() != Some(&id) {
+                                        state.focus = Some(id);
+                                        painter.forget();
+                                        dirty = true;
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -437,8 +449,28 @@ fn spawn_lichess(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiv
         }
     };
     let (call_tx, call_rx) = mpsc::channel(64);
-    tokio::spawn(sf_sources::Governor::new(cfg.api.min_gap(), fetcher).run(call_rx));
+    let (status_tx, mut status_rx) = tokio::sync::watch::channel(Default::default());
+    tokio::spawn(
+        sf_sources::Governor::new(cfg.api.min_gap(), fetcher)
+            .reporting(status_tx)
+            .run(call_rx),
+    );
     let api = sf_sources::Api::new(call_tx);
+
+    // The budget, on screen. The whole multi-bot story is that the effective
+    // interval degrades as bots are added, so it has to be visible rather than
+    // inferred from a bot that went quiet.
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            while status_rx.changed().await.is_ok() {
+                let s = status_rx.borrow_and_update().clone();
+                if tx.send(Update::Api(s.into())).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
 
     for bot in &cfg.bots {
         if !bot.watch {

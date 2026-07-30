@@ -17,6 +17,7 @@
 
 sf_layout::panels! {
     header,
+    bots,
     board,
     mind,
     moves,

@@ -126,6 +126,9 @@ pub fn solve(
                 order,
                 variants: s.variants,
                 chosen: 0,
+                // Asked once, here, so the fit loop and the allocator see the same
+                // number and a panel cannot report one size and draw another.
+                wants: p.rows_needed(s.variants[0].id, cx),
             });
         }
         let stack = spec.map(|s| s.stack).unwrap_or(Axis::Vertical);
@@ -160,6 +163,9 @@ struct Candidate {
     order: usize,
     variants: &'static [Variant],
     chosen: usize,
+    /// Content rows the panel says it needs right now. Only ever raises the
+    /// minimum.
+    wants: Option<u16>,
 }
 
 impl Candidate {
@@ -199,9 +205,20 @@ fn fit(
         Axis::Vertical => v.min.w,
         Axis::Horizontal => v.min.h,
     };
-    let main_of = |v: &Variant| match stack {
-        Axis::Vertical => (v.min.h, v.pref.h),
-        Axis::Horizontal => (v.min.w, v.pref.w),
+    let main_of = |c: &Candidate| -> (u16, u16) {
+        let v = c.variant();
+        let (mut min, mut pref) = match stack {
+            Axis::Vertical => (v.min.h, v.pref.h),
+            Axis::Horizontal => (v.min.w, v.pref.w),
+        };
+        // A dynamic ask raises the floor by however many rows the content needs
+        // beyond what one row of it would have taken. Never lowers it.
+        if let (Some(rows), Axis::Vertical) = (c.wants, stack) {
+            let chrome = v.min.h.saturating_sub(1);
+            min = min.max(rows.saturating_add(chrome));
+            pref = pref.max(min);
+        }
+        (min, pref)
     };
 
     // Step 2: cross axis FIRST. A 52-column rail cannot host a 60-column variant,
@@ -250,7 +267,7 @@ fn fit(
     };
 
     loop {
-        let need: u32 = candidates.iter().map(|c| main_of(c.variant()).0 as u32).sum();
+        let need: u32 = candidates.iter().map(|c| main_of(c).0 as u32).sum();
         if need <= main_extent as u32 {
             break;
         }
@@ -297,7 +314,7 @@ fn fit(
         .iter()
         .map(|c| {
             let v = c.variant();
-            let (min, pref) = main_of(v);
+            let (min, pref) = main_of(c);
             if v.grow == 0 {
                 Alloc::fixed(min)
             } else {

@@ -285,6 +285,22 @@ pub trait Panel: Send + Sync + 'static {
     /// Pure. No I/O, no clock, no mutation. Called at most once per frame.
     fn render(&self, variant: VariantId, area: Rect, buf: &mut Buffer, cx: &Cx<'_>);
 
+    /// How many rows of *content* this panel has right now, when that depends on
+    /// state rather than on the variant.
+    ///
+    /// A list panel is the case the static `min`/`pref` model cannot express: the
+    /// bots panel has one row per bot, and declaring a fixed height either clips the
+    /// list at two bots or wastes rows at one. Returning `Some(n)` raises the
+    /// variant's minimum to `n` plus whatever chrome the variant already accounts
+    /// for, so the panel asks for exactly what it needs.
+    ///
+    /// It can only ever ask for MORE than its declared minimum, never less -- so it
+    /// cannot undercut the floor `check_registry` verified, and the guarantee that
+    /// the pinned set always fits survives.
+    fn rows_needed(&self, _variant: VariantId, _cx: &Cx<'_>) -> Option<u16> {
+        None
+    }
+
     /// Declare a demand for a raster image. Only the board panel implements it.
     fn picture(&self, _variant: VariantId, _area: Rect, _cx: &Cx<'_>) -> Option<PictureRequest> {
         None

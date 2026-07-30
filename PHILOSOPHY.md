@@ -110,7 +110,23 @@ This is the part of the file that most changes what you are allowed to claim.
 - **Select checkpoints on held-out loss, not on a noisy eval.** Best-of-twenty
   on a ±1.5% metric is biased upward by about two sigma, and it already
   promoted the marginally worse of two checkpoints once.
-- Report `unique/s`, never raw nps, for anything touching batched search.
+- Report `unique/s`, never raw nps, for anything touching batched search. This
+  rule was already here on 2026-07-29 and was violated the same day: the
+  `dedup`+`compile` configuration was adopted on the strength of 1.75x the
+  simulations, and cost **-168 Elo**, because at a fixed clock it got 3,464
+  unique evaluations where plain got 4,160. More claimed search, 17% less
+  knowledge. The gap between `evaluations` and `unique_evaluations` is the part
+  that is not search, and both engines have always printed both.
+- **An identity proof at a fixed simulation count says nothing about strength at
+  a fixed clock.** They are different experiments and only the second one is the
+  one that gets played. A change that provably does not alter the tree still
+  alters *how much tree you get per second*, and that is a strength change. So:
+  byte-identity licenses shipping a pure speedup at matched sims; it never
+  licenses a flag that shifts the sims/second ratio. That needs games.
+- **A wall-clock match requires an idle machine.** Contention biases a
+  time-budgeted experiment and nothing else, so it is the one experiment where
+  "the bot was also running" invalidates the result. Stop the bot and the lab,
+  and record in the match config that they were down.
 - **A number without provenance is not a result either.** On 2026-07-29 it was
   found that all four rungs of the exchange-rate ladder were produced by
   *replaying* existing match logs: `match.py` keys resume on the game index

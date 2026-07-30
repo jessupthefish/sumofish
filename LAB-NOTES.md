@@ -511,3 +511,66 @@ and say so, because a note that was believed for a month is itself evidence.
 - `git commit -m "..."` with backticks in the message: bash runs them as
   command substitution and silently deletes that text. Use `-F` with a file or
   a quoted heredoc.
+
+## 2026-07-29, afternoon: the speed flags, priced
+
+- **`dedup` + `compile` at a fixed clock cost -168 Elo** (20 games, W0 D11 L9,
+  LOS 0.0%). Both were byte-identity-preserving at a fixed *simulation count*
+  and both were genuinely faster per call, so the prediction was "clearly
+  positive". The prediction was backwards, and the diagnostic says why: at 0.5s
+  the fast arm ran 7,297 nominal simulations to plain's 4,161, but got **3,464
+  unique evaluations to plain's 4,160**. It bought 1.75x the claimed search and
+  17% LESS knowledge of the position. Dedup frees network time, the search
+  spends it on more descents, and the extra descents collapse onto leaves
+  already evaluated. Every duplicate still backs up a value, so visits and Q
+  inflate on no new information.
+- **Therefore: an identity proof at fixed simulations says nothing about
+  strength at fixed time.** The two are different experiments. Anything that
+  changes the sim/second ratio has to be matched on the clock, in a game, even
+  when the tree is provably unchanged. "Provably identical" licensed the plain
+  port with no match; it did not license these flags, and I treated the two the
+  same.
+- **Never report nps, sims/s, or "simulations" as a measure of search.** The
+  unit is **unique evaluations per second**. Both engines print `evaluations`
+  and `unique_evaluations`; the gap between them is the part that is not search.
+- Do not run a `--time` match while the bot is live. 20 games were discarded
+  because arm A and arm B shared the GPU with rated games, which biases a
+  wall-clock experiment asymmetrically and only that kind. Stop
+  `chess-gpu-bot` and `chess-gpu-lab` first, and record in the match config
+  that they were down.
+- CUDA streams are **not** a substitute for a shared trunk: two streams alone
+  is 1.04x (nothing), and 1.19x on top of `compile`. Halving the launches
+  honestly costs the ~40 GPU-hours of training a two-head net needs.
+- Do not extrapolate a speedup from a profile taken before the previous
+  speedup. The "8.9x" for batching came from the Python profile where the
+  network was 9% of the search; with the tree in Rust the network is 89% and
+  the same change is worth a fraction of that. Re-profile after every port.
+
+## Faster next time, 2026-07-29
+
+- The order that worked: port for speed with an identity proof (no GPU, no
+  match, unfalsifiable-by-noise), then measure anything that changes the time
+  budget with a real match. The order that wasted a day: build an exchange
+  rate out of replayed matches and then reason from it.
+- When a flag is "obviously" a win, the cheapest disproof is usually a counter
+  already in the code. `unique_evaluations` existed the whole time and would
+  have killed the fast config in 30 seconds instead of 20 games and an
+  afternoon.
+- `mate_distance` measured with the REAL prior for the first time: 34/34
+  shortest mates found with the fix OFF and 34/34 with it ON, 34 sound proofs,
+  0 bogus, tree 51% smaller. Both arms are **saturated**, so the suite has no
+  headroom and cannot price the fix's effect on move choice. That is a limit of
+  the suite, not a verdict on the fix -- mates in 1-2 are found unaided by a
+  trained policy. A discriminating suite needs mates in 3-5, at which point the
+  exhaustive `python-chess` solver is too slow to be the ground truth and
+  Stockfish at pinned depth has to be. Do not read "unchanged" as "useless"; the
+  51% tree reduction and the soundness of the proofs are the justification.
+- `chess-gpu-rust` and `chess-gpu-instrument` are **git worktrees of the same
+  repo**, not copies, so each has its own `chessgpu/` at its own branch. The
+  `rust-core` worktree predates `chessgpu/rust_mcts.py`, so a test there that
+  imports the adapter fails with `ModuleNotFoundError` while the file plainly
+  exists in `~/chess-gpu`. Worse, `sys.path` resolution silently picks whichever
+  `chessgpu` comes first, so an identity oracle can compare the port against a
+  *different branch's* engine and still pass. `tests/verify_mate.py::real_evaluator`
+  now diffs the two copies and refuses if they have drifted. Any new
+  cross-worktree import needs the same guard.
