@@ -209,7 +209,12 @@ impl Config {
         Config {
             dash: Dash::default(),
             api: Api::default(),
-            machine: Machine { units: default_units(), ..Machine::default() },
+            machine: Machine {
+                units: default_units(),
+                lab_state: Some(root.join("runs/lab/state.json")),
+                train_active: Some(root.join("runs/active.json")),
+                matches_dir: Some(root.join("runs/matches")),
+            },
             bots: vec![Bot {
                 id: "sumofish".into(),
                 user: "SumoFish".into(),

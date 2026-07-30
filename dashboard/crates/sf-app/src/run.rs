@@ -46,6 +46,7 @@ pub async fn run(cfg: Config, args: Args) -> Result<()> {
 
     spawn_sources(&cfg, &args, updates_tx.clone(), shutdown_rx.clone());
     spawn_machine(&cfg, updates_tx.clone(), shutdown_rx.clone());
+    spawn_files(&cfg, updates_tx.clone(), shutdown_rx.clone());
     if !args.offline {
         spawn_lichess(&cfg, updates_tx.clone(), shutdown_rx.clone());
     } else {
@@ -315,6 +316,73 @@ fn spawn_sources(
             }
         });
     }
+}
+
+/// Everything the project writes to disk. All of it is a `read_to_string` and a
+/// parse, so one slow task covers the lot -- and unlike the lichess sources it costs
+/// nothing to poll, which is why this runs even in `--offline`.
+fn spawn_files(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiver<bool>) {
+    for bot in &cfg.bots {
+        let src = sf_sources::FileSource {
+            bot: BotId(bot.id.clone()),
+            user: bot.user.clone(),
+            // Global things, attached to each bot's poll for simplicity; the
+            // updates they produce are global and idempotent.
+            lab_state: cfg.machine.lab_state.clone(),
+            matches_dir: cfg.machine.matches_dir.clone(),
+            train_active: cfg.machine.train_active.clone(),
+            versions: bot.versions.clone(),
+            pgn_dir: bot.pgn_dir.clone(),
+            rating_log: bot.rating_log.clone(),
+            watchdog: dirs_state().map(|d| d.join("chess-gpu/watchdog.json")),
+        };
+        let tx = tx.clone();
+        let mut shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => break,
+                    _ = ticker.tick() => {
+                        // Parsing a few hundred KB of PGN and JSONL is milliseconds,
+                        // but it is still blocking work and the UI task must never
+                        // wait on it.
+                        let s = std::sync::Arc::new(src_clone(&src));
+                        let updates = match tokio::task::spawn_blocking(move || s.poll()).await {
+                            Ok(u) => u,
+                            Err(_) => break,
+                        };
+                        for u in updates {
+                            if tx.send(u).await.is_err() { return; }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn src_clone(s: &sf_sources::FileSource) -> sf_sources::FileSource {
+    sf_sources::FileSource {
+        bot: s.bot.clone(),
+        user: s.user.clone(),
+        lab_state: s.lab_state.clone(),
+        matches_dir: s.matches_dir.clone(),
+        train_active: s.train_active.clone(),
+        versions: s.versions.clone(),
+        pgn_dir: s.pgn_dir.clone(),
+        rating_log: s.rating_log.clone(),
+        watchdog: s.watchdog.clone(),
+    }
+}
+
+fn dirs_state() -> Option<std::path::PathBuf> {
+    std::env::var("XDG_STATE_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".local/state"))
+        })
 }
 
 /// The GPU and the units. Global, not per-bot: there is one machine.
