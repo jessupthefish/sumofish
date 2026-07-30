@@ -33,9 +33,17 @@ STATE = Path(
     os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")
 ) / "chess-gpu/watchdog.json"
 
-# How long it may plausibly be our turn before we call the bot stuck. The
-# engine answers in well under a second, so anything past this is a hang, not
-# thinking. Kept above lichess's own 30s abort window so we don't fight it.
+# How long it may plausibly be our turn, WITHOUT THE POSITION CHANGING, before we
+# call the bot stuck.
+#
+# Measured 2026-07-29 over 3,191 consecutive moves at 15+10 with concurrency 2:
+# median 12s between our moves, p99 54s, and exactly one interval above 120s. So
+# 120 is a comfortable threshold -- but only if it measures ONE turn. See the
+# `last_move` tracking below for why it did not.
+#
+# (The comment this replaces said "the engine answers in well under a second",
+# which was true at 1+0 and has not been true since the bot moved to 15+10 and
+# ~30s of thinking per move.)
 STUCK_SECONDS = 120
 
 # Don't restart more than once per this interval, so a genuinely broken bot
@@ -144,16 +152,30 @@ def main() -> int:
 
     now = time.time()
     state = load_state()
-    seen: dict[str, float] = state.get("our_turn_since", {})
-    fresh: dict[str, float] = {}
+    seen: dict = state.get("our_turn_since", {})
+    fresh: dict = {}
 
     stuck = []
     for game in games:
         gid = game.get("gameId")
         if not gid or not game.get("isMyTurn"):
             continue
-        since = seen.get(gid, now)
-        fresh[gid] = since
+        # The clock must measure ONE turn, and the only way to know a turn ended is
+        # that the position changed. Timing "how long has isMyTurn been true across
+        # polls" is a different and much larger quantity: it is our turn about half
+        # the time, this runs once a minute, so three consecutive polls landing on
+        # three DIFFERENT turns read as one 120-second turn. That bug killed 69
+        # healthy games in 36 hours on 2026-07-29, every one of them mid-move, and
+        # `systemctl kill` meant systemd's NRestarts stayed at 0 the whole time so
+        # nothing ever showed it.
+        marker = game.get("lastMove") or game.get("fen") or ""
+        prev = seen.get(gid)
+        if isinstance(prev, dict) and prev.get("move") == marker:
+            since = prev.get("since", now)
+        else:
+            # A new turn (or the first sighting). Start the clock now.
+            since = now
+        fresh[gid] = {"move": marker, "since": since}
         waited = now - since
         if waited > STUCK_SECONDS:
             stuck.append((gid, waited))
