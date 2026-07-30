@@ -18,8 +18,8 @@
 # a candidate; swapping the live bot is a morning decision.
 set -uo pipefail
 
-ROOT=/home/nomad/chess-gpu
-DEV=/home/nomad/chess-gpu-dev
+ROOT=/home/nomad/dev/active/chess-gpu
+DEV=/home/nomad/dev/active/chess-gpu-dev
 PY=$ROOT/.venv/bin/python
 cd "$ROOT" || exit 1
 

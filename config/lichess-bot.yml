@@ -7,7 +7,7 @@ token: "set-via-LICHESS_BOT_TOKEN-env-var"
 url: "https://lichess.org/"
 
 engine:
-  dir: "/home/nomad/chess-gpu/bin"
+  dir: "/home/nomad/dev/active/chess-gpu/bin"
   name: "sumofish-search"
   working_dir: ""
   protocol: "uci"
@@ -98,7 +98,7 @@ greeting:
   hello_spectators: "Hi, I'm {me}. A policy net proposes moves, a value net scores positions, and MCTS searches between them."
   goodbye_spectators: "Thanks for watching!"
 
-pgn_directory: "/home/nomad/chess-gpu/logs/games"
+pgn_directory: "/home/nomad/dev/active/chess-gpu/logs/games"
 pgn_file_grouping: "all"
 
 matchmaking:

@@ -7,7 +7,7 @@
 use sf_sources::stockfish::{Stockfish, default_binary};
 use std::path::Path;
 
-const ROOT: &str = "/home/nomad/chess-gpu";
+const ROOT: &str = "/home/nomad/dev/active/chess-gpu";
 
 #[tokio::test]
 async fn a_real_engine_answers_and_agrees_with_itself() {

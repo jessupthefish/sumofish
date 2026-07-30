@@ -205,7 +205,7 @@ impl Config {
 
     /// What this repo looks like today, so the thing runs with no config at all.
     pub fn builtin() -> Config {
-        let root = PathBuf::from("/home/nomad/chess-gpu");
+        let root = PathBuf::from("/home/nomad/dev/active/chess-gpu");
         Config {
             dash: Dash::default(),
             api: Api::default(),

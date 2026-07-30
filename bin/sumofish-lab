@@ -3,5 +3,5 @@
 #   sumofish-lab          one look
 #   sumofish-lab watch    live
 set -euo pipefail
-ROOT=/home/nomad/chess-gpu
+ROOT=/home/nomad/dev/active/chess-gpu
 exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" "$ROOT/scripts/lab.py" "$@"

@@ -368,7 +368,7 @@ fn spawn_grader(
 ) {
     tokio::spawn(async move {
         let binary = sf_sources::stockfish::default_binary(std::path::Path::new(
-            "/home/nomad/chess-gpu",
+            "/home/nomad/dev/active/chess-gpu",
         ));
         let engine = match sf_sources::Stockfish::spawn(&binary).await {
             Ok(Some(e)) => e,

@@ -9,7 +9,7 @@ StartLimitBurst=8
 
 [Service]
 Type=simple
-WorkingDirectory=/home/nomad/chess-gpu
+WorkingDirectory=/home/nomad/dev/active/chess-gpu
 
 # The plan contains a ~35-hour training run and two days of matches. A KDE
 # power-profile change or an idle timeout partway through would cost the run,
@@ -19,7 +19,7 @@ ExecStart=/usr/bin/systemd-inhibit \
     --what=sleep:idle:handle-lid-switch \
     --who=chess-gpu-lab \
     --why="experiment queue running" \
-    /home/nomad/chess-gpu/.venv/bin/python /home/nomad/chess-gpu/scripts/lab.py run
+    /home/nomad/dev/active/chess-gpu/.venv/bin/python /home/nomad/dev/active/chess-gpu/scripts/lab.py run
 
 # on-failure only. The runner exits 0 when the plan is complete, and restarting
 # a finished plan would do nothing forever; it exits 1 when a job failed, which

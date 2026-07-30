@@ -27,7 +27,7 @@
 |---|---|---|
 | 591098 | 499 MiB | `/usr/bin/kwin_wayland --wayland-fd 7 --socket wayland-0 --xw…` |
 | 1194446 | 107 MiB | `/usr/lib/claude-desktop/claude-desktop --type=gpu-process --…` |
-| 1345757 | 11160 MiB | `/home/nomad/chess-gpu/.venv/bin/python /home/nomad/chess-gpu…` |
+| 1345757 | 11160 MiB | `/home/nomad/dev/active/chess-gpu/.venv/bin/python /home/nomad/dev/active/chess-gpu…` |
 
 verdict: **PASS — per-process VRAM is readable; `machine` panel can answer the starving question directly**
 

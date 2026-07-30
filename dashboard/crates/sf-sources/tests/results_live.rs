@@ -6,7 +6,7 @@
 
 #[test]
 fn the_real_pgn_directory_yields_our_games() {
-    let dir = std::path::Path::new("/home/nomad/chess-gpu/logs/games");
+    let dir = std::path::Path::new("/home/nomad/dev/active/chess-gpu/logs/games");
     if !dir.exists() {
         eprintln!("SKIP: no PGN directory");
         return;
@@ -40,7 +40,7 @@ fn the_real_pgn_directory_yields_our_games() {
 /// current version -- the Python read only its timestamp, as a cutoff, and its label.
 #[test]
 fn the_real_versions_file_yields_the_current_version() {
-    let p = std::path::Path::new("/home/nomad/chess-gpu/VERSIONS.jsonl");
+    let p = std::path::Path::new("/home/nomad/dev/active/chess-gpu/VERSIONS.jsonl");
     if !p.exists() {
         eprintln!("SKIP: no VERSIONS.jsonl");
         return;

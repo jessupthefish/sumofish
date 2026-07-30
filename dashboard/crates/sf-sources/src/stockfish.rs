@@ -348,7 +348,7 @@ mod tests {
     /// rather than a wrong path.
     #[test]
     fn the_default_binary_path_matches_the_repo() {
-        let p = default_binary(Path::new("/home/nomad/chess-gpu"));
+        let p = default_binary(Path::new("/home/nomad/dev/active/chess-gpu"));
         assert!(p.ends_with("tools/stockfish/stockfish-ubuntu-x86-64-bmi2"));
     }
 }

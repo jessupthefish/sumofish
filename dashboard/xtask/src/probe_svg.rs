@@ -307,7 +307,7 @@ sys.stdout.write(chess.svg.board(
             "margin": "#2b2724", "coord": "#e5e0d5"},
 ))
 "##;
-    let out = Command::new("/home/nomad/chess-gpu/.venv/bin/python")
+    let out = Command::new("/home/nomad/dev/active/chess-gpu/.venv/bin/python")
         .args(["-c", script, fen, last.unwrap_or(""), if flip { "1" } else { "0" }])
         .arg(px.to_string())
         .output()

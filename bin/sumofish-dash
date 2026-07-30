@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Rust dashboard. Keeps the absolute path out of the systemd units and out of
 # ~/bin, the same way bin/sumofish-search does for the engine.
-root=/home/nomad/chess-gpu/dashboard
+root=/home/nomad/dev/active/chess-gpu/dashboard
 bin="$root/target/release/sumofish-dash"
 if [ ! -x "$bin" ]; then
   echo "not built yet: cargo build --release -p sf-app   (from $root)" >&2

@@ -10,7 +10,7 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-WorkingDirectory=/home/nomad/chess-gpu/lichess-bot
+WorkingDirectory=/home/nomad/dev/active/chess-gpu/lichess-bot
 
 # The OAuth token lives here, chmod 600, outside the repo and outside git.
 # lichess-bot reads LICHESS_BOT_TOKEN and overrides the config.yml placeholder.
@@ -42,7 +42,7 @@ Environment=CHESSGPU_CORE=rust
 # claimed search, 17% less knowledge of the position. Do not turn these on
 # because the nps number looks better. See PHILOSOPHY, measurement discipline.
 
-ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
+ExecStart=/home/nomad/dev/active/chess-gpu/.venv/bin/python lichess-bot.py
 
 Restart=always
 RestartSec=10
@@ -71,8 +71,8 @@ PrivateTmp=true
 ProtectHome=read-only
 # lichess-bot writes lichess_bot_auto_logs/ into its working directory, which
 # also holds per-game takeback state, so the whole dir has to be writable.
-ReadWritePaths=/home/nomad/chess-gpu/lichess-bot
-ReadWritePaths=/home/nomad/chess-gpu/logs
+ReadWritePaths=/home/nomad/dev/active/chess-gpu/lichess-bot
+ReadWritePaths=/home/nomad/dev/active/chess-gpu/logs
 ReadWritePaths=/home/nomad/.local/state/chess-gpu
 
 [Install]

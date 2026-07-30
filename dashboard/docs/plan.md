@@ -110,7 +110,7 @@ workaround. ~1,700 lines gone for a better result.
 
 ## Workspace layout
 
-`dashboard/` inside `/home/nomad/chess-gpu`, one Cargo workspace, same git history.
+`dashboard/` inside `/home/nomad/dev/active/chess-gpu`, one Cargo workspace, same git history.
 
 ```
 crates/

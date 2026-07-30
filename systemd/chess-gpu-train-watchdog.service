@@ -4,7 +4,7 @@ After=chess-gpu-train.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/nomad/chess-gpu/.venv/bin/python /home/nomad/chess-gpu/scripts/train_watchdog.py
+ExecStart=/home/nomad/dev/active/chess-gpu/.venv/bin/python /home/nomad/dev/active/chess-gpu/scripts/train_watchdog.py
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=chess-gpu-train-watchdog

@@ -10,7 +10,7 @@ part of what the port replaces. Rust does its movegen in Rust and returns the
 same uniform priors. Values are constant on both sides.
 """
 import sys, time, chess
-sys.path.insert(0, '.'); sys.path.insert(0, '/home/nomad/chess-gpu')
+sys.path.insert(0, '.'); sys.path.insert(0, '/home/nomad/dev/active/chess-gpu')
 from chessgpu.mcts import MCTS
 import sumofish_core as core
 

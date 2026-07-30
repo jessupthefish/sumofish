@@ -19,7 +19,7 @@ I read `CLAUDE.md` (all of it, including the 429 lines of Lab Notes), `PHILOSOPH
 **A workspace, not a single crate.** This is the whole answer to "make the Python failures unrepresentable rather than discouraged." In one crate, `mod panels` can always `use crate::sources` — which is exactly what `panels.py:28` does (`from .sources import GATE`, a sources global read from inside a panel) and what `panels.py:103` does (`active_controls()` reads `config/lichess-bot.yml` from inside a render function). Neither is preventable by convention. In a workspace, `sf-panels/Cargo.toml` simply has no `tokio`, no `reqwest`, no `nvml`, no `zbus`, and no dependency on `sf-sources`. The build fails, every time, for everyone.
 
 ```
-/home/nomad/chess-gpu/dashboard/          (Cargo workspace root)
+/home/nomad/dev/active/chess-gpu/dashboard/          (Cargo workspace root)
   Cargo.toml            workspace + [workspace.dependencies] pinning every version once
   clippy.toml           disallowed-methods: fs::*, process::Command, SystemTime::now,
                         Instant::now, thread::sleep  (see note below)
@@ -267,9 +267,9 @@ user = "SumoFish"                       # never a constant in code
 token_file = "~/.config/chess-gpu/bot.env"
 token_var  = "LICHESS_BOT_TOKEN"
 unit       = "chess-gpu-bot"
-telemetry  = "/home/nomad/chess-gpu/logs/engine.jsonl"
-pgn_dir    = "/home/nomad/chess-gpu/logs/games"
-versions   = "/home/nomad/chess-gpu/VERSIONS.jsonl"
+telemetry  = "/home/nomad/dev/active/chess-gpu/logs/engine.jsonl"
+pgn_dir    = "/home/nomad/dev/active/chess-gpu/logs/games"
+versions   = "/home/nomad/dev/active/chess-gpu/VERSIONS.jsonl"
 
 [machine]
 gpus  = "all"
@@ -410,7 +410,7 @@ This is the replacement for `tests/verify_layout.py`, and the difference in scop
 
 # 8. Migration and coexistence
 
-- **Location:** `dashboard/` inside `/home/nomad/chess-gpu`, one Cargo workspace, same git history. `CLAUDE.md`'s Layout section grows one entry. Binary at `dashboard/target/release/sumofish-dash`, invoked through `bin/sumofish-dash` following the existing wrapper pattern so paths stay out of the units.
+- **Location:** `dashboard/` inside `/home/nomad/dev/active/chess-gpu`, one Cargo workspace, same git history. `CLAUDE.md`'s Layout section grows one entry. Binary at `dashboard/target/release/sumofish-dash`, invoked through `bin/sumofish-dash` following the existing wrapper pattern so paths stay out of the units.
 - **`~/bin/sumofish` dispatch** keeps being the front door. During the build, add cases without touching the defaults: `sumofish` → Python (unchanged; it is the working instrument for a bot that is playing right now), `sumofish next` → Rust. At cutover, flip: `sumofish` → Rust, `sumofish py` → Python, for one release cycle. Then delete the `py` case.
 - **Yes, the Python version stays available throughout** — losing observability on a live rated bot for a week is not a trade worth making. But there is a hazard you have not mentioned: **two dashboards double the load on the same per-IP endpoint buckets**, which is what already put the bot into a 40-minute no-challenge stall once. So: the Rust binary defaults to `--offline` until M4 is done (telemetry + nvml + systemd + lab only, zero lichess), and from M4 onward both programs take a pidfile lock at `$XDG_RUNTIME_DIR/sumofish-dash.lock`; the Rust one refuses to open lichess sources while the Python one holds it, and says so on screen. Cheap, and it removes a real way to break the live bot while building its replacement.
 - **What happens to `scripts/dash/` at the end:** deleted, in one commit, together with `scripts/watch.py` and `tests/verify_layout.py`. That last one matters — a layout gate for a deleted program is a test of nothing that still passes green, and PHILOSOPHY's own rule is that retracted things get deleted at the point of use rather than annotated.
@@ -473,9 +473,9 @@ The two that would actually change the architecture are R1 and R4, which is why 
 
 **Files most critical to implementing this plan**
 
-- `/home/nomad/chess-gpu/scripts/watch.py` — `Plan._wide_layout` / `_narrow_layout` (the geometry being replaced), `_live_position`, `_image_key`, `board_image_tick`, and the six hardcoded `USER` sites
-- `/home/nomad/chess-gpu/scripts/dash/fusion.py` — the dead `done`+`uci` block at line 180 and the demux machinery being deleted
-- `/home/nomad/chess-gpu/scripts/dash/sources.py` — `_Gate`, `Tailer`, `GameStream`, `EngineTail._backfill`, `_claims`, `Grader`: every source's proven behaviour, to be ported not reinvented
-- `/home/nomad/chess-gpu/chessgpu/telemetry.py` — the record schema, `pid`/`game` stamping, the durable/droppable distinction to mirror in the mpsc backpressure
-- `/home/nomad/chess-gpu/scripts/dash/theme.py` and `/home/nomad/chess-gpu/scripts/dash/sixel.py` — the 24 theme hexes, the 6 picture colours, `GRID_PX`/`snap`, `Renderer`'s newest-wins contract, and `emit`/`clear`'s ordering rules
-- `/home/nomad/chess-gpu/tests/verify_layout.py` — what the new size-grid gate must subsume, and the eight sizes it currently checks
+- `/home/nomad/dev/active/chess-gpu/scripts/watch.py` — `Plan._wide_layout` / `_narrow_layout` (the geometry being replaced), `_live_position`, `_image_key`, `board_image_tick`, and the six hardcoded `USER` sites
+- `/home/nomad/dev/active/chess-gpu/scripts/dash/fusion.py` — the dead `done`+`uci` block at line 180 and the demux machinery being deleted
+- `/home/nomad/dev/active/chess-gpu/scripts/dash/sources.py` — `_Gate`, `Tailer`, `GameStream`, `EngineTail._backfill`, `_claims`, `Grader`: every source's proven behaviour, to be ported not reinvented
+- `/home/nomad/dev/active/chess-gpu/chessgpu/telemetry.py` — the record schema, `pid`/`game` stamping, the durable/droppable distinction to mirror in the mpsc backpressure
+- `/home/nomad/dev/active/chess-gpu/scripts/dash/theme.py` and `/home/nomad/dev/active/chess-gpu/scripts/dash/sixel.py` — the 24 theme hexes, the 6 picture colours, `GRID_PX`/`snap`, `Renderer`'s newest-wins contract, and `emit`/`clear`'s ordering rules
+- `/home/nomad/dev/active/chess-gpu/tests/verify_layout.py` — what the new size-grid gate must subsume, and the eight sizes it currently checks

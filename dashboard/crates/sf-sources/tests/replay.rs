@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const LOGS: &[&str] =
-    &["/home/nomad/chess-gpu/logs/engine.jsonl", "/home/nomad/chess-gpu/logs/engine.jsonl.1"];
+    &["/home/nomad/dev/active/chess-gpu/logs/engine.jsonl", "/home/nomad/dev/active/chess-gpu/logs/engine.jsonl.1"];
 
 fn load() -> Option<(String, Vec<String>)> {
     for p in LOGS {

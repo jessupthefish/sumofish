@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # UCI wrapper for the searching engine. Two nets: policy priors + value leaves.
 set -euo pipefail
-ROOT=/home/nomad/chess-gpu
+ROOT=/home/nomad/dev/active/chess-gpu
 exec env PYTHONPATH="$ROOT" \
   CHESSGPU_POLICY="${CHESSGPU_POLICY:-$ROOT/runs/policy.pt}" \
   CHESSGPU_VALUE="${CHESSGPU_VALUE:-$ROOT/runs/value.pt}" \

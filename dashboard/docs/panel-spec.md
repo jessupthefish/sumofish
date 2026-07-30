@@ -4,7 +4,7 @@ I have read every file. Here is the specification.
 
 # SumoFish Terminal Dashboard — Feature Specification for Rewrite
 
-Source of truth read in full: `/home/nomad/chess-gpu/scripts/watch.py`, `/home/nomad/chess-gpu/scripts/dash/{panels,widgets,theme,ink,board,sixel,state,sources,fusion}.py`, `/home/nomad/chess-gpu/scripts/dash/make_sprites.py`, `/home/nomad/chess-gpu/tests/verify_layout.py`, `/home/nomad/chess-gpu/CLAUDE.md`, and the telemetry producer `/home/nomad/chess-gpu/chessgpu/engines/search_engine.py`.
+Source of truth read in full: `/home/nomad/dev/active/chess-gpu/scripts/watch.py`, `/home/nomad/dev/active/chess-gpu/scripts/dash/{panels,widgets,theme,ink,board,sixel,state,sources,fusion}.py`, `/home/nomad/dev/active/chess-gpu/scripts/dash/make_sprites.py`, `/home/nomad/dev/active/chess-gpu/tests/verify_layout.py`, `/home/nomad/dev/active/chess-gpu/CLAUDE.md`, and the telemetry producer `/home/nomad/dev/active/chess-gpu/chessgpu/engines/search_engine.py`.
 
 ---
 
@@ -371,7 +371,7 @@ Games with verdict `none` are excluded from all three counts.
 
 ## A. THEME
 
-`/home/nomad/chess-gpu/scripts/dash/theme.py`. **It is gruvbox dark for all UI chrome**, with three custom families layered on: a board palette, a piece-ink palette, and an evaluation-gauge palette that is explicitly *not* gruvbox because gruvbox's own values failed a measured contrast requirement.
+`/home/nomad/dev/active/chess-gpu/scripts/dash/theme.py`. **It is gruvbox dark for all UI chrome**, with three custom families layered on: a board palette, a piece-ink palette, and an evaluation-gauge palette that is explicitly *not* gruvbox because gruvbox's own values failed a measured contrast requirement.
 
 ### A.1 Named colours
 
@@ -438,7 +438,7 @@ result = lerp(square_colour, ink, alpha/255)
 
 ---
 
-## B. WIDGETS — `/home/nomad/chess-gpu/scripts/dash/widgets.py`
+## B. WIDGETS — `/home/nomad/dev/active/chess-gpu/scripts/dash/widgets.py`
 
 Two rules run through all of them: **every run names its background**, and **every trend carries its endpoints as text** (a shaded trace without a scale is decoration, so `sparkline` returns its range and every caller prints it).
 
@@ -480,7 +480,7 @@ Per row: `f"{san:<7}"` (`bold fg` for row 0, else `dim`) + `bar(visits/top, widt
 
 ## C. BOARD RENDERING
 
-### C.1 Text / half-block renderer — `/home/nomad/chess-gpu/scripts/dash/board.py`
+### C.1 Text / half-block renderer — `/home/nomad/dev/active/chess-gpu/scripts/dash/board.py`
 
 **Cell geometry.** A terminal cell here is ~8.0 × 14.9 px, i.e. about 1:2, so *two cells wide by one tall is square*. `▀` stacks two pixels in one cell, so a square of `w × h` cells is a `w × (h*2)` pixel bitmap. Block elements also have no `wcwidth` ambiguity, whereas `♞` and Nerd Font codepoints do — and that ambiguity drifts table borders row by row.
 
@@ -517,7 +517,7 @@ Below 12 px cburnett stops being legible (king and queen collapse into two blobs
 
 **Cache**: `render()` memoises on `(fen, flip, last_uci, scale)` and **clears the whole cache when it exceeds 8 entries**. A 128×64 board costs ~5 ms and the position changes at most once a second.
 
-### C.2 Sixel renderer — `/home/nomad/chess-gpu/scripts/dash/sixel.py`
+### C.2 Sixel renderer — `/home/nomad/dev/active/chess-gpu/scripts/dash/sixel.py`
 
 **Why it exists**: half-blocks cap resolution at one sprite pixel per cell (~8 screen px per pixel), which looks like Atari art however carefully it is drawn. Sixel removes the ceiling entirely — the board becomes the actual cburnett artwork, rendered from the same SVGs as lichess. It was ruled out early on the untested belief that Konsole's sixel support is off by default; that was wrong.
 
@@ -650,7 +650,7 @@ Top level: `head` (size 3) over `main` (`main_h = rows - 3`). `wide = not small 
 
 **Narrow layout:** `board_w = min(46, max(24, cols - 34))`; body splits row-wise into board and right; right splits into `mind` (`body_h - moves_h`) over `moves` (`max(6, body_h//3)`); `tape_h = 0 if rows < 30 else 5`; `train_h = 0 if rows < 26 else 6` and when present splits row-wise with `machine` (`min(48, max(24, cols//3))`); `curve_h = 0` (no evaluation panel); no results panel. Below the floor it **drops panels rather than clipping them, because a clipped panel is a lie and a missing one is not.**
 
-Geometry invariants gated by `/home/nomad/chess-gpu/tests/verify_layout.py` (no torch, no lichess, no terminal — `Caps` is constructed directly, at cell 8.0 × 14.9, across sizes 160×96, 150×44, 160×48, 200×60, 320×90, 120×40, 90×30, 80×24):
+Geometry invariants gated by `/home/nomad/dev/active/chess-gpu/tests/verify_layout.py` (no torch, no lichess, no terminal — `Caps` is constructed directly, at cell 8.0 × 14.9, across sizes 160×96, 150×44, 160×48, 200×60, 320×90, 120×40, 90×30, 80×24):
 1. The rows the panel renders equal the rows the plan reserved (`len(lines) == board_h` in the wide layout, `<=` in narrow).
 2. `board_h + tape_h == main_h` — the column fills the screen.
 3. `right_w >= RIGHT_COLS` at every size.

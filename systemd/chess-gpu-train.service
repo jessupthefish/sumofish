@@ -7,7 +7,7 @@ StartLimitBurst=8
 
 [Service]
 Type=simple
-WorkingDirectory=/home/nomad/chess-gpu
+WorkingDirectory=/home/nomad/dev/active/chess-gpu
 
 # systemd-inhibit blocks suspend/idle for the life of the run. No idle action is
 # configured on this box today, but a KDE power-profile change eight hours from
@@ -16,7 +16,7 @@ ExecStart=/usr/bin/systemd-inhibit \
     --what=sleep:idle:handle-lid-switch \
     --who=chess-gpu \
     --why="training run in progress" \
-    /home/nomad/chess-gpu/.venv/bin/python train.py \
+    /home/nomad/dev/active/chess-gpu/.venv/bin/python train.py \
         --target state_value --value-bins 64 \
         --init-from runs/9M-causal/best.pt \
         --preset 9M --steps 300000 --batch-size 1024 --workers 10 \

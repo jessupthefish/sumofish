@@ -23,7 +23,7 @@ use sf_board::svg::{Colors, Request, board_svg};
 use shakmaty::{Board, CastlingMode, Chess, EnPassantMode, Position, fen::Fen};
 use std::process::Command;
 
-const PYTHON: &str = "/home/nomad/chess-gpu/.venv/bin/python";
+const PYTHON: &str = "/home/nomad/dev/active/chess-gpu/.venv/bin/python";
 /// Small enough to keep 30 subprocess spawns quick, and still a multiple of 26 so
 /// the comparison is not dominated by antialiasing on off-grid square edges.
 const PX: u32 = 390;

@@ -5,7 +5,7 @@ After=chess-gpu-bot.service
 [Service]
 Type=oneshot
 EnvironmentFile=/home/nomad/.config/chess-gpu/bot.env
-ExecStart=/home/nomad/chess-gpu/.venv/bin/python /home/nomad/chess-gpu/scripts/watchdog.py
+ExecStart=/home/nomad/dev/active/chess-gpu/.venv/bin/python /home/nomad/dev/active/chess-gpu/scripts/watchdog.py
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=chess-gpu-watchdog
