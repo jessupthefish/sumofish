@@ -152,9 +152,19 @@ values depend on the prior's sharpness.
 is 89% of the search. Warm-start it: 91 of 93 tensors transfer from the 9M body.
 
 **7. Cross-game batching.** N games feeding one evaluation service. The engine
-is launch-bound below ~128 rows -- one row costs the same 7.2ms as 128 -- so
-this is close to free throughput and it is a measurement multiplier before it
-is a strength one.
+is launch-bound below ~128 rows -- one row costs the same 7.2ms as 128 -- but
+that is a per-call latency observation, not an end-to-end throughput number.
+**Measured 2026-07-30** with `scripts/batch_payoff.py` (self-play, sims=150,
+32 games/arm, concurrency=8, GPU shared with a live training run at 100%
+util the whole time): **2.45x games/hour**, batched vs. today's one-game-at-
+a-time. Smaller runs landed 2.16x-3.99x, noisy at low n. So: real and worth having eventually, but "close to free" overstated it --
+this is a moderate multiplier under contention, not an order of magnitude,
+and it is NOT a blocking dependency for verifying the 3 MCTS defect fixes
+(leaf dedup, virtual loss, mate distance -- see "Open, smaller" below): that
+verification is affordable on today's unbatched harness per the audit's own
+GPU-hour estimate. Production integration (adjudication, PGN/games.jsonl
+logging, SPRT stopping across concurrent games) is real additional work the
+sizing script does not do.
 
 **8. The scaling curve has zero points.** A width sweep (~6 GPU-h) at matched
 tokens is what makes "scale it up" an argument instead of a preference.
@@ -166,8 +176,15 @@ tokens is what makes "scale it up" an argument instead of a preference.
 - Remove `opponent_max_rating: 2200` from `config/lichess-bot.yml` once the
   rating is non-provisional (~30 rated games). A training wheel that exists
   only because lichess starts every BOT at a fake 3000.
-- Virtual loss is applied to N and not Q. The last port fix with no proxy
-  behind it; it needs Elo, so it waits for the ladder.
+- **Fixed 2026-07-30.** This line previously said "virtual loss is applied to
+  N and not Q" -- backwards. Direct code read confirmed the actual defect was
+  the opposite: virtual loss was applied via a real `backup()` call, so it
+  went straight into `value_sum` (Q) at every node on the path, not just a
+  visit count. Now behind a `vloss_fix` flag (`rust/src/tree.rs`), default
+  off, proven correct by 5 new Rust unit tests (never leaks, never touches
+  `value_sum`, and is proven to actually change search rather than being a
+  silently-inert no-op). It needs Elo, so it still waits for the ladder --
+  the fix existing is not the same as the fix being worth shipping.
 - A blocking pre-push hook running `verify_replays.py --check`,
   `tests/verify_data.py`, and `tests/run_all.sh`.
 - Write down the operating point: opponent pool, time control, and how the
