@@ -551,9 +551,12 @@ pub struct TrainRun {
     pub loss_hist: Vec<f64>,
     pub val_hist: Vec<(u64, f64)>,
     pub puzzle_hist: Vec<(u64, f64)>,
-    /// Whether anything is actually supervising this run.
-    pub watchdog_unit: Option<String>,
-    pub watchdog_alive: bool,
+    /// Whether the training PROCESS is alive, from `runs/active.json`'s pid checked
+    /// against `/proc`. Deliberately not called `watchdog_alive`: it says nothing
+    /// about whether anything is supervising the run, and an earlier version of this
+    /// panel conflated the two and printed UNSUPERVISED whenever training simply was
+    /// not running.
+    pub process_alive: bool,
 }
 
 impl TrainRun {

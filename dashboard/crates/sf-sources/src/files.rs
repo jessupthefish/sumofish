@@ -395,11 +395,15 @@ pub fn read_train(active: &Path) -> Result<TrainRun> {
         run.loss_hist.drain(..run.loss_hist.len() - 400);
     }
 
-    // Is anything actually watching this? `train_watchdog` watches
-    // `chess-gpu-train.service`, which does not exist, so a forty-hour run started
-    // by the lab has no stall detector at all.
-    run.watchdog_alive = a.pid.is_some_and(|p| Path::new(&format!("/proc/{p}")).exists());
-    run.watchdog_unit = Some("chess-gpu-train-watchdog.timer".into());
+    // Is the run actually running? `active.json` is published at startup and never
+    // cleaned up, so a stale pid is the normal state after a run ends. Guard on the
+    // cmdline as well, because pids are reused -- the same guard `train_watchdog.py`
+    // learned to add.
+    run.process_alive = a.pid.is_some_and(|p| {
+        std::fs::read_to_string(format!("/proc/{p}/cmdline"))
+            .map(|c| c.contains("train.py"))
+            .unwrap_or(false)
+    });
     Ok(run)
 }
 

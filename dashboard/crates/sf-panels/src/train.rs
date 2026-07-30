@@ -35,9 +35,12 @@ impl Panel for Train {
     /// six-row box forever, which is six rows spent saying nothing.
     fn relevance(&self, cx: &Cx<'_>) -> Relevance {
         match cx.state.train.run.get(cx.now) {
-            Some((r, _)) if r.step > 0 => {
-                if r.watchdog_alive { Relevance::Normal } else { Relevance::Urgent }
+            // A finished run is still worth a glance; a run in flight with nothing
+            // watching it is worth interrupting for.
+            Some((r, _)) if r.step > 0 && r.process_alive => {
+                if supervised(cx) { Relevance::Normal } else { Relevance::Urgent }
             }
+            Some((r, _)) if r.step > 0 => Relevance::Idle,
             _ => Relevance::Hidden,
         }
     }
@@ -79,20 +82,32 @@ impl Panel for Train {
         row.push(track_tag(track, ""));
         put(buf, inner, inner.y, Line::from(row));
 
-        // A 40-hour run with no stall detector is worth shouting about: the
-        // watchdog watches `chess-gpu-train.service`, which does not exist.
-        if !run.watchdog_alive && inner.height > 1 {
+        // A long run with nothing watching it is worth shouting about -- but only
+        // when there IS a run. An earlier version keyed this on whether the training
+        // process was alive, so it shouted UNSUPERVISED at every finished run, which
+        // is both wrong and the kind of false alarm that teaches you to ignore the
+        // panel. `train_watchdog.py` was separately fixed on 2026-07-29 to watch the
+        // process rather than a unit that no longer exists, so the honest check is
+        // whether its timer is armed.
+        if run.process_alive && !supervised(cx) && inner.height > 1 {
             put(
                 buf,
                 inner,
                 inner.y + 1,
                 Line::from(Span::styled(
-                    "UNSUPERVISED \u{2014} no live stall detector for this run",
+                    "UNSUPERVISED \u{2014} no stall detector armed for this run",
                     Styles::ink(sf_theme::BAD),
                 )),
             );
         } else if inner.height > 1 {
-            if let Some(f) = run.progress() {
+            if !run.process_alive {
+                put(
+                    buf,
+                    inner,
+                    inner.y + 1,
+                    Line::from(Span::styled("run is not active", Styles::faint())),
+                );
+            } else if let Some(f) = run.progress() {
                 let w = sf_theme::GAUGE_MAX.min(inner.width.saturating_sub(8).max(8));
                 let mut spans = bar(f, w, sf_theme::COOL, sf_theme::BG_SOFT).spans;
                 spans.push(Span::styled(format!(" {:4.1}%", f * 100.0), Styles::dim()));
@@ -163,4 +178,15 @@ impl Panel for Train {
             }
         }
     }
+}
+
+/// Is a stall detector actually armed for the training run?
+///
+/// The timer must be both loaded and active. `not-found` is the state
+/// `chess-gpu-train.service` sat in for weeks while its watchdog logged "nothing to
+/// watch" every five minutes, which is exactly the failure this asks about.
+fn supervised(cx: &Cx<'_>) -> bool {
+    cx.state.machine.units.get(cx.now).is_some_and(|(units, _)| {
+        units.iter().any(|u| u.name.contains("train-watchdog") && u.healthy())
+    })
 }
