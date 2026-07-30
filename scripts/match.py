@@ -824,6 +824,32 @@ def main() -> None:
                     flush=True,
                 )
 
+                # A live SPRT status file, separate from `games.jsonl` and the
+                # scrolling log, so a match that will run for hours can be
+                # checked without tailing a log or waiting for the final
+                # summary. Written every game, atomically (write-then-rename),
+                # so a reader never sees a half-written file.
+                status = {
+                    "games": len(records),
+                    "pairs": st["pairs"],
+                    "w": w, "d": d, "l": l,
+                    "score": st["score"],
+                    "elo": st["elo"],
+                    "err": st["err"],
+                    "los": st["los"],
+                    "llr": llr,
+                    "bounds": {"lower": lower, "upper": upper},
+                    "sprt": {"elo0": args.elo0, "elo1": args.elo1,
+                             "alpha": args.alpha, "beta": args.beta},
+                    "concluded": None,
+                    "last_game": {"result": rec["result"], "reason": rec["reason"],
+                                   "plies": rec["plies"], "seconds": rec["seconds"]},
+                    "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+                tmp_path = outdir / "status.json.tmp"
+                tmp_path.write_text(json.dumps(status, indent=2))
+                tmp_path.replace(outdir / "status.json")
+
                 # Only ever at a pair boundary. Stopping mid-pair leaves the
                 # match one game long in one colour, and since the stop is
                 # triggered by a game that MOVED the statistic, that unpaired
@@ -834,6 +860,9 @@ def main() -> None:
                     print(f"\nSPRT concluded after {st['pairs']} pairs "
                           f"({len(records)} games): {verdict} "
                           f"(LLR {llr:+.2f}, bounds {lower:+.2f} / {upper:+.2f})")
+                    status["concluded"] = verdict
+                    tmp_path.write_text(json.dumps(status, indent=2))
+                    tmp_path.replace(outdir / "status.json")
                     return
     except KeyboardInterrupt:
         print("\ninterrupted; rerun the same command to continue")
@@ -861,6 +890,23 @@ def main() -> None:
     )
     if st["err"] > abs(st["elo"]):
         print("The interval includes zero. This match has not shown a difference.")
+
+    # Final status write. Distinguishes "budget exhausted without an SPRT
+    # decision" from an interrupted run, for anyone checking status.json
+    # instead of re-deriving state from games.jsonl.
+    status_path = outdir / "status.json"
+    try:
+        status = json.loads(status_path.read_text()) if status_path.exists() else {}
+    except Exception:
+        status = {}
+    status.update({
+        "games": len(records), "pairs": st["pairs"], "w": w, "d": d, "l": l,
+        "score": st["score"], "elo": st["elo"], "err": st["err"], "los": st["los"],
+        "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+    if status.get("concluded") is None:
+        status["concluded"] = "exhausted (games budget reached without an SPRT decision)"
+    status_path.write_text(json.dumps(status, indent=2))
 
 
 if __name__ == "__main__":
