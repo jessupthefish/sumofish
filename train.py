@@ -107,6 +107,12 @@ def main() -> None:
     ap.add_argument("--eval-every", type=int, default=5000)
     ap.add_argument("--eval-puzzles", type=int, default=1000)
     ap.add_argument("--ckpt-every", type=int, default=5000)
+    ap.add_argument("--keep-every", type=int, default=20_000,
+                    help="also write a step-tagged checkpoint nobody overwrites, "
+                         "so the run leaves a ladder the match harness can price. "
+                         "0 disables. At 136 MB a copy this is cheap next to the "
+                         "GPU-hours being spent; the alternative is what happened "
+                         "to the 9M, which left two points 270k steps apart.")
     ap.add_argument("--run", default=None, help="run name; defaults to preset+causal")
     ap.add_argument("--compile", type=int, default=1)
     ap.add_argument("--seed", type=int, default=1234,
@@ -423,6 +429,17 @@ def main() -> None:
 
         if (step + 1) % args.ckpt_every == 0 or stopping:
             save(step + 1)
+
+        # A step-tagged copy that nothing overwrites. `latest.pt` is a moving
+        # pointer and `best.pt` is whichever eval got lucky, so a finished run
+        # leaves exactly two checkpoints and no way to ask what training bought.
+        # That is why this project has no training-Elo curve: the 9M ran to
+        # 280k steps and the only surviving points are 10k and 280k, from two
+        # different runs. Retention is cheap (136 MB each) next to the GPU-hours
+        # that produced it, and the match harness can only build a curve out of
+        # checkpoints that still exist.
+        if args.keep_every and (step + 1) % args.keep_every == 0:
+            save(step + 1, f"step{step + 1:07d}")
 
         if stopping:
             print(f"stopped at step {step+1:,}")
