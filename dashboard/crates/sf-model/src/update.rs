@@ -46,7 +46,10 @@ pub enum Update {
     EngineBooted { pid: Pid, boot: EngineBoot, at: Instant },
     /// A move whose origin is not the engine -- the lichess tablebase supplied
     /// 10.7% of today's moves and they leave no telemetry record at all.
-    MoveOriginKnown { bot: BotId, game: GameId, ply: u32, origin: MoveOrigin },
+    ///
+    /// Keyed by UCI rather than ply, because the journal knows which move was
+    /// played and not which half-move number it was. `apply` resolves it.
+    MoveOrigin { bot: BotId, game: GameId, uci: String, origin: MoveOrigin },
 
     // ---- machine, global ----
     Gpus(Vec<Gpu>),
@@ -89,7 +92,7 @@ impl Update {
             | Eval { bot, .. }
             | StockfishEval { bot, .. }
             | Grade { bot, .. }
-            | MoveOriginKnown { bot, .. } => Some(bot),
+            | MoveOrigin { bot, .. } => Some(bot),
             EngineSeen { bot, .. } => bot.as_ref(),
             _ => None,
         }
@@ -229,7 +232,18 @@ pub fn apply(st: &mut AppState, u: Update, now: Instant) -> Applied {
             Applied::state()
         }),
         Watchdog { bot, state } => with_bot(st, &bot, |b| {
-            b.watchdog.set(state, now);
+            // Two sources feed this: the journal counts restarts, the state file
+            // knows the stuck-game list. Keep the larger of each rather than letting
+            // whichever arrived last win, or the count flickers between 69 and 0.
+            let merged = match b.watchdog.get(now) {
+                Some((prev, _)) => WatchdogState {
+                    last_restart: state.last_restart.or(prev.last_restart),
+                    restarts_today: state.restarts_today.max(prev.restarts_today),
+                    stuck_games: state.stuck_games.max(prev.stuck_games),
+                },
+                None => state,
+            };
+            b.watchdog.set(merged, now);
             Applied::state()
         }),
 
@@ -263,11 +277,18 @@ pub fn apply(st: &mut AppState, u: Update, now: Instant) -> Applied {
             }
             Applied::state()
         }),
-        MoveOriginKnown { bot, game, ply, origin } => with_game(st, &bot, &game, |g| {
-            if let Some(m) = g.moves.iter_mut().find(|m| m.ply == ply) {
+        MoveOrigin { bot, game, uci, origin } => with_game(st, &bot, &game, |g| {
+            // Newest first: a move can repeat in a game, and the one just played is
+            // the one being described.
+            if let Some(m) = g.moves.iter_mut().rev().find(|m| m.uci == uci) {
                 m.origin = origin;
+                Applied::state()
+            } else {
+                // The move list has not caught up yet. Dropping is correct; the
+                // journal will not repeat itself, but the mark is cosmetic and the
+                // tape line already carries the fact.
+                Applied::nothing()
             }
-            Applied::state()
         }),
 
         EngineSeen { pid, game, bot, at } => {

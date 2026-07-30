@@ -600,7 +600,11 @@ pub fn read_watchdog(path: &Path) -> Result<WatchdogState> {
     let today = jiff::Timestamp::now().as_second() - 86_400;
     Ok(WatchdogState {
         last_restart: last,
-        restarts_today: u32::from(last.is_some_and(|t| t.as_second() > today)),
+        // Deliberately NOT counted here. This file records only the most recent
+        // restart, so counting from it can never report more than one -- and the
+        // real figure is 69 in 36 hours. The journal follower owns that count and
+        // sends its own `Watchdog` update; this one supplies the stuck-game list.
+        restarts_today: 0,
         stuck_games: w.our_turn_since.len() as u32,
     })
 }

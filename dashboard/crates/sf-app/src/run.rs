@@ -47,6 +47,7 @@ pub async fn run(cfg: Config, args: Args) -> Result<()> {
     spawn_sources(&cfg, &args, updates_tx.clone(), shutdown_rx.clone());
     spawn_machine(&cfg, updates_tx.clone(), shutdown_rx.clone());
     spawn_files(&cfg, updates_tx.clone(), shutdown_rx.clone());
+    spawn_journal(&cfg, updates_tx.clone(), shutdown_rx.clone());
     if !args.offline {
         spawn_lichess(&cfg, updates_tx.clone(), shutdown_rx.clone());
     } else {
@@ -325,6 +326,50 @@ fn spawn_sources(
                         }
                     }
                 }
+            }
+        });
+    }
+}
+
+/// What lichess-bot says about itself. One long-lived `journalctl` pipe per bot
+/// with a unit -- the last source that still shells out, and deliberately so.
+fn spawn_journal(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiver<bool>) {
+    for bot in &cfg.bots {
+        let Some(unit) = bot.unit.clone() else { continue };
+        let id = BotId(bot.id.clone());
+        let tx = tx.clone();
+        let mut shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                let src = sf_sources::JournalSource::new(unit.clone(), id.clone());
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    r = src.run(tx.clone(), None) => {
+                        if let Err(e) = r {
+                            tracing::warn!(unit = %unit, error = %e, "journal follower died");
+                        }
+                    }
+                }
+                // A unit restart closes the pipe. Reconnect rather than going quiet,
+                // which is the failure the Python's journal tailing had.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
+
+    // The watchdog's own unit, which is where the restarts are actually logged.
+    let tx2 = tx.clone();
+    let mut shutdown2 = shutdown.clone();
+    let first = cfg.bots.first().map(|b| BotId(b.id.clone()));
+    if let Some(id) = first {
+        tokio::spawn(async move {
+            loop {
+                let src = sf_sources::JournalSource::new("chess-gpu-watchdog", id.clone());
+                tokio::select! {
+                    _ = shutdown2.changed() => return,
+                    _ = src.run(tx2.clone(), None) => {}
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
     }

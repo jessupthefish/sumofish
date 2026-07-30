@@ -7,6 +7,7 @@
 
 pub mod files;
 pub mod governor;
+pub mod journal;
 pub mod lichess;
 pub mod machine;
 pub mod tailer;
@@ -14,6 +15,7 @@ pub mod telemetry;
 
 pub use files::FileSource;
 pub use governor::{Api, Endpoint, Governor};
+pub use journal::JournalSource;
 pub use lichess::{HttpFetcher, LichessSource};
 pub use machine::{GpuSource, UnitsSource};
 pub use tailer::{Batch, Tailer};
