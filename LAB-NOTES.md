@@ -574,3 +574,29 @@ and say so, because a note that was believed for a month is itself evidence.
   *different branch's* engine and still pass. `tests/verify_mate.py::real_evaluator`
   now diffs the two copies and refuses if they have drifted. Any new
   cross-worktree import needs the same guard.
+
+## 2026-07-29, evening: the harness produces its first true positive
+
+- **The match harness had never been shown to detect anything.** Every result
+  in the archive was a replay, a null, or the -168 Elo rejection. "The
+  instrument works" was an assumption. It is now tested: `9M-sv@10k` vs
+  `9M-sv@280k`, same policy both sides, 400 sims, concluded **W1 D23 L12,
+  -109.7 Elo +-64.1, LOS 0.0%**, SPRT terminating correctly in 36 games. Right
+  sign, large effect, efficient stop. Run a known-large positive control
+  BEFORE trusting an instrument to price a small change, not after.
+- That is also the project's first training-Elo datapoint: **~56x more training
+  is worth roughly +110 Elo** (5.12M samples vs 287M). State the confound with
+  it, always: the two checkpoints are from different runs, sharing donor body,
+  LR, data and target, but differing in batch size (512 vs 1024) and warmup
+  (500 vs 2000). It is a positive control with a number attached, not a clean
+  scaling point.
+- **64% of those games were draws** (23 of 36), which is the resolution
+  limiter. Both arms share the policy prior, so they open alike and the
+  positions correlate. Any future match between two nets with a common prior
+  needs more games than the Elo formula suggests, or sharper book openings.
+- `train.py` wrote only `latest.pt` (a moving pointer) and `best.pt` (whichever
+  eval got lucky), so a finished run left two checkpoints and no ladder. That is
+  why the only comparable points for the above were 10k and 280k from different
+  runs. `--keep-every` now retains step-tagged copies. Retention decisions have
+  to be made BEFORE the GPU-hours are spent; there is no way to recover a
+  checkpoint a run declined to write.
