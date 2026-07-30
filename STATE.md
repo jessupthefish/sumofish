@@ -40,9 +40,14 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   so a crash resumes from `latest.pt` instead of losing the night.
 >   Watch: `journalctl --user -u chess-gpu-continue -f`.
 > - **The bot is DOWN and no longer autostarts.** It was stopped for the GPU,
->   then something restarted it at 19:42:31 that I could not attribute -- the
->   watchdog explicitly declined ("not ours to restart") and no unit or script
->   in the repo starts it. `systemctl --user disable` removed the unit symlink
+>   then restarted at 19:42:31 by what was almost certainly a PARALLEL Claude
+>   Code session doing dashboard work (commits by Jessupthefish at 19:41
+>   "the results panel was empty" and 19:47 "snapshot every panel" -- both want
+>   a live bot to populate panels). The watchdog explicitly declined ("not ours
+>   to restart") and nothing in the repo starts it, so it came from outside.
+>   **If you run two sessions at once, say so up front**: a second session
+>   starting the bot during a wall-clock match silently invalidates the match,
+>   and starting it during training halves the throughput of both. `systemctl --user disable` removed the unit symlink
 >   as well as the autostart, so it was re-linked: the unit is `linked` and
 >   `inactive`, startable with `systemctl --user start chess-gpu-bot`, and no
 >   longer pulled in by `default.target`. Restore autostart with
