@@ -73,8 +73,12 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 # a move_overhead on top of this.
 DIVISOR = 30.0          # spend ~1/30th of the remaining clock
 INC_FRACTION = 0.7      # plus most of the increment, which is renewable
-MIN_SECONDS = 0.05      # always look at something
+MIN_SECONDS = 0.05      # always look at something, when the clock can afford it
 MAX_FRACTION = 0.33     # never spend more than a third of what is left
+# SAN generation and telemetry emission in snapshot() still happen after the
+# search returns, so "the whole remaining clock" is not a safe budget even in
+# the extreme case -- this is a conservative estimate, not a measurement.
+OVERHEAD_MARGIN = 0.02
 
 
 def think_time(limits: Limits, side: chess.Color) -> float:
@@ -86,7 +90,19 @@ def think_time(limits: Limits, side: chess.Color) -> float:
     remaining_s = remaining / 1000.0
     inc_s = limits.inc_for(side) / 1000.0
     budget = remaining_s / DIVISOR + inc_s * INC_FRACTION
-    return max(MIN_SECONDS, min(budget, remaining_s * MAX_FRACTION))
+    budget = max(MIN_SECONDS, min(budget, remaining_s * MAX_FRACTION))
+    # The floor above guarantees SOME look, but it must never win against the
+    # clock itself. Found 2026-07-30: at remaining_s below MIN_SECONDS /
+    # MAX_FRACTION (~0.152s), MIN_SECONDS can exceed MAX_FRACTION*remaining_s,
+    # so the line above returns MORE time than is actually left -- e.g.
+    # remaining_s=0.03 (30ms) produced budget=0.05 (50ms), directly
+    # contradicting this module's own docstring ("never bet the game on one
+    # move") and this bot plays live blitz/bullet where that scramble is a
+    # real, repeated scenario, not a corner case. This is the hard, absolute
+    # ceiling: never more than what's actually left, minus overhead margin.
+    # Floored at a small epsilon rather than 0 so a call site never divides by
+    # or waits on a literal zero.
+    return max(0.001, min(budget, remaining_s - OVERHEAD_MARGIN))
 
 
 def centipawns(win_prob: float) -> int:
@@ -101,6 +117,65 @@ def centipawns(win_prob: float) -> int:
     """
     p = min(max(win_prob, 1e-4), 1.0 - 1e-4)
     return int(round(400.0 * math.log10(p / (1.0 - p))))
+
+
+# Recognized spellings for the four CHESSGPU_* search-quality/speed booleans
+# below. Anything else raises, same reasoning as `select_mcts_class`'s own
+# CHESSGPU_CORE check: a typo that silently resolves to some default makes an
+# A/B measure nothing, and this class of flag has already cost -168 Elo once
+# on a config nobody meant to ship (CHESSGPU_DEDUP+CHESSGPU_COMPILE together,
+# 2026-07-29). The bug this replaces: `os.environ.get(VAR, "0") != "0"` treats
+# every string except the literal "0" as true, so `CHESSGPU_VLOSS_FIX=false`
+# -- a natural rollback edit -- silently turned the flag ON instead of off,
+# and nothing at runtime (not the boot telemetry, not the dashboard) would
+# have shown the mistake.
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off", ""}
+
+
+def env_flag(name: str) -> bool:
+    raw = os.environ.get(name, "0")
+    norm = raw.strip().lower()
+    if norm in _TRUE:
+        return True
+    if norm in _FALSE:
+        return False
+    raise ValueError(
+        f"{name}={raw!r} is not a recognized boolean (use 1/0, true/false, "
+        f"yes/no, or on/off). Failing rather than guessing, because a typo "
+        f"that silently picks the wrong value would make an A/B measure "
+        f"nothing -- see CHESSGPU_CORE's own check for the same reasoning."
+    )
+
+
+# The Python MCTS constructor takes none of these -- they're Rust-core-only
+# search-quality/speed args (see the CHESSGPU_CORE branch below). Setting one
+# without also setting CHESSGPU_CORE=rust was a silent no-op with nothing at
+# runtime -- not boot telemetry, not the dashboard -- to show the mistake,
+# the same invisible-failure shape as the root_q/top()/pv() bugs found
+# elsewhere in this project the same night this was caught.
+RUST_ONLY_FLAGS = ("CHESSGPU_DEDUP", "CHESSGPU_COMPILE",
+                    "CHESSGPU_MATE_DISTANCE", "CHESSGPU_VLOSS_FIX")
+
+
+def ignored_rust_flags(env: dict) -> list[str]:
+    """Which of RUST_ONLY_FLAGS are set true in env but core is not rust.
+
+    Pure over an explicit env mapping (not os.environ) so it's directly
+    testable. Raises the same way env_flag does on an unrecognized spelling.
+    """
+    def flag(name: str) -> bool:
+        raw = env.get(name, "0")
+        norm = raw.strip().lower()
+        if norm in _TRUE:
+            return True
+        if norm in _FALSE:
+            return False
+        raise ValueError(
+            f"{name}={raw!r} is not a recognized boolean (use 1/0, true/false, "
+            f"yes/no, or on/off)."
+        )
+    return [name for name in RUST_ONLY_FLAGS if flag(name)]
 
 
 def main() -> None:
@@ -185,13 +260,23 @@ def main() -> None:
         # it earns a default, exactly like the speed flags above.
         mcts = mcts_cls(
             value, policy=policy, simulations=sims, batch=batch,
-            dedup=os.environ.get("CHESSGPU_DEDUP", "0") != "0",
-            compile_nets=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
-            pad_batches=os.environ.get("CHESSGPU_COMPILE", "0") != "0",
-            mate_distance=os.environ.get("CHESSGPU_MATE_DISTANCE", "0") != "0",
-            vloss_fix=os.environ.get("CHESSGPU_VLOSS_FIX", "0") != "0",
+            dedup=env_flag("CHESSGPU_DEDUP"),
+            compile_nets=env_flag("CHESSGPU_COMPILE"),
+            pad_batches=env_flag("CHESSGPU_COMPILE"),
+            mate_distance=env_flag("CHESSGPU_MATE_DISTANCE"),
+            vloss_fix=env_flag("CHESSGPU_VLOSS_FIX"),
         )
     else:
+        # Warn on stderr, not stdout: this is a UCI engine and stdout is
+        # protocol.
+        ignored = ignored_rust_flags(os.environ)
+        if ignored:
+            print(
+                f"WARNING: {', '.join(ignored)} set but CHESSGPU_CORE is not "
+                f"'rust' -- these flags do nothing on the Python core and are "
+                f"being silently ignored. Set CHESSGPU_CORE=rust or unset them.",
+                file=sys.stderr,
+            )
         mcts = MCTS(value, policy=policy, simulations=sims, batch=batch)
 
     tele = Telemetry(

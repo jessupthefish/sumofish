@@ -116,6 +116,18 @@ echo "=== the action-space table is still in sync with the tokenizer ==="
 $PY tests/verify_action_space.py | tail -2
 
 echo
+echo "=== think_time()'s floor never exceeds the actual remaining clock ==="
+$PY tests/verify_think_time.py | tail -12
+
+echo
+echo "=== --auto-resume continues the data stream, doesn't replay it ==="
+$PY tests/verify_data_frac.py | tail -12
+
+echo
+echo "=== Rust-only CHESSGPU_* flags warn instead of silently no-op on Python core ==="
+$PY tests/verify_rust_flag_guard.py | tail -12
+
+echo
 echo "=== speed: move generation ==="
 $PY tests/bench_movegen.py | tail -12
 

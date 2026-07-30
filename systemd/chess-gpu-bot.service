@@ -42,6 +42,23 @@ Environment=CHESSGPU_CORE=rust
 # claimed search, 17% less knowledge of the position. Do not turn these on
 # because the nps number looks better. See PHILOSOPHY, measurement discipline.
 
+# The virtual-loss fix. It earned its default the way search_engine.py's own
+# comment says it has to: a pair-match verdict, not a hunch. SPRT concluded
+# "A is better" after 16 pairs (32 games), same checkpoint both arms, rust
+# core, 400 sims, elo0=0 elo1=20 alpha=0.05 beta=0.05 (match.py's own
+# defaults) -- LLR +7.46 against a +-2.94 bound, W25 D7 L0, LOS 100%, point
+# estimate +364 Elo (+-213, wide at this n, but the direction and rough
+# magnitude are not in doubt at zero losses). Run: runs/matches/vloss-fix-verify,
+# 2026-07-30. See STATE.md and LAB-NOTES.md for the fuller record.
+#
+# Rollback is CHESSGPU_VLOSS_FIX=0 (or unset) and a restart, not a revert.
+Environment=CHESSGPU_VLOSS_FIX=1
+
+# NOT set: CHESSGPU_MATE_DISTANCE. Already correctly implemented (confirmed
+# 2026-07-29), but it hasn't been through the pair-match harness on its own --
+# only vloss_fix has a verdict so far. Same rule applies: earns its default
+# from a match, not from "it's obviously correct."
+
 ExecStart=/home/nomad/dev/active/chess-gpu/.venv/bin/python lichess-bot.py
 
 Restart=always

@@ -41,6 +41,20 @@ from chessgpu.value_policy import ValuePolicy
 ROOT = Path(__file__).resolve().parent
 
 
+def data_frac_after(start_frac: float, records_consumed: int, total_records: int) -> float:
+    """Where the data stream actually sits after consuming records_consumed more.
+
+    Pure so it can be checked directly: the bug this guards against is
+    `--auto-resume` rebuilding the loader from the run's static
+    `--data-start-frac` launch flag on every restart, rather than from
+    wherever the crashed process actually got to, which replays the same
+    prefix over and over across repeated crash-restarts instead of ever
+    reaching new data. `% 1.0` matches `_BagStream`'s own wraparound, so a
+    stream that laps the bag keeps advancing instead of erroring past 1.0.
+    """
+    return (start_frac + records_consumed / max(1, total_records)) % 1.0
+
+
 def lr_at(step: int, *, base_lr: float, warmup: int, total: int, min_frac: float = 0.1) -> float:
     """Linear warmup then cosine decay. Standard, and robust to a bad guess."""
     if step < warmup:
@@ -198,6 +212,14 @@ def main() -> None:
         else:
             print("auto-resume: no checkpoint yet, starting fresh")
 
+    # Where THIS process's data stream starts. A fresh launch uses the CLI
+    # flag; a resume uses wherever the checkpoint's own stream actually left
+    # off, which is not the same value once a run has resumed more than once
+    # (args.data_start_frac is a static launch-time flag, never updated by a
+    # previous resume, so re-deriving from it on the second resume would
+    # replay everything between the original launch and the last checkpoint).
+    data_start_frac = args.data_start_frac
+
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
@@ -207,6 +229,14 @@ def main() -> None:
         # Older checkpoints predate this field; 0.0 is the old (buggy) behaviour.
         best = ckpt.get("best", -float("inf"))
         best_metric = ckpt.get("best_metric", "puzzle_acc")
+        # Older checkpoints predate this field too; falling back to the CLI
+        # flag reproduces the old (buggy) replay-from-launch-point behaviour
+        # rather than inventing a position that was never recorded.
+        if "data_frac" in ckpt:
+            data_start_frac = ckpt["data_frac"]
+            print(f"resuming the data stream at frac={data_start_frac:.4f} "
+                  f"(not --data-start-frac={args.data_start_frac}, which is "
+                  f"this run's original launch point)")
         print(f"resumed from {args.resume} at step {start_step:,}, best={best:.4f}")
 
     if args.init_from and not args.resume:
@@ -235,9 +265,10 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.workers,
         seed=args.seed + start_step,
-        start_frac=args.data_start_frac,
+        start_frac=data_start_frac,
     )
     batches = iter(loader)
+    data_len = len(loader.dataset)
 
     puzzles = load_puzzles(ROOT / "data/puzzles.csv", limit=args.eval_puzzles)
 
@@ -262,6 +293,11 @@ def main() -> None:
         """
         path = out / f"{tag}.pt"
         tmp = out / f"{tag}.pt.tmp"
+        # How far this process has actually pushed the data stream, NOT
+        # args.data_start_frac (this run's static launch-time flag) -- see
+        # data_frac_after()'s docstring for why the distinction matters.
+        records_consumed = (step - start_step) * args.batch_size * args.accum
+        data_frac = data_frac_after(data_start_frac, records_consumed, data_len)
         torch.save(
             {
                 "step": step,
@@ -274,6 +310,7 @@ def main() -> None:
                 # eval unconditionally overwrites best.pt with a worse model.
                 "best": best,
                 "best_metric": best_metric,
+                "data_frac": data_frac,
             },
             tmp,
         )

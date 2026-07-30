@@ -55,8 +55,7 @@ def smoke(ckpt: Path) -> tuple[bool, str]:
     `failed`.
     """
     r = subprocess.run(
-        [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/smoke.py"),
-         "--value", str(ckpt)],
+        [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/smoke.py"), str(ckpt)],
         capture_output=True, text=True, check=False,
     )
     out = r.stdout + r.stderr
