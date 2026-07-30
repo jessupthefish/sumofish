@@ -131,13 +131,22 @@ class Spec:
     # position in eight. That is what this match exists to price.
     dedup: bool = False
     compile_nets: bool = False
+    # A search-quality fix (rust only). It does not touch the forward pass
+    # shape, so it is not a speed question -- but it is a genuine behaviour
+    # change against the faithful port and needs the same Elo verdict from
+    # this harness before it earns a default.
+    mate_distance: bool = False
 
     def describe(self) -> str:
         if self.searchless:
             return f"value={self.value} searchless"
         budget = f"{self.movetime}s" if self.movetime else f"{self.sims} sims"
         flags = "".join(
-            c for c, on in (("D", self.dedup), ("C", self.compile_nets)) if on
+            c for c, on in (
+                ("D", self.dedup),
+                ("C", self.compile_nets),
+                ("M", self.mate_distance),
+            ) if on
         )
         return (
             f"core={self.core}{'+' + flags if flags else ''} "
@@ -206,6 +215,7 @@ class Player:
                 reuse=spec.reuse,
                 dedup=spec.dedup,
                 compile_nets=spec.compile_nets,
+                mate_distance=spec.mate_distance,
                 # MUST accompany compile_nets. Without it the row count is
                 # ragged (dedup makes it vary, and root expansion sends 1), so
                 # CUDA graphs record a fresh graph per distinct size -- torch
@@ -573,6 +583,10 @@ def main() -> None:
         ap.add_argument(f"--{_s}-compile", action="store_true",
                         help="torch.compile the nets, padded to a static shape "
                              "for CUDA graphs (rust only)")
+        ap.add_argument(f"--{_s}-mate-distance", action="store_true",
+                        help="prefer the shortest proven mate instead of "
+                             "backing up mate-in-2 and mate-in-14 identically "
+                             "(rust only)")
     ap.add_argument("--no-adjudicate", action="store_true")
     ap.add_argument(
         "--arbiter",
@@ -622,6 +636,7 @@ def main() -> None:
             core=pick("core"),
             dedup=getattr(args, f"{side}_dedup"),
             compile_nets=getattr(args, f"{side}_compile"),
+            mate_distance=getattr(args, f"{side}_mate_distance"),
         )
 
     a, b = spec("a"), spec("b")
