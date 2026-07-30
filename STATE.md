@@ -33,6 +33,29 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
 ## Where things stand (2026-07-29, end of session 6)
 
+> **OVERNIGHT STATE, left running 2026-07-29 ~20:10.**
+>
+> - `chess-gpu-continue.service` is training the 9M value net from step 321,746
+>   to 600,000. ~8 h. systemd-supervised, `Restart=on-failure`, `--auto-resume`,
+>   so a crash resumes from `latest.pt` instead of losing the night.
+>   Watch: `journalctl --user -u chess-gpu-continue -f`.
+> - **The bot is DOWN and no longer autostarts.** It was stopped for the GPU,
+>   then something restarted it at 19:42:31 that I could not attribute -- the
+>   watchdog explicitly declined ("not ours to restart") and no unit or script
+>   in the repo starts it. `systemctl --user disable` removed the unit symlink
+>   as well as the autostart, so it was re-linked: the unit is `linked` and
+>   `inactive`, startable with `systemctl --user start chess-gpu-bot`, and no
+>   longer pulled in by `default.target`. Restore autostart with
+>   `systemctl --user enable chess-gpu-bot` -- but find the restarter first,
+>   because an unexplained start during a wall-clock match invalidates it.
+> - `chess-gpu-train-watchdog.timer` is STOPPED. Its remedy is restarting the
+>   LAB, and this run is direct, so it would have launched a conflicting job.
+>   The systemd unit above supersedes it for this run. Restart the timer when
+>   lab-managed training resumes.
+> - **Nothing is measuring strength right now.** Training is not measurement,
+>   and the bot -- the only absolute anchor -- is paused. The rungs get priced
+>   with `scripts/ladder.py` once the run has produced them.
+
 **The engine is Rust, provably identically, and 3.6x faster. The two extra
 speed flags were measured and cost 168 Elo, so they are off.**
 
