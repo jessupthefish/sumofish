@@ -107,6 +107,13 @@ def main() -> None:
     ap.add_argument("--eval-every", type=int, default=5000)
     ap.add_argument("--eval-puzzles", type=int, default=1000)
     ap.add_argument("--ckpt-every", type=int, default=5000)
+    ap.add_argument("--data-start-frac", type=float, default=0.0,
+                    help="begin the FIRST pass this fraction into the bag. A "
+                         "fresh iterator otherwise starts at record 0, so a "
+                         "continuation run replays the same prefix its parent "
+                         "already trained on. The 9M consumed 0.58 epochs of "
+                         "the state-value bag, so a continuation wants ~0.58 "
+                         "here to reach records no run has seen.")
     ap.add_argument("--keep-every", type=int, default=20_000,
                     help="also write a step-tagged checkpoint nobody overwrites, "
                          "so the run leaves a ladder the match harness can price. "
@@ -228,6 +235,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.workers,
         seed=args.seed + start_step,
+        start_frac=args.data_start_frac,
     )
     batches = iter(loader)
 

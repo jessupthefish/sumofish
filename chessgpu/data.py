@@ -48,12 +48,25 @@ class _BagStream(IterableDataset):
         seed: int = 0,
         limit: int | None = None,
         infinite: bool = True,
+        start_frac: float = 0.0,
     ) -> None:
         self.path = str(path)
         self.shuffle_buffer = shuffle_buffer
         self.seed = seed
         self.limit = limit
         self.infinite = infinite
+        # Where in each worker's slice the FIRST pass begins, as a fraction.
+        #
+        # This exists because a fresh iterator always started at offset 0 (the
+        # `if epoch else 0` below), and a resumed run builds a fresh iterator.
+        # So every run in this project read the same prefix of the bag: the 9M
+        # consumed 307M of 530,310,443 state-value records, 0.58 epochs, and a
+        # continuation would have replayed those same 307M rather than reaching
+        # the 223M records no run has ever seen. That would look like "more
+        # training" and actually be "a second epoch on identical data", which
+        # is exactly the confound that makes an underfitting diagnosis
+        # unfalsifiable.
+        self.start_frac = start_frac % 1.0 if start_frac else 0.0
         # Opened lazily: an mmap cannot be pickled across a fork to a worker.
         self._reader: bagz.BagReader | None = None
         self._length: int | None = None
@@ -95,7 +108,10 @@ class _BagStream(IterableDataset):
         while True:
             # Start each pass at a different offset so the shuffle buffer sees
             # a different set of neighbours, without any random seeking.
-            offset = int(rng.integers(span)) if epoch else 0
+            if epoch:
+                offset = int(rng.integers(span))
+            else:
+                offset = int(self.start_frac * span)
             for k in range(span):
                 i = start + (offset + k) % span
                 item = self._decode(reader[i])
@@ -156,12 +172,14 @@ def make_loader(
     shuffle_buffer: int = 131_072,
     seed: int = 0,
     infinite: bool = True,
+    start_frac: float = 0.0,
 ) -> torch.utils.data.DataLoader:
     cls = {
         "behavioral_cloning": BehavioralCloningDataset,
         "state_value": StateValueDataset,
     }[policy]
-    dataset = cls(path, shuffle_buffer=shuffle_buffer, seed=seed, infinite=infinite)
+    dataset = cls(path, shuffle_buffer=shuffle_buffer, seed=seed,
+                  infinite=infinite, start_frac=start_frac)
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
