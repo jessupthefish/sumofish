@@ -33,4 +33,8 @@ sf_layout::panels! {
 }
 
 #[cfg(test)]
+pub mod fixture;
+#[cfg(test)]
 mod registry_tests;
+#[cfg(test)]
+mod snapshot_tests;

@@ -1,0 +1,5 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+2 matches, 1 live

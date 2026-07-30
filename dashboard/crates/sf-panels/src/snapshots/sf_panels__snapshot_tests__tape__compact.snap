@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ event log ───────────────────────────┐
+│21:14:07 game   game RsG8Krua vs Ghi… │
+│21:14:07 move   Re1  wp 0.599  38708… │
+│21:14:07 engine telemetry log rotated │
+│21:14:07 error  watchdog SIGKILLed a… │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

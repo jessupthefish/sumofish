@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ machine ───────────────────────────────────────────────────┐
+│gpu  ███████████████▎      76%  71°C  214/300W              │
+│vram ██▊                  2.2/16G  ●                        │
+│throttled: SW_POWER_CAP                                     │
+│     688M match.py                                          │
+│     554M kwin_wayland                                      │
+│     n/a unattributable                                     │
+│● bot ● lab ○ train ● watchdog.timer                        │
+│sumofish: 3 watchdog restart(s) today, 1 stuck              │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘

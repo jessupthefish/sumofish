@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ event log ─────────────────────────────────────────────────┐
+│21:14:07 game   game RsG8Krua vs Ghidorah_X (2288) rapid    │
+│21:14:07 move   Re1  wp 0.599  38708n in 21.42s             │
+│21:14:07 engine telemetry log rotated                       │
+│21:14:07 error  watchdog SIGKILLed and restarted the bot    │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘

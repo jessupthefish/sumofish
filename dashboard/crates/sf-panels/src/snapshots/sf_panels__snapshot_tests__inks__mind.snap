@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: map
+---
+AfffffffffffffffAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+A           ..ffffffddd...G..................................A
+AddddddCCCCCCCC..................ddddddddddddddddd...........A
+Addddddffffffddddddddddddfffffddddddddffffffdddddddddfff.....A
+A............................................................A
+A............................................................A
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAddddddddddddddddddddddddd..A
+Addddddddddddddddddddddd..........ddddddddddddddddddddddddd..A
+Adddddddddddd.....................ddddddddddddddddddddddddd..A
+A............................................................A
+A............................................................A
+A............................................................A
+A............................................................A
+A............................................................A
+AddddPPPPffffffffffffff......................................A
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ training ────────────────────────────┐
+│136M-sv  68000/400000  eta 21.7h  ●   │
+│UNSUPERVISED — no stall detector armed│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

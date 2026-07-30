@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ recent games ──────────────────────────────────────────────┐
+│last 2: 1W 0D 1L                                            │
+│21:14 W Z-O_AspenLabs                +5 normal              │
+│21:14 · Ghidorah_X                      abandoned           │
+│21:14 L rorschach-bot                -7 time forfeit        │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘

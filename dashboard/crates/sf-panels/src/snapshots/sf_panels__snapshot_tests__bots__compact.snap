@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ bots ────────────────────────────────┐
+│1 SumoFish        2365 ●  1 playing   │
+│2 SumoFishBC      not watched         │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

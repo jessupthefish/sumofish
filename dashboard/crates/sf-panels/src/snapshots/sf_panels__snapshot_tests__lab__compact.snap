@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ lab ─────────────────────────────────┐
+│2/4 jobs  train-136m  ●               │
+│report.md is stale                    │
+│✓ ablate-causal-1  step 20,000  lo…   │
+│✓ sims-1600-800  300g  elo +283.…     │
+│▸ train-136m  running                 │
+│· match-136m                          │
+└──────────────────────────────────────┘

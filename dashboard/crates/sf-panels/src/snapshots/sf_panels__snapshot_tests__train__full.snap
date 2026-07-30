@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ training ──────────────────────────────────────────────────┐
+│136M-sv  68000/400000  eta 21.7h  ●                         │
+│UNSUPERVISED — no stall detector armed for this run         │
+│loss 2.7221 ███▇▇▇▇▆▆▆▆▅▅▅▅▄▄▄▄▃▃▃▃▂▂▂▂▁▁▁ 2.744-2.860      │
+│val  2.5762 █▇▆▅▄▃▂▁ 2.640-2.990                            │
+│grad 3.60    lr 7.07e-5                                     │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘

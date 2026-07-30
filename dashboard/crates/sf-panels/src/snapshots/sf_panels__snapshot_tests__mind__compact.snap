@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ engine search ───────────────────────┐
+│ SEARCHING    59.9% us   ●            │
+│time  ██▎      21.42s of 29.80s       │
+│nodes 38,708   unique/s 3,324   sims 4│
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

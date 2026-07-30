@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ machine ─────────────────────────────┐
+│gpu  ████▌   76%  71°C  214/300W      │
+│vram ▊      2.2/16G  ●                │
+│throttled: SW_POWER_CAP               │
+│● bot ● lab ○ train ● watchdog.timer  │
+│sumofish: 3 watchdog restart(s) today,│
+│                                      │
+└──────────────────────────────────────┘

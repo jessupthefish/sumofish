@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ deployed ────────────────────────────┐
+│v1 the search that thinks ahead       │
+│checkpoint 4156a01aacfb step 280000   │
+│running    value step 280000  8M param│
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

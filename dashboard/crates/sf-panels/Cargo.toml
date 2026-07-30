@@ -19,3 +19,7 @@ sf-model  = { workspace = true }
 sf-theme  = { workspace = true }
 jiff      = { workspace = true }
 shakmaty  = { workspace = true }
+indexmap  = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

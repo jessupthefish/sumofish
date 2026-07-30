@@ -1,0 +1,5 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+train 136M-sv 17%
