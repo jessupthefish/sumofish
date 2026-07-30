@@ -23,6 +23,25 @@ EnvironmentFile=/home/nomad/.config/chess-gpu/bot.env
 # counter is throwing away the time control we just paid for.
 Environment=CHESSGPU_SIMS=100000000
 
+# The Rust search. 3.6x faster, which is 4.5x more search on the same clock.
+# This ships without a match behind it, which nothing else here is allowed to
+# do, and the reason is that it is a FAITHFUL port: byte-identical root visit
+# vectors to chessgpu/mcts.py over 40 positions x 800 simulations at five batch
+# sizes, across whole games with tree reuse, and re-checked with the real nets
+# rather than the port's mock. Identical visits means identical moves, so there
+# is no strength claim to measure -- only the clock changed.
+#
+# Rollback is `CHESSGPU_CORE=python` and a restart, not a revert.
+Environment=CHESSGPU_CORE=rust
+
+# NOT set, deliberately: CHESSGPU_DEDUP and CHESSGPU_COMPILE. Both are faster
+# per call and both preserve the tree at a fixed simulation count, and together
+# they measured -168 Elo at a fixed clock (2026-07-29, 20 games, W0 D11 L9,
+# LOS 0.0%). At 0.5s they bought 7,297 nominal simulations against plain's
+# 4,161 while getting 3,464 UNIQUE evaluations against plain's 4,160: 75% more
+# claimed search, 17% less knowledge of the position. Do not turn these on
+# because the nps number looks better. See PHILOSOPHY, measurement discipline.
+
 ExecStart=/home/nomad/chess-gpu/.venv/bin/python lichess-bot.py
 
 Restart=always
