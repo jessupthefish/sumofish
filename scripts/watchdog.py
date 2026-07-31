@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watchdog for the chess-gpu lichess bot.
+"""Watchdog for the sumofish lichess bot.
 
 Works around two lichess-bot bugs that are both closed without a fix:
 
@@ -28,10 +28,10 @@ import urllib.request
 from pathlib import Path
 
 API = "https://lichess.org/api/account/playing"
-UNIT = "chess-gpu-bot.service"
+UNIT = "sumofish-bot.service"
 STATE = Path(
     os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")
-) / "chess-gpu/watchdog.json"
+) / "sumofish/watchdog.json"
 
 # How long it may plausibly be our turn, WITHOUT THE POSITION CHANGING, before we
 # call the bot stuck.

@@ -23,6 +23,8 @@ static SPEC: PanelSpec = PanelSpec {
     // The second rail, which is what the `Wide` tier exists for.
     region: RegionId::RailB,
     title: "lab",
+    keybind: None,
+    help: "the largest thing happening on the machine",
     scope: Scope::Global,
     weight: Weight::Normal,
     variants: &[

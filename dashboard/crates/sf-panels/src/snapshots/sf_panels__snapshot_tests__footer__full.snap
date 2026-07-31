@@ -1,0 +1,5 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+q quit ^C quit r redraw Tab cycle bot 1-9 select bot ? help

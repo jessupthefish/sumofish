@@ -16,6 +16,8 @@ pub struct Mind;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("mind"),
     title: "engine search",
+    keybind: None,
+    help: "the search, as it happens",
     region: RegionId::Rail,
     scope: Scope::FocusedBot,
     weight: Weight::High,
@@ -64,10 +66,16 @@ impl Panel for Mind {
         if inner.height == 0 {
             return;
         }
+        // A blank row under the title border, always -- the annunciator sat
+        // flush against the rule with nothing to breathe against, reported
+        // directly 2026-07-30.
+        let pad = 1u16;
         let Some(s) = search else {
-            put(buf, inner, inner.y, Line::from(Span::styled("waiting for the engine to move", Styles::dim())));
-            if inner.height > 1 {
-                put(buf, inner, inner.y + 1, Line::from(Span::styled("logs/engine.jsonl", Styles::faint())));
+            if inner.height > pad {
+                put(buf, inner, inner.y + pad, Line::from(Span::styled("waiting for the engine to move", Styles::dim())));
+            }
+            if inner.height > pad + 1 {
+                put(buf, inner, inner.y + pad + 1, Line::from(Span::styled("logs/engine.jsonl", Styles::faint())));
             }
             return;
         };
@@ -77,42 +85,49 @@ impl Panel for Mind {
             .unwrap_or(Track::Lost);
 
         // Row 1: the annunciator. State is carried by position and colour, not by
-        // text you have to read.
-        let ours = cx.game().map(|g| g.ours(s.wp_white)).unwrap_or(0.5);
+        // text you have to read. Coloured text on the panel's own background,
+        // not an inverted pill -- a solid chip in a different colour from
+        // every panel around it was the "grey backing" reported 2026-07-30
+        // (the ladder bars were the other half of that same report).
+        let white_wp = s.wp_white;
         let mut row = vec![
             Span::styled(
                 if thinking { " SEARCHING " } else { "   IDLE    " },
                 Style::new()
-                    .fg(sf_theme::BG.color())
-                    .bg(if thinking { sf_theme::ACCENT.color() } else { sf_theme::FAINT.color() })
+                    .fg(if thinking { sf_theme::ACCENT.color() } else { sf_theme::FAINT.color() })
+                    .bg(sf_theme::BG.color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled(
-                format!("{:5.1}%", ours * 100.0),
+                format!("{:5.1}%", white_wp * 100.0),
                 Styles::body().add_modifier(Modifier::BOLD),
             ),
-            // Explicitly OUR frame, and said so. The Python showed the raw
-            // side-to-move number here and labelled it "to move"; converting once
-            // through `ours` and saying "us" cannot be misread.
-            Span::styled(" us", Styles::dim()),
+            // White's frame, always, matching every other eval display in the
+            // dashboard (2026-07-30) -- see `GameState::curve`'s doc comment for
+            // why this stopped converting to "ours". The Python's predecessor
+            // showed the raw side-to-move number and labelled it "to move";
+            // this says which side the percentage is FOR, which stays true
+            // across the whole game rather than flipping with whoever's turn
+            // it is.
+            Span::styled(" white", Styles::dim()),
         ];
         if s.mate {
             row.push(Span::styled(
                 "   MATE IN LINE ",
                 Style::new()
-                    .fg(sf_theme::BG.color())
-                    .bg(sf_theme::BAD.color())
+                    .fg(sf_theme::BAD.color())
+                    .bg(sf_theme::BG.color())
                     .add_modifier(Modifier::BOLD),
             ));
         }
         row.push(Span::raw("   "));
         row.push(track_tag(track, ""));
-        put(buf, inner, inner.y, Line::from(row));
+        put(buf, inner, inner.y + pad, Line::from(row));
 
         // Row 2: the time budget, DRAINING. An overrun is the one unrecoverable
         // failure on a clock, so the bar going red before it empties is the point.
-        if inner.height > 1 {
+        if inner.height > pad + 1 {
             let used = s.elapsed.as_secs_f64();
             let budget = s.budget.as_secs_f64().max(1e-9);
             let frac = (used / budget).min(1.0);
@@ -126,18 +141,18 @@ impl Panel for Mind {
                 // day overran, worst by 0.81s.
                 spans.push(Span::styled("  OVER", Styles::ink(sf_theme::BAD)));
             }
-            put(buf, inner, inner.y + 1, Line::from(spans));
+            put(buf, inner, inner.y + pad + 1, Line::from(spans));
         }
 
         // Row 3: counters. `unique/s`, never `nps` -- PHILOSOPHY states that as an
         // imperative, and the Python printed `nps` right beside `sims`, whose value
         // is within 15% of it, which is exactly the confusion the rule prevents.
-        if inner.height > 2 {
+        if inner.height > pad + 2 {
             let dedup = if s.sims > 0 { s.nodes as f64 / s.sims as f64 } else { 0.0 };
             put(
                 buf,
                 inner,
-                inner.y + 2,
+                inner.y + pad + 2,
                 Line::from(vec![
                     Span::styled("nodes ", Styles::dim()),
                     Span::styled(thousands(s.nodes), Styles::body()),
@@ -153,11 +168,12 @@ impl Panel for Mind {
 
         // The engine changing its mind is the most watchable thing the 6Hz feed
         // carries, and the Python threw every frame of it away.
-        if inner.height > 3 && s.best_changes > 0 {
+        let mind_row = inner.height > pad + 3 && s.best_changes > 0;
+        if mind_row {
             put(
                 buf,
                 inner,
-                inner.y + 3,
+                inner.y + pad + 3,
                 Line::from(vec![
                     Span::styled("changed its mind ", Styles::dim()),
                     Span::styled(format!("{}\u{00d7}", s.best_changes), Styles::ink(sf_theme::WARM)),
@@ -178,8 +194,13 @@ impl Panel for Mind {
             return;
         }
 
-        // The ladder, ordered by visits.
-        let head = 5u16;
+        // The ladder, ordered by visits. One blank row of separation from
+        // whatever's above it, always -- not a fixed row 5 regardless of
+        // whether the "changed its mind" line actually printed, which left a
+        // double-blank gap on the common frame (no mind-change yet) and a
+        // single one on the rare frame, so the widget's own spacing changed
+        // shape from tick to tick for no reason a viewer could see.
+        let head = pad + if mind_row { 5u16 } else { 4u16 };
         let room = inner.height.saturating_sub(head + 2);
         if room > 0 && !s.top.is_empty() {
             let rungs: Vec<Rung> = s
@@ -229,6 +250,13 @@ fn thousands(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use sf_model::state::{BotConfig, BotState, Candidate, GameState, SearchSnapshot};
+    use sf_model::{AppState, BotId, GameId};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
     #[test]
     fn thousands_groups_from_the_right() {
         assert_eq!(super::thousands(0), "0");
@@ -236,5 +264,73 @@ mod tests {
         assert_eq!(super::thousands(1000), "1,000");
         assert_eq!(super::thousands(38708), "38,708");
         assert_eq!(super::thousands(1234567), "1,234,567");
+    }
+
+    /// The regression this whole conversion-removal was for: playing Black,
+    /// dominating (White at 3% per the engine's own search), must show "3.0%",
+    /// not "97.0%" -- the exact real-game confusion that prompted reverting
+    /// `ours()`. White's frame, always, every panel, no per-game flip.
+    #[test]
+    fn white_frame_survives_a_black_dominated_position() {
+        let cfg = Arc::new(BotConfig {
+            id: BotId("sumofish".into()),
+            user: "SumoFish".into(),
+            label: String::new(),
+            unit: None,
+            telemetry: "/dev/null".into(),
+            pgn_dir: None,
+            versions: None,
+            rating_log: None,
+            watch: true,
+        });
+        let mut bot = BotState::new(cfg);
+        let mut game = GameState::new(GameId("g1".into()), shakmaty::Color::Black);
+        game.search = Some(SearchSnapshot {
+            ply: 131,
+            nodes: 61_388,
+            unique_per_s: 4_783,
+            sims: 67_070,
+            elapsed: Duration::from_secs(13),
+            budget: Duration::from_secs(13),
+            wp_white: 0.03,
+            best: Some("h3h4".into()),
+            pv: vec!["h3h4".into()],
+            top: vec![Candidate { san: "h4".into(), visits: 100, q: 0.03, prior: 0.5 }],
+            mate: false,
+            done: true,
+            reused: None,
+            best_changes: 0,
+        });
+        bot.games.insert(game.id.clone(), game);
+        bot.focus_game = Some(GameId("g1".into()));
+        let mut st = AppState::default();
+        let id = bot.cfg.id.clone();
+        st.bots.insert(id.clone(), bot);
+        st.focus = Some(id);
+
+        let area = Rect { x: 0, y: 0, width: 66, height: 12 };
+        let mut buf = Buffer::empty(area);
+        let now = Instant::now();
+        let cx = Cx { state: &st, now, wall: jiff::Timestamp::UNIX_EPOCH, bot: None, frame: 0, picture: None };
+        PANEL.render(VariantId::Full, area, &mut buf, &cx);
+        let text = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("3.0% white"), "expected White's real 3% shown as 3%, not flipped to 97%:\n{text}");
+        assert!(!text.contains("97.0%"), "the old `ours()` flip must not be reintroduced:\n{text}");
+
+        // The spacing regression this test doubles as coverage for: with no
+        // "changed its mind" line (the common frame), the ladder must sit
+        // exactly one blank row below the counters, not two.
+        let lines: Vec<&str> = text.lines().collect();
+        let nodes_row = lines.iter().position(|l| l.contains("nodes")).expect("nodes row");
+        let ladder_row = lines.iter().position(|l| l.contains("h4")).expect("ladder row");
+        assert_eq!(
+            ladder_row - nodes_row,
+            2,
+            "expected exactly one blank row between the counters and the ladder when there's no mind-change row:\n{text}"
+        );
     }
 }

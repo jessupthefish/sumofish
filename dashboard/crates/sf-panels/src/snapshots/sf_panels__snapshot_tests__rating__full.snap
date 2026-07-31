@@ -1,0 +1,20 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ rating ────────────────────────────────────────────────────┐
+│bullet    1950±69  38n  ▁▁▁ +0                              │
+│rapid     2366±62  49n  ▁██ +8                              │
+│7W 2D 4L                                                    │
+│3 samples  ●                                                │
+│deployed  engine sumofis… policy 02c3b473 value 31e1e7da cu…│
+│full history: http://10.0.0.106:8000/stats                  │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘

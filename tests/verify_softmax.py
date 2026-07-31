@@ -42,12 +42,12 @@ import numpy as np
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "mcts.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.mcts import _softmax_over_legal  # noqa: E402
-from chessgpu.tokenizer import ACTION_BY_MOVE_KEY, move_key  # noqa: E402
+from sumofish.mcts import _softmax_over_legal  # noqa: E402
+from sumofish.tokenizer import ACTION_BY_MOVE_KEY, move_key  # noqa: E402
 
 
 def b32(x) -> str:
@@ -101,13 +101,13 @@ def layer3_exp_f32(rng: random.Random) -> tuple[int, int, float]:
 
 
 def fens(limit: int) -> list[str]:
-    for root in (ROOT, ROOT.parent / "chess-gpu"):
+    for root in (ROOT, ROOT.parent / "sumofish"):
         bag = root / "data/train/state_value_data.bag"
         if not bag.exists():
             continue
         sys.path.insert(0, str(root))
         try:
-            from chessgpu.bagz import BagReader, decode_state_value
+            from sumofish.bagz import BagReader, decode_state_value
         except Exception:
             break
         reader = BagReader(str(bag))

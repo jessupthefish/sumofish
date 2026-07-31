@@ -15,7 +15,7 @@ position for a few plies.
 `extra_game_handlers.game_specific_options` is upstream's own hook for exactly
 this: it is handed the game and returns UCI options to configure the engine
 with at spawn. So pass the game id, and the engine stamps it on every record it
-writes (`chessgpu/telemetry.py`). No inference left.
+writes (`sumofish/telemetry.py`). No inference left.
 
 The engine declares `option name GameId type string`, so this is safe in either
 order: an engine without the option would make `engine.configure()` raise and

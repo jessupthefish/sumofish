@@ -29,7 +29,7 @@ fn fixture() -> AppState {
         id: BotId("sumofish".into()),
         user: "SumoFish".into(),
         label: "live v1".into(),
-        unit: Some("chess-gpu-bot".into()),
+        unit: Some("sumofish-bot".into()),
         telemetry: "/dev/null".into(),
         pgn_dir: None,
         versions: None,

@@ -3,7 +3,7 @@ source: crates/sf-panels/src/snapshot_tests.rs
 expression: as_text(&buf)
 ---
 ┌ recent games ────────────────────────┐
-│last 2: 1W 0D 1L                      │
+│v1: 1W 0D 1L                          │
 │21:14 W Z-O_Asp…   +5 normal          │
 │21:14 · Ghidora…      abandoned       │
 │21:14 L rorscha…   -7 time forfeit    │

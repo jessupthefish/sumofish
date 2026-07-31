@@ -28,7 +28,7 @@ import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chessgpu.rules import terminal_value  # noqa: E402
+from sumofish.rules import terminal_value  # noqa: E402
 
 PASS, FAIL = "\033[32mok\033[0m", "\033[31mFAIL\033[0m"
 failures = 0
@@ -128,7 +128,7 @@ print("\ntokenize_board against tokenize(board.fen())")
 
 import numpy as np  # noqa: E402
 
-from chessgpu.tokenizer import tokenize, tokenize_board  # noqa: E402
+from sumofish.tokenizer import tokenize, tokenize_board  # noqa: E402
 
 rng = random.Random(4242)
 checked = differed = 0
@@ -162,12 +162,12 @@ print("\nMCTS with the real nets")
 
 import torch  # noqa: E402
 
-from chessgpu.engines.neural_engine import load_policy  # noqa: E402
-from chessgpu.hlgauss import HLGauss  # noqa: E402
-import chessgpu.mcts as chessgpu_mcts  # noqa: E402
-from chessgpu.mcts import MCTS  # noqa: E402
-from chessgpu.model import ChessTransformer, ModelConfig  # noqa: E402
-from chessgpu.value_policy import ValuePolicy  # noqa: E402
+from sumofish.engines.neural_engine import load_policy  # noqa: E402
+from sumofish.hlgauss import HLGauss  # noqa: E402
+import sumofish.mcts as sumofish_mcts  # noqa: E402
+from sumofish.mcts import MCTS  # noqa: E402
+from sumofish.model import ChessTransformer, ModelConfig  # noqa: E402
+from sumofish.value_policy import ValuePolicy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 ck = torch.load(ROOT / "runs/value.pt", map_location="cuda:0", weights_only=False)
@@ -240,11 +240,11 @@ disagreements = []
 checked = 0
 for trial in range(4000):
     n_children = rng.randint(2, 50)
-    parent = chessgpu_mcts.Node(prior=1.0, to_move=chess.WHITE)
+    parent = sumofish_mcts.Node(prior=1.0, to_move=chess.WHITE)
     parent.visits = rng.randint(0, 4000)
     parent.value_sum = parent.visits * rng.random()
     for i in range(n_children):
-        c = chessgpu_mcts.Node(prior=rng.random(), to_move=chess.BLACK)
+        c = sumofish_mcts.Node(prior=rng.random(), to_move=chess.BLACK)
         # A realistic mix: most children unvisited, a few heavily visited.
         c.visits = 0 if rng.random() < 0.55 else rng.randint(1, 400)
         c.value_sum = c.visits * rng.random()

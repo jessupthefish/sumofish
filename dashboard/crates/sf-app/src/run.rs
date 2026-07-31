@@ -167,6 +167,17 @@ async fn event_loop(
                                     Overlay::Layout => Overlay::None,
                                     _ => Overlay::Layout,
                                 };
+                                // The overlay replaces the frame, but a kitty/sixel
+                                // picture is a terminal-level layer outside
+                                // ratatui's buffer diff -- `render::draw` simply
+                                // stops requesting one while the overlay is up, and
+                                // nothing else ever tells the terminal to take the
+                                // old one down. Without this, toggling `?` while a
+                                // game is on screen leaves the board floating over
+                                // (or under) the help text until the next resize.
+                                painter.forget();
+                                let mut out = std::io::stdout();
+                                let _ = sf_term::clear(&mut out, &caps);
                                 dirty = true;
                             }
                             (KeyCode::Tab, _) => {
@@ -185,6 +196,26 @@ async fn event_loop(
                                         dirty = true;
                                     }
                                 }
+                            }
+                            // Scroll the moves panel back into a long game's
+                            // history. `PanelView.scroll`/`Action::ScrollUp`/
+                            // `ScrollDown` already existed in sf-model/sf-layout
+                            // but nothing ever constructed or consumed them --
+                            // this is the first thing that does. 0 (the
+                            // default) means "show the tail", matching the old,
+                            // only, behaviour; higher moves the visible window
+                            // back toward move 1. moves.rs itself clamps, so an
+                            // out-of-range value here (e.g. after switching to
+                            // a shorter game) is never a rendering bug.
+                            (KeyCode::PageUp, _) => {
+                                let view = state.ui.views.entry("moves").or_default();
+                                view.scroll = view.scroll.saturating_add(5);
+                                dirty = true;
+                            }
+                            (KeyCode::PageDown, _) => {
+                                let view = state.ui.views.entry("moves").or_default();
+                                view.scroll = view.scroll.saturating_sub(5);
+                                dirty = true;
                             }
                             _ => {}
                         }
@@ -323,9 +354,24 @@ fn spawn_sources(
         // pid -> game. With no lichess there is nothing to ask, so a replay or an
         // offline run would show an empty board forever. Adopt every game seen
         // instead -- safe precisely because there is only one bot's worth of
-        // telemetry to misattribute, and never enabled when lichess is live, where
-        // guessing an owner is the mistake that put two games on one curve.
-        let adopt = args.offline || args.replay.is_some();
+        // telemetry to misattribute, and never enabled when lichess is live with
+        // MORE THAN ONE bot, where guessing an owner is the mistake that put two
+        // games on one curve.
+        //
+        // Found 2026-07-30: with exactly one bot, live mode never adopted either,
+        // because nothing calls `TelemetrySource::own()` -- `/api/account/playing`
+        // lands as `Update::Playing` on the shared channel, and `own()` is a plain
+        // `&mut self` method with no cross-task path to it. `game_owner` stays
+        // permanently empty, every telemetry record is "unattributed", and the
+        // `mind`/`moves` panels sit on their idle state forever even with a real
+        // game in progress and real, correct moves being played -- the engine was
+        // fine the whole time, the dashboard just never learned whose game it was
+        // watching. `.own()` is exercised only by telemetry.rs's own tests; grep
+        // the whole crate tree before assuming this is fixed differently later.
+        // The real fix is wiring `Update::Playing` back to the telemetry task
+        // (needs a channel across the task boundary); this is the same one-bot
+        // shortcut already proven safe for offline/replay, extended to live.
+        let adopt = args.offline || args.replay.is_some() || cfg.bots.len() == 1;
         let tx = tx.clone();
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -368,7 +414,7 @@ fn spawn_grader(
 ) {
     tokio::spawn(async move {
         let binary = sf_sources::stockfish::default_binary(std::path::Path::new(
-            "/home/nomad/dev/active/chess-gpu",
+            "/home/nomad/dev/active/sumofish",
         ));
         let engine = match sf_sources::Stockfish::spawn(&binary).await {
             Ok(Some(e)) => e,
@@ -407,7 +453,7 @@ fn spawn_journal(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiv
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             loop {
-                let src = sf_sources::JournalSource::new(unit.clone(), id.clone());
+                let src = sf_sources::JournalSource::new(unit.clone(), Some(id.clone()));
                 tokio::select! {
                     _ = shutdown.changed() => return,
                     r = src.run(tx.clone(), None) => {
@@ -430,10 +476,36 @@ fn spawn_journal(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiv
     if let Some(id) = first {
         tokio::spawn(async move {
             loop {
-                let src = sf_sources::JournalSource::new("chess-gpu-watchdog", id.clone());
+                let src = sf_sources::JournalSource::new("sumofish-watchdog", Some(id.clone()));
                 tokio::select! {
                     _ = shutdown2.changed() => return,
                     _ = src.run(tx2.clone(), None) => {}
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
+
+    // Training's own journal, absorbed from the `sumofish train` shell-out.
+    // Global rather than per-bot -- `JournalSource::new(_, None)` -- because there
+    // is one training run, not one per bot watching it; its lines land in
+    // `TrainState.log`. The unit is configurable rather than hardcoded because it
+    // has already been renamed once (`sumofish-train.service`, now not-found, to
+    // `sumofish-train-continue.service`) and will rename again the next time a
+    // run is relaunched under a new name.
+    if let Some(unit) = cfg.machine.train_unit.clone() {
+        let tx3 = tx.clone();
+        let mut shutdown3 = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                let src = sf_sources::JournalSource::new(unit.clone(), None);
+                tokio::select! {
+                    _ = shutdown3.changed() => return,
+                    r = src.run(tx3.clone(), None) => {
+                        if let Err(e) = r {
+                            tracing::warn!(unit = %unit, error = %e, "training journal follower died");
+                        }
+                    }
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -457,7 +529,7 @@ fn spawn_files(cfg: &Config, tx: mpsc::Sender<Update>, shutdown: watch::Receiver
             versions: bot.versions.clone(),
             pgn_dir: bot.pgn_dir.clone(),
             rating_log: bot.rating_log.clone(),
-            watchdog: dirs_state().map(|d| d.join("chess-gpu/watchdog.json")),
+            watchdog: dirs_state().map(|d| d.join("sumofish/watchdog.json")),
         };
         let tx = tx.clone();
         let mut shutdown = shutdown.clone();

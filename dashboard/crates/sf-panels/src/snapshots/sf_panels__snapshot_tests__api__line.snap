@@ -1,5 +1,0 @@
----
-source: crates/sf-panels/src/snapshot_tests.rs
-expression: as_text(&buf)
----
-api 31/min

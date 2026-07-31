@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chessgpu.engines.search_engine import RUST_ONLY_FLAGS, ignored_rust_flags
+from sumofish.engines.search_engine import RUST_ONLY_FLAGS, ignored_rust_flags
 
 
 def check(name: str, got, want, describe=lambda g: "") -> bool:

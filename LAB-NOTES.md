@@ -600,3 +600,25 @@ and say so, because a note that was believed for a month is itself evidence.
   runs. `--keep-every` now retains step-tagged copies. Retention decisions have
   to be made BEFORE the GPU-hours are spent; there is no way to recover a
   checkpoint a run declined to write.
+
+## 2026-07-30, restarting the live bot to deploy a fix
+
+- **`systemctl --user kill --signal=SIGINT chess-gpu-bot` sends the signal to
+  every process in the unit's cgroup, not just the main process** -- it hit
+  the live game's engine subprocess (a `chessgpu.engines.search_engine` UCI
+  process, mid-search) as well as `lichess-bot.py` itself, and the engine
+  crashed with `KeyboardInterrupt` out of its `for raw in sys.stdin:` loop.
+  Intent was to trigger `lichess_bot.py`'s own graceful drain
+  (`quit_after_all_games_finish: true` blocks in `pool.join()` on SIGINT
+  rather than dropping the game) without also invoking `systemctl stop`'s
+  `TimeoutStopSec=180`, which is too short for a 15+0 game that hasn't
+  reached its increment-heavy endgame yet. No game was actually lost --
+  `engine_wrapper.py`'s own `chess.engine` layer caught
+  `EngineTerminatedError`, backed off 0.7s, and respawned a fresh engine
+  process that picked the same game back up at the same move -- but that
+  recovery was luck (an already-existing resilience path), not the intended
+  behaviour. `systemctl kill --kill-who=main --signal=SIGINT <unit>` is the
+  correct call: it signals only the main PID, leaving whatever
+  `multiprocessing.Pool` workers (including the live engine subprocess) are
+  mid-game untouched, exactly what `quit_after_all_games_finish` is designed
+  to protect.

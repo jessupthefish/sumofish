@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate `rust/src/action_space.rs` FROM `chessgpu/tokenizer.py`.
+"""Generate `rust/src/action_space.rs` FROM `sumofish/tokenizer.py`.
 
 The Python action space is byte-verified against DeepMind's published
 implementation over 12,000 real positions, and every published number in this
@@ -11,7 +11,7 @@ move played is still legal, and nothing fails.
 Instead the table is emitted from the verified one, and
 `tests/verify_action_space.py` re-derives it and fails on any disagreement.
 
-Run from the worktree root, with a python that can import chessgpu:
+Run from the worktree root, with a python that can import sumofish:
     .venv/bin/python tests/gen_action_space.py
 """
 
@@ -22,16 +22,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "tokenizer.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "tokenizer.py").exists():
         sys.path.insert(0, str(candidate))
         break
 
-from chessgpu.tokenizer import ACTION_BY_MOVE_KEY, NUM_ACTIONS  # noqa: E402
+from sumofish.tokenizer import ACTION_BY_MOVE_KEY, NUM_ACTIONS  # noqa: E402
 
 OUT = ROOT / "rust" / "src" / "action_space.rs"
 
-HEADER = '''//! The 1968-move action space, GENERATED from `chessgpu/tokenizer.py`.
+HEADER = '''//! The 1968-move action space, GENERATED from `sumofish/tokenizer.py`.
 //!
 //! Do not hand-edit and do not reimplement. The Python table is byte-verified
 //! against DeepMind's published implementation over 12,000 real positions, and

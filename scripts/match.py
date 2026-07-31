@@ -83,12 +83,12 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from chessgpu.engines.neural_engine import load_policy  # noqa: E402
-from chessgpu.hlgauss import HLGauss  # noqa: E402
-from chessgpu.mcts import MCTS  # noqa: E402
-from chessgpu.model import ChessTransformer, ModelConfig  # noqa: E402
-from chessgpu.rules import terminal_value, terminal_value_legacy  # noqa: E402
-from chessgpu.value_policy import ValuePolicy  # noqa: E402
+from sumofish.engines.neural_engine import load_policy  # noqa: E402
+from sumofish.hlgauss import HLGauss  # noqa: E402
+from sumofish.mcts import MCTS  # noqa: E402
+from sumofish.model import ChessTransformer, ModelConfig  # noqa: E402
+from sumofish.rules import terminal_value, terminal_value_legacy  # noqa: E402
+from sumofish.value_policy import ValuePolicy  # noqa: E402
 
 # The match statistics live in `elo.py` so that `lab.py` can read a result
 # without importing torch to do it.
@@ -122,7 +122,7 @@ class Spec:
     reuse: bool
     legacy_draws: bool
     fixed_cpuct: bool
-    # Which search implementation. "python" is chessgpu.mcts; "rust" is
+    # Which search implementation. "python" is sumofish.mcts; "rust" is
     # sumofish_core, which is byte-identical to it in the plain configuration.
     core: str = "python"
     # The two speed flags. Each is identity-preserving in the SEARCH but changes
@@ -137,8 +137,15 @@ class Spec:
     # this harness before either earns a default.
     mate_distance: bool = False
     vloss_fix: bool = False
+    # Set (not None) makes this side an external UCI engine (Stockfish) at a
+    # fixed node budget instead of the neural MCTS. See `Player.__init__` and
+    # the Arbiter docstring above: fixed NODES, full strength, is the same
+    # discipline the adjudicator already uses, applied to a playing side.
+    stockfish_nodes: int | None = None
 
     def describe(self) -> str:
+        if self.stockfish_nodes is not None:
+            return f"stockfish nodes={self.stockfish_nodes} (full strength, node-limited)"
         if self.searchless:
             return f"value={self.value} searchless"
         budget = f"{self.movetime}s" if self.movetime else f"{self.sims} sims"
@@ -197,15 +204,50 @@ class Player:
     The win probability is from the side to move's perspective, matching the
     convention everywhere else in this codebase, and it exists for adjudication
     rather than for display.
+
+    # Stockfish as a playing side, not just an adjudicator
+    #
+    # `Arbiter` above already established the rule this project uses for a
+    # reference engine: fixed NODES, full strength, never Skill Level (random
+    # blundering, rejected by PHILOSOPHY even for building difficulty on
+    # purpose) and never fixed depth (not reproducible under CPU contention,
+    # and this box runs Stockfish CPU-side while two training jobs and the
+    # live bot contend for the GPU). A playing side is held to the identical
+    # rule, for the identical reason: the only degradation this harness ever
+    # allows is on the SAME axis the article under test is allowed to spend --
+    # nodes for Stockfish, sims for SumoFish -- never in either one's judgement.
+    #
+    # A Stockfish-backed `Player` therefore has no value net, no policy net,
+    # no MCTS: `spec.stockfish_nodes` being set short-circuits all of that and
+    # routes `move()` through a UCI `SimpleEngine.play()` at that fixed node
+    # count instead. It still returns a (move, win-probability) pair in the
+    # same side-to-move convention as the neural players, computed from
+    # Stockfish's own `info["score"]` via the same `wdl(model="sf12")` used by
+    # `Arbiter.agrees`, so the adjudication curve and PGN/game-record plumbing
+    # in `play_game` do not need to know or care which kind of player produced
+    # a move.
     """
 
-    def __init__(self, spec: Spec, device: str = "cuda:0") -> None:
+    def __init__(
+        self, spec: Spec, device: str = "cuda:0", stockfish_path: str | None = None
+    ) -> None:
         self.spec = spec
+        self.engine = None
+        if spec.stockfish_nodes is not None:
+            import chess.engine
+
+            path = stockfish_path or str(
+                ROOT / "tools/stockfish/stockfish-ubuntu-x86-64-bmi2"
+            )
+            self.engine = chess.engine.SimpleEngine.popen_uci(path)
+            self.value = None
+            self.mcts = None
+            return
         self.value = load_value(spec.value, device)
         if spec.searchless:
             self.mcts = None
         elif spec.core == "rust":
-            from chessgpu.rust_mcts import RustMCTS
+            from sumofish.rust_mcts import RustMCTS
 
             self.mcts = RustMCTS(
                 self.value,
@@ -261,6 +303,15 @@ class Player:
             )
 
     def new_game(self) -> None:
+        if self.engine is not None:
+            # Stateless per call from this harness's point of view: each
+            # `move()` sends the full position (root FEN + move list) rather
+            # than an incremental one, so a fresh game does not need an
+            # explicit "ucinewgame" for correctness. It only affects hash-
+            # table reuse between games, which at these node budgets is noise
+            # next to the game-to-game variance a few hundred games already
+            # has to average out.
+            return
         # Tree reuse, once it exists, must not carry a subtree from the
         # previous game into this one.
         reset = getattr(self.mcts, "reset", None)
@@ -268,6 +319,24 @@ class Player:
             reset()
 
     def move(self, board: chess.Board) -> tuple[chess.Move, float]:
+        if self.engine is not None:
+            import chess.engine
+
+            result = self.engine.play(
+                board,
+                chess.engine.Limit(nodes=self.spec.stockfish_nodes),
+                info=chess.engine.INFO_SCORE,
+            )
+            score = (result.info or {}).get("score")
+            # Side-to-move's perspective, matching the neural players' `root.q`
+            # convention, via the same WDL model the Arbiter already uses.
+            # Falls back to 0.5 (unknown) rather than raising: a UCI engine
+            # that omits `score` on some position must not crash a match hours
+            # into a run over a value that is only ever used for the
+            # adjudication curve, never for choosing the move itself.
+            wp = score.pov(board.turn).wdl(model="sf12").expectation() if score else 0.5
+            assert result.move is not None
+            return result.move, wp
         if self.mcts is None:
             ranked = self.value.rank_moves(board)
             return ranked[0][0], ranked[0][1]
@@ -277,6 +346,13 @@ class Player:
         root, visits = self.mcts.search(board, deadline=deadline)
         move = max(visits.items(), key=lambda kv: kv[1])[0]
         return move, root.q
+
+    def close(self) -> None:
+        if self.engine is not None:
+            try:
+                self.engine.quit()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +395,7 @@ def code_fingerprint() -> str:
     """git SHA plus a hash of the package, so a stale result can be spotted.
 
     The SHA alone is not enough: this project's own Lab Notes record that
-    editing `chessgpu/` mid-match makes the first half of the games play a
+    editing `sumofish/` mid-match makes the first half of the games play a
     different engine than the second, and an uncommitted edit does not move the
     SHA. Hashing the source that actually gets imported does.
     """
@@ -329,7 +405,7 @@ def code_fingerprint() -> str:
     except OSError:
         sha = "?"
     digest = hashlib.sha256()
-    for path in sorted((ROOT / "chessgpu").rglob("*.py")):
+    for path in sorted((ROOT / "sumofish").rglob("*.py")):
         digest.update(path.read_bytes())
     return f"{sha or '?'}+{digest.hexdigest()[:12]}"
 
@@ -566,6 +642,14 @@ def main() -> None:
         ap.add_argument(f"--{side}-legacy-draws", action="store_true",
                         help="the pre-rules.py terminal test: treat a draw that "
                              "is merely reachable by one move as already drawn")
+        ap.add_argument(
+            f"--{side}-stockfish-nodes", type=int, default=None,
+            help="play this side with Stockfish at a fixed NODE budget instead "
+                 "of the neural MCTS -- full strength, never Skill Level, never "
+                 "fixed depth, same discipline as --arbiter-nodes. All other "
+                 "--%s-* flags (value/policy/sims/...) are ignored for this "
+                 "side when set." % side,
+        )
         ap.add_argument(f"--{side}-label")
 
     ap.add_argument("--games", type=int, default=200,
@@ -610,6 +694,14 @@ def main() -> None:
              "Skill Level, because a reference may be degraded in its allowance "
              "and never in its judgement.",
     )
+    ap.add_argument(
+        "--stockfish-path",
+        default=str(ROOT / "tools/stockfish/stockfish-ubuntu-x86-64-bmi2"),
+        help="UCI binary used by --a-stockfish-nodes/--b-stockfish-nodes. "
+             "Independent of --arbiter, though it defaults to the same binary; "
+             "a match can use one Stockfish build to play and a different one "
+             "to adjudicate.",
+    )
     ap.add_argument("--elo0", type=float, default=0.0, help="SPRT null hypothesis")
     ap.add_argument("--elo1", type=float, default=20.0, help="SPRT alternative")
     ap.add_argument("--alpha", type=float, default=0.05)
@@ -645,6 +737,7 @@ def main() -> None:
             compile_nets=getattr(args, f"{side}_compile"),
             mate_distance=getattr(args, f"{side}_mate_distance"),
             vloss_fix=getattr(args, f"{side}_vloss_fix"),
+            stockfish_nodes=getattr(args, f"{side}_stockfish_nodes"),
         )
 
     a, b = spec("a"), spec("b")
@@ -763,7 +856,10 @@ def main() -> None:
         arbiter = None
     print(f"arbiter: {arbiter_id or 'none (games play to a natural finish)'}")
 
-    players = {"a": Player(a, args.device), "b": Player(b, args.device)}
+    players = {
+        "a": Player(a, args.device, stockfish_path=args.stockfish_path),
+        "b": Player(b, args.device, stockfish_path=args.stockfish_path),
+    }
     # Warm the kernels before the first timed move, so a --time match does not
     # charge one side for CUDA's first-call latency.
     for p in players.values():
@@ -870,9 +966,12 @@ def main() -> None:
         log_fh.close()
         pgn_fh.close()
         # The arbiter is a subprocess; a match that ends by SPRT, by Ctrl-C or by
-        # exception must not leave a Stockfish behind holding a core.
+        # exception must not leave a Stockfish behind holding a core. A
+        # Stockfish-backed player is exactly the same kind of subprocess.
         if arbiter is not None:
             arbiter.close()
+        for p in players.values():
+            p.close()
 
     w, d, l = tally(records)
     sums = pair_sums(records)

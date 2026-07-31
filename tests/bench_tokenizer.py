@@ -18,10 +18,10 @@ import chess, numpy as np
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for c in (ROOT, ROOT.parent / "chess-gpu"):
-    if (c / "chessgpu" / "tokenizer.py").exists():
+for c in (ROOT, ROOT.parent / "sumofish"):
+    if (c / "sumofish" / "tokenizer.py").exists():
         sys.path.insert(0, str(c)); break
-from chessgpu.tokenizer import tokenize, tokenize_board
+from sumofish.tokenizer import tokenize, tokenize_board
 
 N = 20000
 rng = random.Random(7)

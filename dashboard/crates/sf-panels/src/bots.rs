@@ -20,6 +20,8 @@ pub struct Bots;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("bots"),
     title: "bots",
+    keybind: Some("Tab / 1-9"),
+    help: "one row per bot; which one the rest of the screen is about",
     region: RegionId::Rail,
     // The one panel that is genuinely about every bot at once. Every other panel
     // takes the focused one; this is how you choose it.

@@ -37,7 +37,7 @@ Five checks, in the order a deployment fails:
 
 Checks 1, 3, 4 and 5 all run under whatever `CHESSGPU_CORE`/`CHESSGPU_DEDUP`/
 `CHESSGPU_COMPILE`/`CHESSGPU_MATE_DISTANCE`/`CHESSGPU_VLOSS_FIX` the live bot
-unit (`systemd/chess-gpu-bot.service`) actually has set, read fresh from that
+unit (`systemd/sumofish-bot.service`) actually has set, read fresh from that
 file rather than hardcoded here -- so this gate tracks whatever is really
 deployed instead of quietly drifting out of sync with it the way the Python
 core / `.search()`-only version did.
@@ -58,7 +58,7 @@ import chess
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-UNIT = ROOT / "systemd" / "chess-gpu-bot.service"
+UNIT = ROOT / "systemd" / "sumofish-bot.service"
 
 
 def deployed_env() -> dict[str, str]:
@@ -117,7 +117,7 @@ def main() -> int:
     # only main() reaches.
     print(f"  checkpoint {path}")
     proc = subprocess.run(
-        [str(ROOT / ".venv/bin/python"), "-m", "chessgpu.engines.search_engine"],
+        [str(ROOT / ".venv/bin/python"), "-m", "sumofish.engines.search_engine"],
         input="uci\nquit\n", capture_output=True, text=True, cwd=ROOT,
         env={**os.environ, **live, "CHESSGPU_VALUE": str(path),
              "CHESSGPU_TELEMETRY": ""},
@@ -141,12 +141,12 @@ def main() -> int:
 
     import torch
 
-    from chessgpu.engines.neural_engine import load_policy
-    from chessgpu.engines.search_engine import env_flag
-    from chessgpu.hlgauss import HLGauss
-    from chessgpu.model import ChessTransformer, ModelConfig
-    from chessgpu.rust_mcts import select_mcts_class
-    from chessgpu.value_policy import ValuePolicy
+    from sumofish.engines.neural_engine import load_policy
+    from sumofish.engines.search_engine import env_flag
+    from sumofish.hlgauss import HLGauss
+    from sumofish.model import ChessTransformer, ModelConfig
+    from sumofish.rust_mcts import select_mcts_class
+    from sumofish.value_policy import ValuePolicy
 
     ck = torch.load(path, map_location="cuda:0", weights_only=False)
     fields = {f.name for f in __import__("dataclasses").fields(ModelConfig)}

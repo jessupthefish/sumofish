@@ -261,7 +261,7 @@ impl Position {
 
     /// Value to the SIDE TO MOVE if the game ends here, else `None`.
     ///
-    /// Ports `chessgpu/rules.py::terminal_value` exactly, including the order of
+    /// Ports `sumofish/rules.py::terminal_value` exactly, including the order of
     /// the tests, which is cost-ordered rather than arbitrary, and including the
     /// `halfmove_clock >= 8` guard on the repetition walk: a position cannot
     /// recur a third time without eight plies of reversible play behind it, and

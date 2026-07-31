@@ -145,8 +145,8 @@ fn yes() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Machine {
     /// The units to watch. Note what the Python polled: exactly two names, one of
-    /// which (`chess-gpu-train.service`) does not exist and therefore rendered a
-    /// permanently red dot, while `chess-gpu-lab` -- the unit actually doing the
+    /// which (`sumofish-train.service`) does not exist and therefore rendered a
+    /// permanently red dot, while `sumofish-lab` -- the unit actually doing the
     /// work -- was absent entirely.
     #[serde(default = "default_units")]
     pub units: Vec<String>,
@@ -156,16 +156,28 @@ pub struct Machine {
     pub train_active: Option<PathBuf>,
     #[serde(default)]
     pub matches_dir: Option<PathBuf>,
+    /// The unit whose journal the training panel's raw-lines section follows.
+    /// Not derived from `train_active` (that names a log file and a pid, not a
+    /// unit) and not read off `units` (several of those are timers). Already
+    /// renamed once, from `sumofish-train.service` (now not-found -- see the
+    /// `units` default below) to `sumofish-train-continue.service`, so this is
+    /// configurable rather than hardcoded a second time.
+    #[serde(default = "default_train_unit")]
+    pub train_unit: Option<String>,
+}
+
+fn default_train_unit() -> Option<String> {
+    Some("sumofish-train-continue.service".into())
 }
 
 fn default_units() -> Vec<String> {
     [
-        "chess-gpu-bot.service",
-        "chess-gpu-lab.service",
-        "chess-gpu-train.service",
-        "chess-gpu-watchdog.timer",
-        "chess-gpu-train-watchdog.timer",
-        "chess-gpu-rating.timer",
+        "sumofish-bot.service",
+        "sumofish-lab.service",
+        "sumofish-train.service",
+        "sumofish-watchdog.timer",
+        "sumofish-train-watchdog.timer",
+        "sumofish-rating.timer",
     ]
     .into_iter()
     .map(String::from)
@@ -205,7 +217,7 @@ impl Config {
 
     /// What this repo looks like today, so the thing runs with no config at all.
     pub fn builtin() -> Config {
-        let root = PathBuf::from("/home/nomad/dev/active/chess-gpu");
+        let root = PathBuf::from("/home/nomad/dev/active/sumofish");
         Config {
             dash: Dash::default(),
             api: Api::default(),
@@ -214,6 +226,7 @@ impl Config {
                 lab_state: Some(root.join("runs/lab/state.json")),
                 train_active: Some(root.join("runs/active.json")),
                 matches_dir: Some(root.join("runs/matches")),
+                train_unit: default_train_unit(),
             },
             bots: vec![Bot {
                 id: "sumofish".into(),
@@ -221,10 +234,10 @@ impl Config {
                 label: Some("live".into()),
                 token_file: Some(
                     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/nomad".into()))
-                        .join(".config/chess-gpu/bot.env"),
+                        .join(".config/sumofish/bot.env"),
                 ),
                 token_var: default_token_var(),
-                unit: Some("chess-gpu-bot.service".into()),
+                unit: Some("sumofish-bot.service".into()),
                 telemetry: root.join("logs/engine.jsonl"),
                 pgn_dir: Some(root.join("logs/games")),
                 versions: Some(root.join("VERSIONS.jsonl")),

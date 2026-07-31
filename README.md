@@ -65,20 +65,20 @@ the output projection. 8.9M parameters, of which 71% are the MLPs.
 
 ## Things worth reading the code for
 
-**`chessgpu/mcts.py`** — MCTS with virtual loss. The naive version evaluates one
+**`sumofish/mcts.py`** — MCTS with virtual loss. The naive version evaluates one
 position per GPU call, which wastes almost all of the card. Batching leaf
 evaluations made it **19x faster with no CUDA involved**, and the trick that
 makes it possible (back up a pretend loss so the next walk explores elsewhere,
 then subtract it when the real answer arrives) is more interesting than any
 kernel.
 
-**`chessgpu/hlgauss.py`** — the value head predicts a *distribution* over win
+**`sumofish/hlgauss.py`** — the value head predicts a *distribution* over win
 probability, not a number. Cross-entropy against a Gaussian smeared across bins
 beats regression measurably (Farebrother et al.,
 [arXiv:2403.03950](https://arxiv.org/abs/2403.03950)), and it means the engine
 knows how uncertain it is.
 
-**`chessgpu/bagz.py`** — the training data format is Apache Beam `TupleCoder`
+**`sumofish/bagz.py`** — the training data format is Apache Beam `TupleCoder`
 output with no public spec. This was reverse-engineered from raw bytes and
 verified by decoding 12,000 records and checking every move was legal.
 

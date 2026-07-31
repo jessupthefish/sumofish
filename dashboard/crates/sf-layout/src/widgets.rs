@@ -487,7 +487,17 @@ pub fn ladder(rows: &[Rung<'_>], width: u16, fg: Ink) -> Vec<Line<'static>> {
                     Styles::dim()
                 },
             )];
-            spans.extend(bar(r.visits as f64 / top as f64, width, ink, sf_theme::BG_SOFT).spans);
+            // Ground is the panel background, not `BG_SOFT`: unlike the eval
+            // gauge (one full-width bar, where the unfilled portion needs its
+            // own visible colour or "95%" reads as a stripe with no context),
+            // five-plus of these sit stacked with their own numbers already
+            // to the right. A `BG_SOFT` ground behind every one of them
+            // painted a solid grey block the full gauge width regardless of
+            // how few visits a candidate actually got, which is what read as
+            // "messy" -- reported directly, 2026-07-30. Blending the empty
+            // part into the background leaves only the proportional streak,
+            // which is the number the ladder exists to show.
+            spans.extend(bar(r.visits as f64 / top as f64, width, ink, sf_theme::BG).spans);
             spans.push(Span::styled(format!(" {:>6}", r.visits), Styles::dim()));
             spans.push(Span::styled(format!("  q {:.3}", r.q), Styles::dim()));
             spans.push(Span::styled(format!("  p {:.3}", r.prior), Styles::dim()));

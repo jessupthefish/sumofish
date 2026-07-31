@@ -16,7 +16,7 @@ Nothing here produces or should produce an Elo number.
 
 # The batching mechanism, and why it does not already exist
 
-`CHESSGPU_BATCH` (see `chessgpu/engines/search_engine.py`) controls how many
+`CHESSGPU_BATCH` (see `sumofish/engines/search_engine.py`) controls how many
 LEAVES from one game's own tree are collected before one forward pass -- it
 is entirely internal to a single `core.Mcts` instance, 1:1 with one game.
 Nothing in the repo batches rows from DIFFERENT games' searches together
@@ -47,7 +47,7 @@ import sys  # noqa: E402
 
 sys.path.insert(0, str(ROOT))
 
-from chessgpu.rust_mcts import RustMCTS, make_evaluator  # noqa: E402
+from sumofish.rust_mcts import RustMCTS, make_evaluator  # noqa: E402
 from scripts.match import load_prior, load_value  # noqa: E402
 
 

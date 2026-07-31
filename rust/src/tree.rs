@@ -1,6 +1,6 @@
 //! MCTS: the tree, PUCT selection, virtual loss, backup.
 //!
-//! A **faithful** port of `chessgpu/mcts.py`. Every arithmetic expression is in
+//! A **faithful** port of `sumofish/mcts.py`. Every arithmetic expression is in
 //! the same form and the same order as the Python, because the acceptance test
 //! is a byte-identical root visit vector rather than "looks about right".
 //!
@@ -753,7 +753,7 @@ impl Mcts {
     /// already has a tree for, without treating this as a new move: no reroot,
     /// no reset, no root re-expansion. This exists for one purpose --
     /// periodic progress telemetry during a single move's think time, called
-    /// in short slices from `chessgpu/rust_mcts.py::RustMCTS.search` instead
+    /// in short slices from `sumofish/rust_mcts.py::RustMCTS.search` instead
     /// of one long blocking call, so a caller can query `top()`/`pv()`/
     /// `root_q` (all read-only, already exposed) BETWEEN calls, when no Rust
     /// call is in flight, rather than needing a callback re-entrant into
@@ -835,7 +835,7 @@ impl Mcts {
 
     /// Top-N children by visits, as `(uci, visits, q, prior)`. Stable sort,
     /// descending: ties keep child order, matching
-    /// `chessgpu/mcts.py::report`'s `sorted(..., key=lambda kv: -kv[1].visits)`
+    /// `sumofish/mcts.py::report`'s `sorted(..., key=lambda kv: -kv[1].visits)`
     /// (Python's `sorted` is stable). `q` is each child's own Q --
     /// `value_sum / visits`, from that child's side-to-move perspective, same
     /// convention and same zero-visits fallback as `root_q`.
@@ -860,7 +860,7 @@ impl Mcts {
     /// The principal variation: most-visited child, root down, stopping at
     /// `max_len` or the first unvisited child. Visits only -- deliberately
     /// does NOT apply `best_move`'s mate-distance proof rule, matching
-    /// `chessgpu/mcts.py::report`'s own PV walk
+    /// `sumofish/mcts.py::report`'s own PV walk
     /// (`max(node.children.items(), key=lambda kv: kv[1].visits)`), which
     /// doesn't either. The PV is "the line the search actually spent visits
     /// on," not "the line that's proven," and those can disagree once a
@@ -999,7 +999,7 @@ mod vloss_fix_tests {
 
 #[cfg(test)]
 mod continue_search_tests {
-    //! `continue_search` exists so `chessgpu/rust_mcts.py::RustMCTS.search`
+    //! `continue_search` exists so `sumofish/rust_mcts.py::RustMCTS.search`
     //! can slice one move's think time into short calls and report live
     //! progress between them (see its own docstring for why that is safe and
     //! a Rust-side re-entrant callback is not the design used). The identity

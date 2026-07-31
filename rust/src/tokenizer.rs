@@ -1,4 +1,4 @@
-//! The 77-token encoding, ported from `chessgpu/tokenizer.py::tokenize_board`.
+//! The 77-token encoding, ported from `sumofish/tokenizer.py::tokenize_board`.
 //!
 //! # Why, with a correction to the reason
 //!

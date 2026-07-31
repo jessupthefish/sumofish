@@ -33,6 +33,9 @@ pub struct Args {
     /// Replay a telemetry file instead of tailing the live one.
     pub replay: Option<PathBuf>,
     pub speed: f64,
+    /// Force the `?` overlay on in a snapshot, so the four responsive tiers can be
+    /// checked without a terminal: `--snapshot WxH --overlay`.
+    pub overlay: bool,
 }
 
 fn main() -> Result<()> {
@@ -75,6 +78,7 @@ fn parse_args() -> Result<Args> {
             "--replay" => a.replay = Some(PathBuf::from(value()?)),
             "--speed" => a.speed = value()?.parse().unwrap_or(1.0),
             "--offline" => a.offline = true,
+            "--overlay" => a.overlay = true,
             "--snapshot" => {
                 let v = value()?;
                 let (w, h) = v
@@ -99,6 +103,7 @@ sumofish-dash — the SumoFish dashboard
   --tier NAME          force micro|compact|standard|wide
   --board NAME         force kitty|sixel|text|off instead of probing
   --snapshot WxH       render one frame to stdout and exit
+  --overlay            force the ? help overlay on (with --snapshot)
   --replay PATH        replay a telemetry log instead of tailing the live one
   --speed N            replay speed multiplier (default 1)
   --offline            open no lichess connection

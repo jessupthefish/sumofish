@@ -110,7 +110,7 @@ workaround. ~1,700 lines gone for a better result.
 
 ## Workspace layout
 
-`dashboard/` inside `/home/nomad/dev/active/chess-gpu`, one Cargo workspace, same git history.
+`dashboard/` inside `/home/nomad/dev/active/sumofish`, one Cargo workspace, same git history.
 
 ```
 crates/
@@ -278,7 +278,7 @@ the staleness discarded. The new API is `fn get(&self) -> Option<(&T, Track)>` w
 returning the bare value, so the docstring's claim becomes true rather than aspirational.
 
 **`pid` is the partition key, and it is free.** Every telemetry record carries it unconditionally
-(`chessgpu/telemetry.py:107`) and **nothing in the repo reads it.** Attribution: `game` → `(BotId,
+(`sumofish/telemetry.py:107`) and **nothing in the repo reads it.** Attribution: `game` → `(BotId,
 GameId)` via each bot's `playing` list, with a sticky pid cache so `think` records land right before
 and after `game` appears. Unattributed pids show as "N detached engines" — visible, not guessed at.
 
@@ -388,7 +388,7 @@ Ranked. Everything here is already on disk or one library call away.
 | # | What | Where | Why |
 |---|---|---|---|
 | 1 | **EGTB move provenance.** 349 of 3,265 moves today (10.7%) came from lichess's tablebase, not the engine, with `wdl`/`dtz`/`dtm`. They produce **no `move` record at all**, so the mind panel coasts on a stale position while the board advances | bot journal | Watching the search panel through an endgame is watching a lie |
-| 2 | **Watchdog restarts.** The bot was SIGKILLed and restarted twice in 30 minutes today. Because `watchdog.py` uses `systemctl kill` + `restart`, `NRestarts` stays 0, so `machine_panel` suppresses the count and **shows a green dot** | `~/.local/state/chess-gpu/watchdog.json`, journal | The single most misleading pixel on screen |
+| 2 | **Watchdog restarts.** The bot was SIGKILLed and restarted twice in 30 minutes today. Because `watchdog.py` uses `systemctl kill` + `restart`, `NRestarts` stays 0, so `machine_panel` suppresses the count and **shows a green dot** | `~/.local/state/sumofish/watchdog.json`, journal | The single most misleading pixel on screen |
 | 3 | **The lab.** 9/15 jobs, `train-136m` running, 5 queued, deadlines, the `facts{}` that gate future jobs. 9.3h of autonomous experiments, zero dashboard presence | `runs/lab/state.json`, `log.jsonl` | The largest thing happening is invisible. `lab.render()` already produces the text |
 | 4 | **Which checkpoint is playing** — `boot` carries `policy_step`, `value_step`, `params`, `bins`, `batch` and the payload is discarded at `sources.py:542` | `engine.jsonl` | Promotion swaps `runs/value.pt` under a running bot |
 | 5 | **`val_loss`**, the metric `best.pt` is actually selected on and which PHILOSOPHY calls the honest one. The panel plots the noisy `puzzle_acc` instead | `runs/*/log.jsonl` | Already collected, just dropped |
@@ -398,7 +398,7 @@ Ranked. Everything here is already on disk or one library call away.
 | 9 | **Provenance check** `Σ game.seconds ≤ job.seconds`. **All four exchange-rate rungs still violate it** (e.g. 20,733s of play credited 1,070s), and three have `code: null` | computed | PHILOSOPHY calls this the cheapest total check in the repo |
 | 10 | **Deployment markers on the rating curve** — `deployed{engine, policy, value}` hashes, visibly changing across the log; `_rating_history` reads only `rating` | `logs/rating.jsonl` | The literal stated purpose of that file |
 | 11 | **Per-process VRAM** (11,096 MiB trainer vs 626 MiB engine, 82% of 16GB), plus temp, power vs limit, SM/mem clocks, throttle reasons, fan | nvml | `machine_panel`'s own docstring asks "is one starving the other"; inferring it from one aggregate is the exact mistake that cost a session |
-| 12 | **Correct unit list.** Polls 2 names, one of which (`chess-gpu-train.service`) is `not-found` and renders a permanent red dot; `chess-gpu-lab` — the thing actually working — is absent. Three timers unpolled. **`train_watchdog` watches the dead unit, so the 40h run is unsupervised** | `systemd/`, zbus | A permanently-red dot for a deleted unit trains you to ignore the row |
+| 12 | **Correct unit list.** Polls 2 names, one of which (`sumofish-train.service`) is `not-found` and renders a permanent red dot; `sumofish-lab` — the thing actually working — is absent. Three timers unpolled. **`train_watchdog` watches the dead unit, so the 40h run is unsupervised** | `systemd/`, zbus | A permanently-red dot for a deleted unit trains you to ignore the row |
 | 13 | **Budget overruns** — 9 of 324 moves overran by >0.5s, max +0.81s. `elapsed` vs `budget` is on every record | `engine.jsonl` | Flagging is the one unrecoverable failure |
 | 14 | **Per-game Elo delta, opponent rating, ECO/opening** — `games.py` already extracts all 12 fields; `Results` keeps 6 | `logs/games/*.pgn` | "Lost 7 points to a 1739" is what a person wants from a results row |
 | 15 | **Stockfish game verdict** — accuracy, blunder count, ACPL, ours vs theirs. `Grader` computes per-ply `{loss, grade, cp}` and only the `?!`/`??` marks reach the screen | already in memory | The only instrument that answers "is it playing well" independently of the rating |
@@ -406,10 +406,10 @@ Ranked. Everything here is already on disk or one library call away.
 | 17 | **The second concurrent game.** `concurrency: 2`; the demuxer spends 80 lines discarding it | `state["playing"]` | Half the bot's games happen off-screen |
 | 18 | `VERSIONS.jsonl` beyond `ts` (title, layman, sha, `checkpoint_sha`, step, width, layers); `runs/lab/forward-bench.json`; `research/results.jsonl` verdicts; `Telemetry.dropped`; log-rotation notice; timer `NextElapse` | various | Cheap, one file read each |
 
-**Engine-side additions (separate workstream, touches `chessgpu/`):** `reused` — visits inherited by
+**Engine-side additions (separate workstream, touches `sumofish/`):** `reused` — visits inherited by
 `_reroot`, returned by `MCTS.report()` and dropped by `snapshot()`, so tree reuse has zero
 observability; the now-varying `c_puct_at(visits)`; batch collisions and terminal hits, which explain
-the `nodes/sims` gap. Each is one key in a dict already being built. **Nothing may edit `chessgpu/`
+the `nodes/sims` gap. Each is one key in a dict already being built. **Nothing may edit `sumofish/`
 while a match or the bot is running** — both import from the working tree and spawn per game, so an
 edit lands mid-match. Use a worktree, or wait for the lab to be quiet.
 
@@ -595,7 +595,7 @@ Not part of this rewrite; flagged because they are true today and two of them ar
 
 - The bot was **SIGKILLed and restarted twice in the last 30 minutes** by its own watchdog for
   120s-stuck games, and nothing on screen said so.
-- **`chess-gpu-train.service` is `not-found`**, so `train_watchdog` logs "nothing to watch" every 5
+- **`sumofish-train.service` is `not-found`**, so `train_watchdog` logs "nothing to watch" every 5
   minutes and the 40-hour 136M run is unsupervised. Its state file is frozen at a previous run.
 - The train panel's ETA is wrong by ~3x (hardcoded 300k steps and batch 1024 against a 400k/256 run).
 - **All four exchange-rate rungs still violate `Σ game.seconds ≤ job.seconds`** in the files right

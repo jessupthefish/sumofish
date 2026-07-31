@@ -39,11 +39,11 @@ import numpy as np
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "tokenizer.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "tokenizer.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.tokenizer import (  # noqa: E402
+from sumofish.tokenizer import (  # noqa: E402
     CHARACTERS,
     SEQUENCE_LENGTH,
     VOCAB_SIZE,
@@ -76,13 +76,13 @@ SUITE = [
 
 
 def corpus(limit: int) -> list[str]:
-    for root in (ROOT, ROOT.parent / "chess-gpu"):
+    for root in (ROOT, ROOT.parent / "sumofish"):
         bag = root / "data/train/state_value_data.bag"
         if not bag.exists():
             continue
         sys.path.insert(0, str(root))
         try:
-            from chessgpu.bagz import BagReader, decode_state_value
+            from sumofish.bagz import BagReader, decode_state_value
         except Exception:
             break
         reader = BagReader(str(bag))

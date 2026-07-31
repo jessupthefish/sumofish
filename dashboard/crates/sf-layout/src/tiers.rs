@@ -110,6 +110,13 @@ const BOARD_MIN: u16 = 44;
 /// The header. Three rows, full width, and the picture's origin is computed from
 /// this rather than from a magic absolute screen row.
 const HEADER_H: u16 = 3;
+/// The footer's keybinding hint bar. One row, full width, present at every tier
+/// including `Micro` -- it is the answer to "how would you know `?` exists",
+/// which is the whole reason it cannot itself be hidden behind `?`.
+const FOOTER_H: u16 = 1;
+const fn footer(extent: Alloc) -> Node {
+    Node::Region(RegionSpec { id: RegionId::Footer, stack: Axis::Vertical, extent })
+}
 
 /// Slack split between the board and the rail. The board wins, because on a 16:9
 /// window a square board is width-bound long before it is height-bound, so width
@@ -140,13 +147,18 @@ static MICRO: Composition = Composition {
                 stack: Axis::Vertical,
                 extent: Alloc::grow(4, 1),
             }),
+            footer(Alloc::fixed(FOOTER_H)),
         ],
     },
     // Everything folds into one region and the panel with the most to say gets the
-    // screen -- except the header, which keeps its own band. Folding it in too
-    // leaves the band empty and the whole screen shifted down by three blank rows.
+    // screen -- except the header and the footer, which keep their own bands.
+    // Folding the header in too leaves the band empty and the whole screen shifted
+    // down by three blank rows; folding the footer in would put it in direct
+    // competition with whatever panel currently owns the screen, and it would lose
+    // most of the time -- exactly the discoverability problem this exists to fix.
     remap: |r| match r {
         RegionId::Band => RegionId::Band,
+        RegionId::Footer => RegionId::Footer,
         _ => RegionId::Full,
     },
 };
@@ -175,6 +187,7 @@ static COMPACT: Composition = Composition {
                 stack: Axis::Vertical,
                 extent: Alloc::grow(6, 3),
             }),
+            footer(Alloc::fixed(FOOTER_H)),
         ],
     },
     remap: |r| match r {
@@ -191,9 +204,11 @@ static STANDARD: Composition = Composition {
         extent: Alloc::grow(34, 1),
         children: &[
             band(Alloc::fixed(HEADER_H)),
+            // 30, not 31: one row of the old floor now goes to the footer instead,
+            // so the declared tier minimum (100x34) does not move.
             Node::Split {
                 axis: Axis::Horizontal,
-                extent: Alloc::grow(31, 1),
+                extent: Alloc::grow(30, 1),
                 children: &[
                     Node::Region(RegionSpec {
                         id: RegionId::Board,
@@ -207,6 +222,7 @@ static STANDARD: Composition = Composition {
                     }),
                 ],
             },
+            footer(Alloc::fixed(FOOTER_H)),
         ],
     },
     remap: |r| match r {
@@ -223,9 +239,11 @@ static WIDE: Composition = Composition {
         extent: Alloc::grow(44, 1),
         children: &[
             band(Alloc::fixed(HEADER_H)),
+            // 40, not 41: one row of the old floor now goes to the footer instead,
+            // so the declared tier minimum (176x44) does not move.
             Node::Split {
                 axis: Axis::Horizontal,
-                extent: Alloc::grow(41, 1),
+                extent: Alloc::grow(40, 1),
                 children: &[
                     Node::Region(RegionSpec {
                         id: RegionId::Board,
@@ -248,6 +266,7 @@ static WIDE: Composition = Composition {
                     }),
                 ],
             },
+            footer(Alloc::fixed(FOOTER_H)),
         ],
     },
     remap: |r| match r {

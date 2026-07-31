@@ -324,7 +324,7 @@ impl Board {
     /// `8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1`, where `e4xd3` would expose the black
     /// king to `Qh4` along the fourth rank, so python-chess emits `-`.
     ///
-    /// This is not cosmetic. `chessgpu/tokenizer.py:156-160` gates the ep field
+    /// This is not cosmetic. `sumofish/tokenizer.py:156-160` gates the ep field
     /// on `has_legal_en_passant()` when building the **77 tokens the network
     /// reads**, so getting this wrong feeds the model a different position and
     /// changes its evaluation, while every move the engine plays stays legal.

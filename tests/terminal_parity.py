@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Oracle 4: terminal detection parity against `chessgpu/rules.py`.
+"""Oracle 4: terminal detection parity against `sumofish/rules.py`.
 
 Stage B ports `rules.terminal_value` and everything under it: mate, stalemate,
 insufficient material, the fifty-move rule, and threefold repetition over the
@@ -40,11 +40,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # rules.py imports nothing but `chess`, so it loads fine in this worktree's venv
 # without torch. Pull it from the main checkout, which is where the engine lives.
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "rules.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "rules.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.rules import terminal_value as py_terminal_value  # noqa: E402
+from sumofish.rules import terminal_value as py_terminal_value  # noqa: E402
 
 # --- material cases, with the expected verdict from python-chess itself ------
 MATERIAL = [

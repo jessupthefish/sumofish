@@ -1,0 +1,10 @@
+[Unit]
+Description=Detect a stalled SumoFish training run
+After=sumofish-train-continue.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/nomad/dev/active/sumofish/.venv/bin/python /home/nomad/dev/active/sumofish/scripts/train_watchdog.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-train-watchdog

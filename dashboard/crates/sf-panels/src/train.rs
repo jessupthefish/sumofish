@@ -8,6 +8,7 @@ use sf_layout::widgets::{bar, chrome, put, sparkline, track_tag, truncate};
 use sf_layout::{
     Cx, Panel, PanelId, PanelSpec, RegionId, Relevance, Scope, Size, Variant, VariantId, Weight,
 };
+use sf_model::state::{LogEntry, LogLevel};
 use sf_theme::Styles;
 
 pub static PANEL: Train = Train;
@@ -16,6 +17,8 @@ pub struct Train;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("train"),
     title: "training",
+    keybind: None,
+    help: "the training run: how far, how fast, and whether anything is watching it",
     region: RegionId::Rail,
     scope: Scope::Global,
     weight: Weight::Normal,
@@ -43,6 +46,28 @@ impl Panel for Train {
             Some((r, _)) if r.step > 0 => Relevance::Idle,
             _ => Relevance::Hidden,
         }
+    }
+
+    /// Both `Full` and `Compact` declare `grow: 0` -- a fixed height, never
+    /// expanded by leftover space -- so this dynamic ask is the only lever this
+    /// panel has for a row it does not always need. A recent warning or error
+    /// earns one more row at the bottom: the earliest sign of trouble the
+    /// structured telemetry stream does not carry at all (a CUDA OOM, a
+    /// traceback, a data-pipeline exception), absorbed from what `sumofish
+    /// train`'s raw `journalctl -f` used to show.
+    ///
+    /// The solver's formula is `final_min = max(min.h, rows + (min.h - 1))`.
+    /// The declared `Full` minimum (6 rows / 4 content rows after the border)
+    /// already sits one short of `grad`, the panel's own 5th content row --
+    /// `render` gates it on `inner.height > 4`, which the fixed 6-row height
+    /// never satisfies, so it has been silently unreachable in the live layout
+    /// since it was added. `rows: 3` asks for `min.h + 2`: one row to actually
+    /// reach `grad`, one for the new problem line right after it.
+    fn rows_needed(&self, variant: VariantId, cx: &Cx<'_>) -> Option<u16> {
+        if variant != VariantId::Full {
+            return None;
+        }
+        last_problem(cx).map(|_| 3)
     }
 
     fn render(&self, variant: VariantId, area: Rect, buf: &mut Buffer, cx: &Cx<'_>) {
@@ -177,13 +202,43 @@ impl Panel for Train {
                 );
             }
         }
+
+        // The raw journal's own most recent warning or error, beyond what the
+        // structured telemetry stream reports at all. `inner.height > 5` is
+        // exactly what `rows_needed`'s `Some(3)` guarantees when there is one.
+        if inner.height > 5 {
+            if let Some(p) = last_problem(cx) {
+                let (label, ink) = if p.level == LogLevel::Error {
+                    ("error ", sf_theme::BAD)
+                } else {
+                    ("warn  ", sf_theme::WARM)
+                };
+                put(
+                    buf,
+                    inner,
+                    inner.y + 5,
+                    Line::from(vec![
+                        Span::styled(label, Styles::ink(ink)),
+                        Span::styled(
+                            truncate(&p.text, inner.width.saturating_sub(7) as usize),
+                            Styles::dim(),
+                        ),
+                    ]),
+                );
+            }
+        }
     }
+}
+
+/// The most recent warning or error line from the training unit's own journal.
+fn last_problem<'a>(cx: &Cx<'a>) -> Option<&'a LogEntry> {
+    cx.state.train.log.iter_rev().find(|e| e.level != LogLevel::Info)
 }
 
 /// Is a stall detector actually armed for the training run?
 ///
 /// The timer must be both loaded and active. `not-found` is the state
-/// `chess-gpu-train.service` sat in for weeks while its watchdog logged "nothing to
+/// `sumofish-train.service` sat in for weeks while its watchdog logged "nothing to
 /// watch" every five minutes, which is exactly the failure this asks about.
 fn supervised(cx: &Cx<'_>) -> bool {
     cx.state.machine.units.get(cx.now).is_some_and(|(units, _)| {

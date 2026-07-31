@@ -9,7 +9,7 @@ measurement to justify, which matters because the Elo instrument is unreliable.
 
 Two things are checked:
 
-  1. **Identity.** Rust with dedup ON vs the real `chessgpu.mcts` (which has no
+  1. **Identity.** Rust with dedup ON vs the real `sumofish.mcts` (which has no
      dedup at all). The root visit vectors must be byte-identical. This is the
      whole claim.
   2. **The saving.** `evaluations` vs `unique_evaluations` at several batch sizes,
@@ -26,10 +26,10 @@ import chess
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for c in (ROOT, ROOT.parent / "chess-gpu"):
-    if (c / "chessgpu" / "mcts.py").exists():
+for c in (ROOT, ROOT.parent / "sumofish"):
+    if (c / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(c)); break
-from chessgpu.mcts import MCTS  # noqa: E402
+from sumofish.mcts import MCTS  # noqa: E402
 from identity_search import MockPolicy, MockValuePolicy, corpus, rust_evaluate  # noqa: E402
 
 
@@ -60,7 +60,7 @@ def main() -> int:
     args = ap.parse_args()
 
     games = corpus(args.positions, args.seed)
-    print("1. IDENTITY: rust with dedup ON vs chessgpu.mcts (no dedup)")
+    print("1. IDENTITY: rust with dedup ON vs sumofish.mcts (no dedup)")
     bad_on = bad_off = 0
     for i, moves in enumerate(games):
         want, out = one(moves, args.sims, 64)

@@ -114,7 +114,7 @@ fn per_process_vram_is_attributable() {
 /// version conflated.
 #[tokio::test]
 async fn zbus_agrees_with_systemctl() {
-    let names: Vec<String> = ["chess-gpu-bot.service", "chess-gpu-lab.service", "chess-gpu-train.service"]
+    let names: Vec<String> = ["sumofish-bot.service", "sumofish-lab.service", "sumofish-train.service"]
         .into_iter()
         .map(String::from)
         .collect();
@@ -144,10 +144,10 @@ async fn zbus_agrees_with_systemctl() {
 
     // The distinction the Python could not make: a unit that does not exist is not
     // a unit that is broken.
-    if let Some(train) = units.iter().find(|u| u.name == "chess-gpu-train.service") {
+    if let Some(train) = units.iter().find(|u| u.name == "sumofish-train.service") {
         if train.missing() {
             println!(
-                "chess-gpu-train.service is NOT-FOUND -- a distinct state, not a red dot, \
+                "sumofish-train.service is NOT-FOUND -- a distinct state, not a red dot, \
                  and its watchdog timer is still armed and pointed at it"
             );
         }
@@ -159,8 +159,8 @@ async fn zbus_agrees_with_systemctl() {
 #[tokio::test]
 async fn timer_next_elapse_is_a_plausible_duration() {
     let names = vec![
-        "chess-gpu-watchdog.timer".to_string(),
-        "chess-gpu-rating.timer".to_string(),
+        "sumofish-watchdog.timer".to_string(),
+        "sumofish-rating.timer".to_string(),
     ];
     let src = sf_sources::UnitsSource::new(names).await;
     let Update::Units(units) = src.poll().await else {

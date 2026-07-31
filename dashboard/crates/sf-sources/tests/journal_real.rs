@@ -19,7 +19,7 @@ fn journal(unit: &str, since: &str) -> Option<Vec<String>> {
 
 #[test]
 fn the_real_bot_journal_parses() {
-    let Some(lines) = journal("chess-gpu-bot", "-36 hours") else {
+    let Some(lines) = journal("sumofish-bot", "-36 hours") else {
         eprintln!("SKIP: no journal");
         return;
     };
@@ -73,7 +73,7 @@ fn the_real_bot_journal_parses() {
 
 #[test]
 fn the_real_watchdog_journal_parses() {
-    let Some(lines) = journal("chess-gpu-watchdog", "-36 hours") else {
+    let Some(lines) = journal("sumofish-watchdog", "-36 hours") else {
         eprintln!("SKIP: no journal");
         return;
     };

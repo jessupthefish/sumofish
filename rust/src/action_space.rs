@@ -1,4 +1,4 @@
-//! The 1968-move action space, GENERATED from `chessgpu/tokenizer.py`.
+//! The 1968-move action space, GENERATED from `sumofish/tokenizer.py`.
 //!
 //! Do not hand-edit and do not reimplement. The Python table is byte-verified
 //! against DeepMind's published implementation over 12,000 real positions, and

@@ -22,6 +22,8 @@ pub struct Versions;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("versions"),
     title: "deployed",
+    keybind: None,
+    help: "what's deployed, and whether it's what this version shipped",
     region: RegionId::RailB,
     scope: Scope::FocusedBot,
     weight: Weight::Low,

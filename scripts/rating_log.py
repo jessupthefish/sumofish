@@ -55,7 +55,7 @@ def _token() -> str | None:
     tok = os.environ.get("LICHESS_BOT_TOKEN")
     if tok:
         return tok
-    env = Path.home() / ".config/chess-gpu/bot.env"
+    env = Path.home() / ".config/sumofish/bot.env"
     if env.exists():
         for line in env.read_text().splitlines():
             if line.startswith("LICHESS_BOT_TOKEN="):

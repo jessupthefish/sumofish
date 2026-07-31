@@ -42,8 +42,8 @@ import chess
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "mcts.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(candidate))
         break
 
@@ -98,7 +98,7 @@ def build_suite(limit: int, cap: int) -> list[tuple[str, int]]:
     within `cap` are kept, because the exhaustive search is exponential.
     """
     out: list[tuple[str, int]] = []
-    for root in (ROOT, ROOT.parent / "chess-gpu"):
+    for root in (ROOT, ROOT.parent / "sumofish"):
         pz = root / "data/puzzles.csv"
         if not pz.exists():
             continue

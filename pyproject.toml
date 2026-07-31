@@ -1,5 +1,5 @@
 [project]
-name = "chess-gpu"
+name = "sumofish"
 version = "0.1.0"
 description = "A chess engine that evaluates positions with a transformer and does not search."
 requires-python = ">=3.12"
@@ -16,11 +16,11 @@ train = [
 ]
 
 [project.scripts]
-chess-gpu-random = "chessgpu.engines.random_engine:main"
+sumofish-random = "sumofish.engines.random_engine:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["chessgpu"]
+packages = ["sumofish"]

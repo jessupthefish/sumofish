@@ -35,10 +35,10 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
 > **OVERNIGHT STATE, left running 2026-07-29 ~20:10.**
 >
-> - `chess-gpu-continue.service` is training the 9M value net from step 321,746
+> - `sumofish-continue.service` is training the 9M value net from step 321,746
 >   to 600,000. ~8 h. systemd-supervised, `Restart=on-failure`, `--auto-resume`,
 >   so a crash resumes from `latest.pt` instead of losing the night.
->   Watch: `journalctl --user -u chess-gpu-continue -f`.
+>   Watch: `journalctl --user -u sumofish-continue -f`.
 > - **The bot is DOWN and no longer autostarts.** It was stopped for the GPU,
 >   then restarted at 19:42:31 by what was almost certainly a PARALLEL Claude
 >   Code session doing dashboard work (commits by Jessupthefish at 19:41
@@ -49,11 +49,11 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   starting the bot during a wall-clock match silently invalidates the match,
 >   and starting it during training halves the throughput of both. `systemctl --user disable` removed the unit symlink
 >   as well as the autostart, so it was re-linked: the unit is `linked` and
->   `inactive`, startable with `systemctl --user start chess-gpu-bot`, and no
+>   `inactive`, startable with `systemctl --user start sumofish-bot`, and no
 >   longer pulled in by `default.target`. Restore autostart with
->   `systemctl --user enable chess-gpu-bot` -- but find the restarter first,
+>   `systemctl --user enable sumofish-bot` -- but find the restarter first,
 >   because an unexplained start during a wall-clock match invalidates it.
-> - `chess-gpu-train-watchdog.timer` is STOPPED. Its remedy is restarting the
+> - `sumofish-train-watchdog.timer` is STOPPED. Its remedy is restarting the
 >   LAB, and this run is direct, so it would have launched a conflicting job.
 >   The systemd unit above supersedes it for this run. Restart the timer when
 >   lab-managed training resumes.
@@ -65,7 +65,7 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 speed flags were measured and cost 168 Elo, so they are off.**
 
 **1. The Rust core is integrated and live-capable.** `CHESSGPU_CORE=rust`
-selects `chessgpu/rust_mcts.py`; unset keeps Python, so rollback is an
+selects `sumofish/rust_mcts.py`; unset keeps Python, so rollback is an
 environment variable. Ten oracles plus `tests/identity_engine.py` (which uses
 the REAL nets, not the port's mock) show byte-identical root visit vectors.
 Identical visits means identical moves, which is why this shipped without a
@@ -125,33 +125,41 @@ the network was 9%.
 
 ## Next session, in order
 
-**1. Deploy the Rust core to rated play.** `CHESSGPU_CORE=rust`, both speed
-flags off. This is a strength change (4.5x the search on the clock) with a
-proof rather than a match behind it, and it touches rated games, so it is a
-human decision. Nothing else on this list is blocked by it.
+**Done: the Rust core is deployed to rated play, and now the default.**
+Live with `CHESSGPU_CORE=rust` since 2026-07-30 14:32, both speed flags off.
+As of 2026-07-31, `select_mcts_class()`'s default flipped too: an unset
+`CHESSGPU_CORE` now selects Rust, not Python -- `CHESSGPU_CORE=python` is the
+rollback, same as `=rust` used to be the opt-in. `sumofish.mcts` (the
+pre-port Python search) was NOT retired: it's still exactly where it was and
+still the oracle `tests/identity_*.py`, `scripts/match.py` and
+`scripts/acceptance.py` compare Rust against, it's just no longer what an
+absent env var silently falls back to. Verified with a new
+`tests/verify_core_default.py`; existing `tests/verify_rust_flag_guard.py`
+is unaffected (it exercises `ignored_rust_flags` on an explicit dict, not
+`select_mcts_class`'s default).
 
-**2. Play the acceptance test. It has still never been run.**
+**1. Play the acceptance test. It has still never been run.**
 `scripts/acceptance.py --games 20`. Twenty blind games, one rating each, arms
 hidden until `reveal`. Every other number here measures strength, which
 PHILOSOPHY ranks third; this is the only thing pointed at goal two, and it
 needs a human by construction.
 
-**3. Re-earn the exchange ladder** (~10 GPU-h). Visit-denominated, distinct seed
+**2. Re-earn the exchange ladder** (~10 GPU-h). Visit-denominated, distinct seed
 per rung, on an idle machine. Until it exists, every "worth N Elo" in any plan
 is a guess, and the plan's ordering is unfalsifiable.
 
-**4. Stockfish as an absolute anchor**, at pinned nodes. Every match here is
+**3. Stockfish as an absolute anchor**, at pinned nodes. Every match here is
 relative, so the whole ladder floats. The adjudicator half is done.
 
-**5. Retrain the policy prior.** Frozen at 40.9% puzzles since session 1 and it
+**4. Retrain the policy prior.** Frozen at 40.9% puzzles since session 1 and it
 is the biggest neglected lever: it sets the shape of every search, and
 `c_puct`/FPU/temperature tuning is not worth doing before it, since the right
 values depend on the prior's sharpness.
 
-**6. Shared-trunk two-head net** (~40 GPU-h). Worth ~1.8x now that the network
+**5. Shared-trunk two-head net** (~40 GPU-h). Worth ~1.8x now that the network
 is 89% of the search. Warm-start it: 91 of 93 tensors transfer from the 9M body.
 
-**7. Cross-game batching.** N games feeding one evaluation service. The engine
+**6. Cross-game batching.** N games feeding one evaluation service. The engine
 is launch-bound below ~128 rows -- one row costs the same 7.2ms as 128 -- but
 that is a per-call latency observation, not an end-to-end throughput number.
 **Measured 2026-07-30** with `scripts/batch_payoff.py` (self-play, sims=150,
@@ -166,10 +174,10 @@ GPU-hour estimate. Production integration (adjudication, PGN/games.jsonl
 logging, SPRT stopping across concurrent games) is real additional work the
 sizing script does not do.
 
-**8. The scaling curve has zero points.** A width sweep (~6 GPU-h) at matched
+**7. The scaling curve has zero points.** A width sweep (~6 GPU-h) at matched
 tokens is what makes "scale it up" an argument instead of a preference.
 
-**9. `d(loss)/d(params)`, then kernels.** Not before 5-8.
+**8. `d(loss)/d(params)`, then kernels.** Not before 4-7.
 
 **Open, smaller:**
 
@@ -221,7 +229,7 @@ pinned down. Ask for a screenshot of just that panel rather than guessing.
 ## Layout
 
 ```
-chessgpu/            frozen infrastructure. tokenizer/bagz are VERIFIED, do not edit
+sumofish/            frozen infrastructure. tokenizer/bagz are VERIFIED, do not edit
   tokenizer.py       77-token FEN encoding + 1968-move action space
   bagz.py            ChessBench container + Apache Beam record decoding
   data.py            streaming loader (see Lab Notes on why it streams)
@@ -234,7 +242,7 @@ chessgpu/            frozen infrastructure. tokenizer/bagz are VERIFIED, do not 
   telemetry.py       the engine's narration channel: append-only JSONL, off-thread
 train.py             the production run
 research/            karpathy/autoresearch port: train.py is agent-editable
-tests/verify_data.py the correctness gate. run it after touching chessgpu/
+tests/verify_data.py the correctness gate. run it after touching sumofish/
 tests/verify_search.py the same, for rules.py, tokenize_board and tree reuse
 tests/verify_layout.py the same, for the dashboard's board column: what Plan
                      reserves is what board_panel draws. No torch, no terminal
@@ -254,7 +262,7 @@ reference/           upstream source, gitignored, for diffing. read-only.
 ## The lab, and what it is allowed to decide
 
 `scripts/lab.py` is an ordered list of jobs and a runner that walks it, under
-`chess-gpu-lab.service`. It exists because everything left on the roadmap needs
+`sumofish-lab.service`. It exists because everything left on the roadmap needs
 the GPU, needs hours, and needs to happen in an order where later steps read
 earlier results -- which by hand means being present at every handoff, at 3am,
 for two days.
@@ -262,7 +270,7 @@ for two days.
     sumofish-lab            what it has run, what it concluded, what is next
     sumofish-lab watch      the same, refreshing
     sumofish-lab reset --job <id>    forget one job so it runs again
-    journalctl --user -u chess-gpu-lab -f
+    journalctl --user -u sumofish-lab -f
 
 Two kinds of job. A **command** is a subprocess that owns the GPU, gets a
 wall-clock deadline, and is stopped with SIGTERM rather than SIGKILL because
@@ -371,7 +379,7 @@ sumofish-lab watch                       # the same, live
 sumofish                                 # the dashboard
 sumofish demo                            # same layout on a fixture, no game needed
 sumofish mind                            # raw engine telemetry as it is written
-tests/verify_data.py                     # correctness gate, run after any chessgpu/ change
+tests/verify_data.py                     # correctness gate, run after any sumofish/ change
 tests/verify_search.py                   # the same, for the search's rules and tokenizer
 tests/verify_layout.py                   # the same, for the dashboard's board column
 
@@ -381,8 +389,8 @@ scripts/match.py --a-value runs/A.pt --b-value runs/B.pt --games 400 --sims 400
 scripts/match.py --a-sims 1000 --b-sims 400 --games 300
 # fixed time instead of fixed sims: strength as deployed, speedups included
 scripts/match.py --a-value runs/A.pt --b-value runs/B.pt --time 0.5
-journalctl --user -u chess-gpu-train -f  # watch training
-systemctl --user status chess-gpu-bot    # the lichess bot
+journalctl --user -u sumofish-train -f  # watch training
+systemctl --user status sumofish-bot    # the lichess bot
 scripts/promote.py runs/9M-causal/best.pt
 research/run.py --note "hypothesis"      # one autoresearch experiment
 research/run.py --status                 # leaderboard
@@ -392,7 +400,7 @@ Python is `.venv/bin/python` (3.12). Never the system python.
 
 ## Non-negotiables
 
-- **Never edit `chessgpu/tokenizer.py` or `bagz.py`** without re-running
+- **Never edit `sumofish/tokenizer.py` or `bagz.py`** without re-running
   `tests/verify_data.py`. The tokenizer is byte-exact against DeepMind's
   published implementation over 12,000 real positions. Break that and every
   number stops being comparable and their pretrained checkpoints stop being a
@@ -400,7 +408,7 @@ Python is `.venv/bin/python` (3.12). Never the system python.
 - **Never change the eval, the time budget, or the seed in `research/train.py`.**
   Moving the yardstick to make the metric improve is the exact failure the
   harness exists to prevent.
-- The lichess token is in `~/.config/chess-gpu/bot.env`, chmod 600, outside the
+- The lichess token is in `~/.config/sumofish/bot.env`, chmod 600, outside the
   repo. Refer to `LICHESS_BOT_TOKEN` by name only. Never echo it.
 - SumoFish plays **casual only** until the engine genuinely tries to win.
   Rated play with a weak-or-random engine is sandbagging under lichess ToS.

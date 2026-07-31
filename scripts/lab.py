@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """The lab. An experiment queue that runs the plan without being watched.
 
-    systemctl --user start chess-gpu-lab      # run the plan
+    systemctl --user start sumofish-lab      # run the plan
     sumofish-lab                              # look at it
     sumofish-lab watch                        # look at it, live
 
@@ -61,12 +61,12 @@ absent checkpoint and the gate would have run on the result.
 
 ## The rule that is not obvious
 
-Nothing may edit `chessgpu/` while this is running. Matches import from the
+Nothing may edit `sumofish/` while this is running. Matches import from the
 working tree and spawn a process per game, so an edit lands mid-match: half the
 games played a different engine and nothing in the log says which. The runner
 refuses to start a job while a foreign `train.py` or `match.py` is alive, which
 covers accidental overlap. It cannot protect you from an editor -- for that,
-`git worktree add ../chess-gpu-dev -b <branch>` and work there.
+`git worktree add ../sumofish-dev -b <branch>` and work there.
 """
 
 from __future__ import annotations

@@ -47,11 +47,24 @@ pub enum RegionId {
     Band,
     /// The whole screen, one panel at a time. `Micro` only.
     Full,
+    /// A full-width, one-row strip at the very bottom, present at every tier
+    /// including `Micro`. Exists for exactly one panel: the keybinding hint bar.
+    /// Kept separate from `Band` rather than reusing it, because two `Band`
+    /// instances in the same tree (one top, one bottom) would be indistinguishable
+    /// to the solver -- both would collect every `Band`-declared panel as
+    /// candidates for both rects.
+    Footer,
 }
 
 impl RegionId {
-    pub const ALL: [RegionId; 5] =
-        [RegionId::Board, RegionId::Rail, RegionId::RailB, RegionId::Band, RegionId::Full];
+    pub const ALL: [RegionId; 6] = [
+        RegionId::Board,
+        RegionId::Rail,
+        RegionId::RailB,
+        RegionId::Band,
+        RegionId::Full,
+        RegionId::Footer,
+    ];
     pub const fn name(self) -> &'static str {
         match self {
             RegionId::Board => "board",
@@ -59,6 +72,7 @@ impl RegionId {
             RegionId::RailB => "rail-b",
             RegionId::Band => "band",
             RegionId::Full => "full",
+            RegionId::Footer => "footer",
         }
     }
 }
@@ -149,6 +163,15 @@ impl Variant {
 pub struct PanelSpec {
     pub id: PanelId,
     pub title: &'static str,
+    /// The key that controls this panel specifically, if it has one distinct from
+    /// the global bindings (`q`, `r`, `Tab`, `1`-`9`, `?`) -- e.g. `bots` is what
+    /// `Tab`/`1-9` are *about*, even though the keys themselves are handled
+    /// globally in `run.rs` rather than by the panel's own `on_key`. `None` for a
+    /// panel with no dedicated key of its own.
+    pub keybind: Option<&'static str>,
+    /// One line: what this panel is for. Shown in the help overlay so "what is
+    /// this panel" and "where did it go" are answered in the same place.
+    pub help: &'static str,
     pub region: RegionId,
     pub scope: Scope,
     pub weight: Weight,

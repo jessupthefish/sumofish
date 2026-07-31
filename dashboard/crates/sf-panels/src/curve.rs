@@ -19,6 +19,8 @@ const GAUGE_W: u16 = 3;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("curve"),
     title: "evaluation",
+    keybind: None,
+    help: "the evaluation, as a number, a gauge, and a chart that cannot lie about scale",
     region: RegionId::Rail,
     scope: Scope::FocusedBot,
     weight: Weight::Normal,
@@ -45,12 +47,11 @@ impl Panel for Curve {
         let Some(game) = cx.game() else { return };
         // The engine's OWN curve here, not Stockfish's -- unlike the moves panel.
         // Two instruments disagreeing is information; averaging them is not.
-        let series: Vec<f64> = game.curve.values().map(|v| game.ours(*v) as f64).collect();
-        let now = game
-            .search
-            .as_ref()
-            .map(|s| game.ours(s.wp_white) as f64)
-            .or_else(|| series.last().copied());
+        // White's frame, always, matching every other eval display -- see the
+        // doc comment on `GameState::curve` for why this stopped converting to
+        // "ours" (2026-07-30).
+        let series: Vec<f64> = game.curve.values().map(|v| *v as f64).collect();
+        let now = game.search.as_ref().map(|s| s.wp_white as f64).or_else(|| series.last().copied());
 
         if variant == VariantId::Line {
             let text = now.map(|v| advantage(v)).unwrap_or_else(|| "--".into());

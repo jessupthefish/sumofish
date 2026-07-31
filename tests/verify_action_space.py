@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verify `rust/src/action_space.rs` still matches `chessgpu/tokenizer.py`.
+"""Verify `rust/src/action_space.rs` still matches `sumofish/tokenizer.py`.
 
 The Rust table is GENERATED from the Python one (see `gen_action_space.py`), so
 the risk is not a bad translation, it is a STALE file: the tokenizer changes and
@@ -17,11 +17,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "tokenizer.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "tokenizer.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.tokenizer import ACTION_BY_MOVE_KEY, NUM_ACTIONS  # noqa: E402
+from sumofish.tokenizer import ACTION_BY_MOVE_KEY, NUM_ACTIONS  # noqa: E402
 
 SRC = ROOT / "rust" / "src" / "action_space.rs"
 

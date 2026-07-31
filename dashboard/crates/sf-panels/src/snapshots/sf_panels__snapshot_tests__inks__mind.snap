@@ -3,7 +3,8 @@ source: crates/sf-panels/src/snapshot_tests.rs
 expression: map
 ---
 AfffffffffffffffAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-A           ..ffffffddd...G..................................A
+A............................................................A
+AAAAAAAAAAAA..ffffffdddddd...G...............................A
 AddddddCCCCCCCC..................ddddddddddddddddd...........A
 Addddddffffffddddddddddddfffffddddddddffffffdddddddddfff.....A
 AdddddddddddddddddWWCCCCCCCCCCCCCCCC.........................A
@@ -11,7 +12,6 @@ A............................................................A
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAddddddddddddddddddddddddd..A
 Addddddddddddddddddddddd..........ddddddddddddddddddddddddd..A
 Adddddddddddd.....................ddddddddddddddddddddddddd..A
-A............................................................A
 A............................................................A
 A............................................................A
 A............................................................A

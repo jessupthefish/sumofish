@@ -30,13 +30,13 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from chessgpu.data import make_loader
-from chessgpu.hlgauss import HLGauss
-from chessgpu.hlgauss import loss as hl_loss
-from chessgpu.evaluate import evaluate_puzzles, load_puzzles
-from chessgpu.model import PRESETS, ChessTransformer, build
-from chessgpu.policy import NeuralPolicy
-from chessgpu.value_policy import ValuePolicy
+from sumofish.data import make_loader
+from sumofish.hlgauss import HLGauss
+from sumofish.hlgauss import loss as hl_loss
+from sumofish.evaluate import evaluate_puzzles, load_puzzles
+from sumofish.model import PRESETS, ChessTransformer, build
+from sumofish.policy import NeuralPolicy
+from sumofish.value_policy import ValuePolicy
 
 ROOT = Path(__file__).resolve().parent
 

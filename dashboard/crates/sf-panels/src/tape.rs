@@ -16,6 +16,8 @@ pub struct Tape;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("tape"),
     title: "event log",
+    keybind: None,
+    help: "things as they happened",
     // Under the board, which is where the Python put it and where the eye is
     // already looking.
     region: RegionId::Board,

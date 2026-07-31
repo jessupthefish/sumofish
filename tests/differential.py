@@ -79,7 +79,7 @@ def fens_from_bag(limit: int) -> list[str]:
     """
     # The bags live in the main checkout; a worktree starts without data/,
     # since it is gitignored. Try the sibling checkout before giving up.
-    for root in (ROOT, ROOT.parent / "chess-gpu"):
+    for root in (ROOT, ROOT.parent / "sumofish"):
         bag = root / "data/train/state_value_data.bag"
         if not bag.exists():
             continue
@@ -89,9 +89,9 @@ def fens_from_bag(limit: int) -> list[str]:
             # wrong made the harness fall back to random play SILENTLY, which
             # is worse than failing: random games are far tamer than real
             # positions, so coverage collapses without the output changing.
-            from chessgpu.bagz import BagReader, decode_state_value
+            from sumofish.bagz import BagReader, decode_state_value
         except Exception as exc:
-            print(f"  (bag present but chessgpu not importable: {exc})")
+            print(f"  (bag present but sumofish not importable: {exc})")
             break
 
         reader = BagReader(str(bag))

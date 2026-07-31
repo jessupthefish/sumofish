@@ -25,13 +25,13 @@ import numpy as np
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "mcts.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.mcts import MCTS, _softmax_over_legal  # noqa: E402
+from sumofish.mcts import MCTS, _softmax_over_legal  # noqa: E402
 
-from chessgpu.tokenizer import ACTION_BY_MOVE_KEY, move_key  # noqa: E402
+from sumofish.tokenizer import ACTION_BY_MOVE_KEY, move_key  # noqa: E402
 
 from identity_search import (  # noqa: E402
     MockPolicy,

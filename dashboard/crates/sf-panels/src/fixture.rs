@@ -36,7 +36,7 @@ fn cfg() -> Arc<BotConfig> {
         id: bot_id(),
         user: "SumoFish".into(),
         label: "live v1".into(),
-        unit: Some("chess-gpu-bot.service".into()),
+        unit: Some("sumofish-bot.service".into()),
         telemetry: "/dev/null".into(),
         pgn_dir: None,
         versions: None,
@@ -83,6 +83,60 @@ pub fn populated(now: Instant) -> AppState {
         },
         now,
     );
+
+    // --- rating history, real recorded values from `logs/rating.jsonl` ---
+    let deployed = || {
+        Some(Deployed {
+            engine: Some("sumofish-search".into()),
+            policy: Some("02c3b473".into()),
+            value: Some("31e1e7da".into()),
+            current: Some("df08dae8".into()),
+        })
+    };
+    let sample = |at: &str, bullet: i32, rapid: i32| RatingSample {
+        at: at.parse().expect("a valid timestamp"),
+        perfs: {
+            let mut m = IndexMap::new();
+            m.insert(
+                "bullet".to_string(),
+                Perf { rating: bullet, games: 38, rd: 69, provisional: false, prog: 0 },
+            );
+            m.insert(
+                "rapid".to_string(),
+                Perf { rating: rapid, games: 49, rd: 62, provisional: false, prog: 0 },
+            );
+            m
+        },
+        deployed: deployed(),
+    };
+    apply(
+        &mut st,
+        Update::RatingLog {
+            bot: bot.clone(),
+            samples: vec![
+                sample("2026-07-30T07:53:31Z", 1950, 2358),
+                sample("2026-07-30T08:08:31Z", 1950, 2366),
+                sample("2026-07-30T08:23:32Z", 1950, 2366),
+            ],
+        },
+        now,
+    );
+
+    // --- the bot's own raw journal, absorbed from `sumofish log` ---
+    for (level, text) in [
+        (LogLevel::Info, "Got move f8g7 from the engine"),
+        (LogLevel::Info, "Entering game loop"),
+        (LogLevel::Warn, "Retrying account/playing after a 429"),
+    ] {
+        apply(
+            &mut st,
+            Update::BotLog {
+                bot: bot.clone(),
+                entry: LogEntry { at: wall(), level, text: text.into() },
+            },
+            now,
+        );
+    }
 
     // --- a game in progress: a real midgame from the bot's own log ---
     const START: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -267,11 +321,11 @@ pub fn populated(now: Instant) -> AppState {
     apply(
         &mut st,
         Update::Units(vec![
-            unit("chess-gpu-bot.service", "loaded", "active", "running"),
-            unit("chess-gpu-lab.service", "loaded", "inactive", "dead"),
+            unit("sumofish-bot.service", "loaded", "active", "running"),
+            unit("sumofish-lab.service", "loaded", "inactive", "dead"),
             // The state the Python drew as a permanently red dot.
-            unit("chess-gpu-train.service", "not-found", "inactive", "dead"),
-            unit("chess-gpu-watchdog.timer", "loaded", "active", "waiting"),
+            unit("sumofish-train.service", "not-found", "inactive", "dead"),
+            unit("sumofish-watchdog.timer", "loaded", "active", "waiting"),
         ]),
         now,
     );
@@ -309,6 +363,15 @@ pub fn populated(now: Instant) -> AppState {
         }),
         now,
     );
+    // The training unit's own raw journal, absorbed from `sumofish train`. One
+    // ordinary line and one error, so the panel's new "recent problem" row is
+    // actually exercised rather than snapshotting its own absence.
+    for (level, text) in [
+        (LogLevel::Info, "step 68000 loss 2.72206"),
+        (LogLevel::Error, "CUDA out of memory: tried to allocate 512.00 MiB"),
+    ] {
+        apply(&mut st, Update::TrainLog(LogEntry { at: wall(), level, text: text.into() }), now);
+    }
 
     // --- the lab ---
     apply(
@@ -425,9 +488,9 @@ pub fn populated(now: Instant) -> AppState {
         Update::Results {
             bot: bot.clone(),
             games: vec![
-                finished("Z-O_AspenLabs", "win", Some(5), "normal"),
-                finished("Ghidorah_X", "none", None, "abandoned"),
-                finished("rorschach-bot", "loss", Some(-7), "time forfeit"),
+                finished("Z-O_AspenLabs", "win", Some(5), "normal", false),
+                finished("Ghidorah_X", "none", None, "abandoned", true),
+                finished("rorschach-bot", "loss", Some(-7), "time forfeit", true),
             ],
         },
         now,
@@ -531,11 +594,12 @@ fn job(id: &str, status: LabStatus, detail: &str) -> LabJob {
     }
 }
 
-fn finished(opponent: &str, result: &str, delta: Option<i32>, reason: &str) -> FinishedGame {
+fn finished(opponent: &str, result: &str, delta: Option<i32>, reason: &str, is_bot: bool) -> FinishedGame {
     FinishedGame {
         id: None,
         opponent: opponent.into(),
         opponent_rating: Some(2100),
+        opponent_is_bot: is_bot,
         result: result.into(),
         reason: reason.into(),
         our_colour: Some(shakmaty::Color::White),

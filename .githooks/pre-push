@@ -8,7 +8,7 @@
 # a boundary that means nothing, which is worse than not scoping it.
 #
 # So the trigger is the three things that actually change the player:
-#   chessgpu/            the engine and the search
+#   sumofish/            the engine and the search
 #   config/lichess-bot.yml   the time control and what it accepts
 #   the deployed checkpoint   (tracked via VERSIONS.jsonl, not the file itself)
 #
@@ -22,7 +22,7 @@ LAST_SHA=$(tail -1 "$REG" | python3 -c 'import json,sys; print(json.load(sys.std
 LAST_VER=$(tail -1 "$REG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null) || exit 0
 
 git merge-base --is-ancestor "$LAST_SHA" HEAD 2>/dev/null || exit 0
-CHANGED=$(git diff --name-only "$LAST_SHA..HEAD" -- chessgpu/ config/lichess-bot.yml 2>/dev/null)
+CHANGED=$(git diff --name-only "$LAST_SHA..HEAD" -- sumofish/ config/lichess-bot.yml 2>/dev/null)
 
 if [ -n "$CHANGED" ]; then
   echo

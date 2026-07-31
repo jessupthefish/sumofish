@@ -4,5 +4,5 @@
 #   sumofish-games --since 12h     overnight
 #   sumofish-games --losses        only the defeats, for reading afterwards
 set -euo pipefail
-ROOT=/home/nomad/dev/active/chess-gpu
+ROOT=/home/nomad/dev/active/sumofish
 exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" "$ROOT/scripts/games.py" "$@"

@@ -3,5 +3,4 @@ source: crates/sf-panels/src/snapshot_tests.rs
 expression: as_text(&buf)
 ---
  SUMOFISH  live v1 ● lichess  in v1
- rapid 2365±63 bullet 1950±69   7W 2D 4L
 ──────────────────────────────────────────────────────────────

@@ -36,7 +36,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use sf_model::state::{MoveOrigin, TapeEntry, TapeKind};
+use sf_model::state::{LogEntry, LogLevel, MoveOrigin, TapeEntry, TapeKind};
 use sf_model::{BotId, GameId, Update};
 use std::collections::VecDeque;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -184,7 +184,18 @@ fn parse_num(s: &str) -> Option<i32> {
 /// Strip `rich`'s timestamp, level and source-file columns, which are padding rather
 /// than content and which break naive matching.
 fn strip_rich(s: &str) -> String {
+    strip_rich_with_level(s).1
+}
+
+/// Same stripping, plus the level word it found -- the signal the raw log panels
+/// use to flag a line without re-parsing it. Lines with no explicit level word
+/// (a bare traceback, a line lichess-bot did not emit through `rich` at all) are
+/// promoted from the `Info` default when they contain an unmistakable marker of
+/// their own, so a crash is not filed under "info" just because nothing printed
+/// the word ERROR next to it.
+fn strip_rich_with_level(s: &str) -> (LogLevel, String) {
     let mut out = s.to_string();
+    let mut level = LogLevel::Info;
     // A leading "[07/28/26 18:53:05] " stamp -- and ONLY that. An earlier version
     // stripped any leading bracket, which ate the "[watchdog] " prefix that every
     // watchdog event is identified by, so restarts and stuck games both went
@@ -198,10 +209,17 @@ fn strip_rich(s: &str) -> String {
         }
     }
     // A leading level word.
-    for level in ["INFO ", "WARNING ", "ERROR ", "DEBUG ", "CRITICAL "] {
+    for (word, lvl) in [
+        ("INFO ", LogLevel::Info),
+        ("WARNING ", LogLevel::Warn),
+        ("ERROR ", LogLevel::Error),
+        ("DEBUG ", LogLevel::Info),
+        ("CRITICAL ", LogLevel::Error),
+    ] {
         let t = out.trim_start();
-        if let Some(rest) = t.strip_prefix(level) {
+        if let Some(rest) = t.strip_prefix(word) {
             out = rest.to_string();
+            level = lvl;
             break;
         }
     }
@@ -212,7 +230,15 @@ fn strip_rich(s: &str) -> String {
             out.truncate(i);
         }
     }
-    out.trim().to_string()
+    out = out.trim().to_string();
+    if level == LogLevel::Info
+        && (out.contains("Traceback (most recent call last)")
+            || out.contains("Exception")
+            || out.contains("CUDA out of memory"))
+    {
+        level = LogLevel::Error;
+    }
+    (level, out)
 }
 
 fn squash(s: &str) -> String {
@@ -228,14 +254,23 @@ fn last_game_id(window: &VecDeque<String>) -> Option<GameId> {
 }
 
 /// Follows one unit's journal.
+///
+/// `bot: None` means a global (not per-bot) unit -- currently only the training
+/// unit. In that mode the semantic classification below (`Parser`, tape entries,
+/// watchdog counting) is skipped entirely: it exists to recognize lichess-bot's
+/// own log shapes, and training logs are a different program. What is never
+/// skipped is the raw line itself: every line read, regardless of whether
+/// `Parser` recognizes anything in it, becomes an `Update::BotLog` or
+/// `Update::TrainLog` -- the thing `sumofish log`/`sumofish train` used to show
+/// and that `Parser`'s handful of recognized patterns otherwise drop silently.
 pub struct JournalSource {
     unit: String,
-    bot: BotId,
+    bot: Option<BotId>,
     child: Option<Child>,
 }
 
 impl JournalSource {
-    pub fn new(unit: impl Into<String>, bot: BotId) -> Self {
+    pub fn new(unit: impl Into<String>, bot: Option<BotId>) -> Self {
         JournalSource { unit: unit.into(), bot, child: None }
     }
 
@@ -280,6 +315,22 @@ impl JournalSource {
             if text.is_empty() {
                 continue;
             }
+
+            // The raw line, unconditionally -- this is what a raw log panel
+            // shows, and it must not depend on `Parser` recognizing anything.
+            let (level, stripped) = strip_rich_with_level(&text);
+            let entry = LogEntry { at: j.at(), level, text: stripped };
+            let raw_update = match &self.bot {
+                Some(bot) => Update::BotLog { bot: bot.clone(), entry },
+                None => Update::TrainLog(entry),
+            };
+            if tx.send(raw_update).await.is_err() {
+                return Ok(());
+            }
+
+            // The semantic classification below is lichess-bot-log-shaped and
+            // only makes sense for a per-bot unit.
+            let Some(bot) = self.bot.clone() else { continue };
             let Some(event) = parser.feed(&text) else { continue };
             match &event {
                 Event::WatchdogRestart => {
@@ -293,13 +344,13 @@ impl JournalSource {
                 event,
                 Event::WatchdogRestart | Event::WatchdogStuck { .. }
             );
-            for u in self.to_updates(event, j.at(), &mut last_uci) {
+            for u in self.to_updates(&bot, event, j.at(), &mut last_uci) {
                 if tx.send(u).await.is_err() {
                     return Ok(());
                 }
             }
             if counted {
-                let u = Update::Watchdog { bot: self.bot.clone(), state: watchdog.clone() };
+                let u = Update::Watchdog { bot: bot.clone(), state: watchdog.clone() };
                 if tx.send(u).await.is_err() {
                     return Ok(());
                 }
@@ -310,20 +361,20 @@ impl JournalSource {
 
     fn to_updates(
         &self,
+        bot: &BotId,
         e: Event,
         at: jiff::Timestamp,
         last_uci: &mut Option<String>,
     ) -> Vec<Update> {
-        let tape = |kind, text: String| {
-            Update::Tape(TapeEntry { at, kind, bot: Some(self.bot.clone()), text })
-        };
+        let tape =
+            |kind, text: String| Update::Tape(TapeEntry { at, kind, bot: Some(bot.clone()), text });
         match e {
             Event::Tablebase { game, uci, wdl, dtz, dtm } => {
                 *last_uci = Some(uci.clone());
                 let mut v = Vec::new();
                 if let Some(g) = game {
                     v.push(Update::MoveOrigin {
-                        bot: self.bot.clone(),
+                        bot: bot.clone(),
                         game: g,
                         uci: uci.clone(),
                         origin: MoveOrigin::Tablebase,
@@ -445,7 +496,7 @@ mod tests {
     fn a_watchdog_kill_is_recognised() {
         let mut p = Parser::default();
         assert_eq!(
-            p.feed("[watchdog] restarting chess-gpu-bot.service (SIGKILL: the game loop is already dead)"),
+            p.feed("[watchdog] restarting sumofish-bot.service (SIGKILL: the game loop is already dead)"),
             Some(Event::WatchdogRestart)
         );
     }

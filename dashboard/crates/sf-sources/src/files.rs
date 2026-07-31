@@ -461,7 +461,7 @@ pub fn read_results(dir: &Path, user: &str, since: Option<jiff::Timestamp>) -> R
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        for block in text.split("\n\n\n") {
+        for block in split_pgn_games(&text) {
             if let Some(g) = parse_pgn_headers(block, user) {
                 if since.is_none_or(|s| g.at.is_none_or(|a| a >= s)) {
                     out.push(g);
@@ -473,6 +473,35 @@ pub fn read_results(dir: &Path, user: &str, since: Option<jiff::Timestamp>) -> R
     out.sort_by_key(|g| std::cmp::Reverse(g.at.map(|t| t.as_second()).unwrap_or(0)));
     out.truncate(40);
     Ok(out)
+}
+
+/// Split a PGN file's text into one slice per game.
+///
+/// Not `text.split("\n\n\n")` -- that was the actual bug, found live
+/// 2026-07-31: every one-game-per-file PGN parsed fine (nothing to split),
+/// which is all this was ever exercised against, but the real rolling log
+/// (`SumoFish games.pgn`, 249 games, appended continuously) uses one blank
+/// line between games, the ordinary PGN convention, not two. Splitting on
+/// three newlines found exactly one match in that entire 762KB file, so the
+/// whole thing came back as effectively one "block", and `parse_pgn_headers`
+/// scanning it just kept overwriting each header key as it went -- 248 of
+/// 249 games silently disappeared, and the one that survived was whichever
+/// game's headers happened to be read last, not the most recent. `[Event `
+/// is the one thing that unambiguously starts a new game regardless of
+/// which blank-line convention wrote the file.
+fn split_pgn_games(text: &str) -> Vec<&str> {
+    let starts: Vec<usize> = text.match_indices("[Event ").map(|(i, _)| i).collect();
+    if starts.is_empty() {
+        return vec![text];
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| {
+            let end = starts.get(i + 1).copied().unwrap_or(text.len());
+            &text[start..end]
+        })
+        .collect()
 }
 
 fn parse_pgn_headers(block: &str, user: &str) -> Option<FinishedGame> {
@@ -516,6 +545,9 @@ fn parse_pgn_headers(block: &str, user: &str) -> Option<FinishedGame> {
         opponent_rating: h
             .get(if we_are_white { "BlackElo" } else { "WhiteElo" })
             .and_then(|s| s.parse().ok()),
+        opponent_is_bot: h
+            .get(if we_are_white { "BlackTitle" } else { "WhiteTitle" })
+            .is_some_and(|s| s.eq_ignore_ascii_case("BOT")),
         result: result.into(),
         reason: h.get("Termination").map(|s| s.to_lowercase()).unwrap_or_default(),
         our_colour: Some(if we_are_white { shakmaty::Color::White } else { shakmaty::Color::Black }),
@@ -815,5 +847,46 @@ mod tests {
         assert!(parse_pgn_headers("", "SumoFish").is_none());
         assert!(parse_pgn_headers("just some text", "SumoFish").is_none());
         assert!(parse_pgn_headers("[White \"a\"]", "SumoFish").is_none());
+    }
+
+    /// The bug found live 2026-07-31: the real rolling log (`SumoFish
+    /// games.pgn`, 249 games, appended continuously by the bot) separates
+    /// games with one blank line, the ordinary PGN convention -- not two.
+    /// Every fixture and every file this had ever been tested against was a
+    /// single game, so splitting on a separator that essentially never
+    /// occurs looked fine right up until it silently dropped 248 of 249
+    /// real games.
+    #[test]
+    fn split_pgn_games_splits_on_event_boundaries_not_blank_line_count() {
+        let second = PGN.replace("wP3dAROt", "anotherId");
+        let two_games = format!("{PGN}\n\n{second}");
+        let blocks = split_pgn_games(&two_games);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "two games joined by a single blank line, the ordinary PGN convention, must split into two blocks:\n{two_games}"
+        );
+        assert!(blocks[0].contains("wP3dAROt"));
+        assert!(blocks[1].contains("anotherId"));
+    }
+
+    #[test]
+    fn a_single_game_file_still_splits_into_exactly_one_block() {
+        assert_eq!(split_pgn_games(PGN), vec![PGN]);
+    }
+
+    #[test]
+    fn read_results_finds_every_game_in_a_rolling_multi_game_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let second = PGN.replace("wP3dAROt", "secondId").replace(r#""00:53:17""#, r#""01:00:00""#);
+        let third = PGN.replace("wP3dAROt", "thirdId").replace(r#""00:53:17""#, r#""02:00:00""#);
+        let log = format!("{PGN}\n\n{second}\n\n{third}");
+        std::fs::write(dir.path().join("SumoFish games.pgn"), &log).unwrap();
+
+        let games = read_results(dir.path(), "SumoFish", None).unwrap();
+        assert_eq!(games.len(), 3, "all three games in the rolling log must be found, not just one:\n{log}");
+        let ids: std::collections::HashSet<_> =
+            games.iter().filter_map(|g| g.id.as_ref().map(|i| i.0.clone())).collect();
+        assert_eq!(ids.len(), 3, "each game must keep its own identity, not collapse onto whichever header was read last");
     }
 }

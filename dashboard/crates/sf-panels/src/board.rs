@@ -35,6 +35,8 @@ const GUTTER: u16 = 1;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("board"),
     title: "board",
+    keybind: None,
+    help: "the live position",
     region: RegionId::Board,
     scope: Scope::FocusedBot,
     // Pinned: a chess dashboard without the board is not the thing.
@@ -148,7 +150,7 @@ impl Panel for BoardPanel {
         player_block(buf, area, area.y, &game.opponent.username, opponent_rating(game), game, false, cx);
         if bottom < area.y + area.height {
             let us = cx.bot_state().map(|b| b.cfg.user.clone()).unwrap_or_default();
-            player_block(buf, area, bottom, &us, None, game, true, cx);
+            player_block(buf, area, bottom, &us, our_rating(game, cx), game, true, cx);
         }
 
         // Nothing is drawn over the picture's cells. With kitty graphics that is not
@@ -161,6 +163,15 @@ impl Panel for BoardPanel {
 
 fn opponent_rating(game: &sf_model::GameState) -> Option<i32> {
     game.opponent.rating
+}
+
+/// Our own rating for this game's time control, so the name we're playing
+/// under carries a number the same way the opponent's already does -- the
+/// opponent block has shown a rating since the panel's first version, ours
+/// showed nothing at all.
+fn our_rating(game: &sf_model::GameState, cx: &Cx<'_>) -> Option<i32> {
+    let (account, _) = cx.bot_state()?.account.get(cx.now)?;
+    account.perfs.get(&game.speed).map(|p| p.rating)
 }
 
 /// One player's two rows: name, rating and clock, then captured material.
@@ -177,22 +188,31 @@ fn player_block(
     if y >= area.y + area.height {
         return;
     }
+    // Whose row this is, in chess terms, and whether it's their move right
+    // now -- the one thing that actually distinguishes the two rows. Every
+    // span below uses this same `running` check for both "us" and the
+    // opponent, rather than `is_us` picking a permanently different style
+    // for our own row: the two rows must read identically apart from
+    // whichever one is actually to move, reported directly 2026-07-31 (the
+    // opponent's row was always plain and ours was always accented,
+    // regardless of the clock).
+    let colour = if is_us { game.our_colour } else { !game.our_colour };
+    let running = game.clocks.ticking == Some(colour);
+
     let mut spans = vec![Span::styled(
         truncate(if name.is_empty() { "?" } else { name }, 20),
-        if is_us { Styles::accent() } else { Styles::body() },
+        if running { Styles::accent() } else { Styles::body() },
     )];
     if let Some(r) = rating {
         spans.push(Span::styled(format!(" {r}"), Styles::dim()));
     }
     // The clock for this side. `ticking` says whose it is, so a stopped clock is
     // visibly stopped rather than merely not changing.
-    let colour = if is_us { game.our_colour } else { !game.our_colour };
     let clock = match colour {
         shakmaty::Color::White => game.clocks.white,
         shakmaty::Color::Black => game.clocks.black,
     };
     if let Some(d) = clock {
-        let running = game.clocks.ticking == Some(colour);
         spans.push(Span::styled(
             format!("   {}", clockstr(d)),
             if running { Styles::accent() } else { Styles::dim() },
@@ -204,4 +224,85 @@ fn player_block(
 /// A full FEN string for a position, for the picture request.
 fn shakmaty_fen(pos: &shakmaty::Chess) -> String {
     shakmaty::fen::Fen::from_position(pos, shakmaty::EnPassantMode::Always).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sf_model::state::{Account, BotConfig, BotState, Perf};
+    use sf_model::{AppState, BotId, GameId, GameState};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// The regression this was added for: the opponent block has carried a
+    /// rating since the panel's first version, ours showed nothing at all
+    /// because `player_block` was always called with a hardcoded `None`.
+    #[test]
+    fn our_rating_reads_the_perf_matching_the_games_speed() {
+        let cfg = Arc::new(BotConfig {
+            id: BotId("sumofish".into()),
+            user: "SumoFish".into(),
+            label: String::new(),
+            unit: None,
+            telemetry: "/dev/null".into(),
+            pgn_dir: None,
+            versions: None,
+            rating_log: None,
+            watch: true,
+        });
+        let mut bot = BotState::new(cfg);
+        let now = Instant::now();
+        let mut account = Account::default();
+        account.perfs.insert("blitz".into(), Perf { rating: 2201, games: 10, rd: 40, provisional: false, prog: 0 });
+        account.perfs.insert("bullet".into(), Perf { rating: 1950, games: 30, rd: 60, provisional: false, prog: 0 });
+        bot.account.set(account, now);
+
+        let mut game = GameState::new(GameId("g1".into()), shakmaty::Color::White);
+        game.speed = "blitz".into();
+
+        let mut st = AppState::default();
+        let id = bot.cfg.id.clone();
+        st.bots.insert(id.clone(), bot);
+        st.focus = Some(id);
+        let cx = Cx { state: &st, now, wall: jiff::Timestamp::UNIX_EPOCH, bot: None, frame: 0, picture: None };
+
+        assert_eq!(our_rating(&game, &cx), Some(2201), "must pick the perf matching the game's own speed, not just any perf");
+    }
+
+    /// The regression this was added for: the opponent's row was always
+    /// plain and our own row was always accented, regardless of whose move
+    /// it actually was -- reported directly 2026-07-31. Highlighting must
+    /// follow `ticking`, the same rule the clock already used, not `is_us`.
+    #[test]
+    fn the_active_players_row_is_highlighted_whichever_side_it_is() {
+        let mut game = GameState::new(GameId("g1".into()), shakmaty::Color::White);
+        game.clocks = sf_model::state::Clocks {
+            white: Some(std::time::Duration::from_secs(300)),
+            black: Some(std::time::Duration::from_secs(280)),
+            as_of: None,
+            source: None,
+            ticking: Some(shakmaty::Color::Black), // the opponent's move, not ours
+        };
+
+        let st = AppState::default();
+        let cx = Cx { state: &st, now: Instant::now(), wall: jiff::Timestamp::UNIX_EPOCH, bot: None, frame: 0, picture: None };
+
+        let area = Rect { x: 0, y: 0, width: 40, height: 4 };
+        let mut buf = Buffer::empty(area);
+        player_block(&mut buf, area, 0, "Foe", None, &game, false, &cx);
+        player_block(&mut buf, area, 1, "SumoFish", None, &game, true, &cx);
+
+        let accent = sf_theme::ACCENT.color();
+        let body = sf_theme::FG.color();
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, accent, "the opponent is to move and must be highlighted");
+        assert_eq!(buf.cell((0, 1)).unwrap().fg, body, "we are NOT to move and must be plain, same as any inactive row");
+
+        // Flip whose move it is and confirm the highlight follows, not `is_us`.
+        game.clocks.ticking = Some(shakmaty::Color::White);
+        let mut buf = Buffer::empty(area);
+        player_block(&mut buf, area, 0, "Foe", None, &game, false, &cx);
+        player_block(&mut buf, area, 1, "SumoFish", None, &game, true, &cx);
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, body, "the opponent is no longer to move");
+        assert_eq!(buf.cell((0, 1)).unwrap().fg, accent, "now it's our move, and OUR row is the one that highlights");
+    }
 }

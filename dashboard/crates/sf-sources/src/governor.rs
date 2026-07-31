@@ -166,7 +166,8 @@ impl Bucket {
 /// that the effective interval degrades as bots are added, so it must be visible.
 #[derive(Clone, Debug, Default)]
 pub struct GovernorStatus {
-    pub per_endpoint: Vec<(Endpoint, u32, u32, u32)>, // endpoint, used, rpm, throttles
+    // endpoint, used, rpm, throttles, penalty_until (if currently in the box)
+    pub per_endpoint: Vec<(Endpoint, u32, u32, u32, Option<Instant>)>,
     pub in_flight: Option<Endpoint>,
     pub penalised: Vec<Endpoint>,
 }
@@ -176,7 +177,7 @@ impl From<GovernorStatus> for sf_model::state::ApiState {
         let mut endpoints = indexmap::IndexMap::new();
         let mut total = 0;
         let mut throttled = 0;
-        for (e, used, rpm, thr) in &g.per_endpoint {
+        for (e, used, rpm, thr, penalty_until) in &g.per_endpoint {
             total += used;
             throttled += thr;
             endpoints.insert(
@@ -200,7 +201,16 @@ impl From<GovernorStatus> for sf_model::state::ApiState {
                     effective_interval: (*used >= *rpm && *rpm > 0)
                         .then(|| Duration::from_secs_f64(60.0 / *used as f64)),
                     last_429: None,
-                    penalty_until: None,
+                    // Was hardcoded `None` here, always -- so the `api` panel's
+                    // "BACKING OFF" indicator (which checks exactly this field)
+                    // could never fire regardless of whether an endpoint was
+                    // actually in the penalty box. `Bucket` tracked the real
+                    // value the whole time; it just never crossed this
+                    // conversion. Found chasing a real report of `moves`
+                    // lagging by close to a minute at a time -- exactly the
+                    // GameExport penalty duration -- with nothing on screen
+                    // explaining why. 2026-07-30.
+                    penalty_until: penalty_until.map(std::time::Instant::from),
                 },
             );
         }
@@ -250,7 +260,8 @@ impl Governor {
         for e in Endpoint::ALL {
             if let Some(b) = self.buckets.get_mut(&e) {
                 b.prune(now);
-                per.push((e, b.calls.len() as u32, b.rpm, b.throttles));
+                let penalty_until = b.penalty_until.filter(|u| *u > now);
+                per.push((e, b.calls.len() as u32, b.rpm, b.throttles, penalty_until));
             }
         }
         let penalised = Endpoint::ALL
@@ -515,11 +526,41 @@ mod tests {
         let mut gov = Governor::new(Duration::from_millis(1), fetcher);
         let s = gov.status();
         assert_eq!(s.per_endpoint.len(), Endpoint::ALL.len());
-        for (e, used, rpm, throttles) in s.per_endpoint {
+        for (e, used, rpm, throttles, penalty_until) in s.per_endpoint {
             assert_eq!(used, 0);
             assert_eq!(rpm, e.default_rpm());
             assert_eq!(throttles, 0);
+            assert_eq!(penalty_until, None, "nothing has been throttled yet");
         }
+    }
+
+    /// THE FIX: a penalised endpoint's `penalty_until` must survive the
+    /// `status()` call and land in the field the `api` panel actually reads.
+    /// Before this, it was hardcoded to `None` in the `GovernorStatus ->
+    /// ApiState` conversion, so `api.rs`'s "BACKING OFF" indicator could
+    /// never fire no matter what the bucket was actually doing.
+    #[tokio::test(start_paused = true)]
+    async fn a_penalised_endpoint_reports_its_penalty_until() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fetcher =
+            Arc::new(Counting { calls, throttle_after: Some(0), seen: AtomicU32::new(0) });
+        let (report_tx, report_rx) = tokio::sync::watch::channel(GovernorStatus::default());
+        let (tx, rx) = mpsc::channel(16);
+        let gov = Governor::new(Duration::from_millis(1), fetcher).reporting(report_tx);
+        tokio::spawn(gov.run(rx));
+        let api = Api::new(tx);
+
+        let first = api.get(Endpoint::GameExport, "/x", None).await;
+        assert!(matches!(first, Err(FetchError::Throttled)));
+
+        let s = report_rx.borrow().clone();
+        let (_, _, _, _, penalty_until) = s
+            .per_endpoint
+            .iter()
+            .find(|(e, ..)| *e == Endpoint::GameExport)
+            .expect("GameExport is always reported");
+        assert!(penalty_until.is_some(), "a 429'd endpoint must report a real penalty_until");
+        assert!(s.penalised.contains(&Endpoint::GameExport));
     }
 }
 
@@ -529,7 +570,7 @@ mod status_tests {
 
     fn status(used: u32, rpm: u32) -> sf_model::state::ApiState {
         GovernorStatus {
-            per_endpoint: vec![(Endpoint::AccountPlaying, used, rpm, 0)],
+            per_endpoint: vec![(Endpoint::AccountPlaying, used, rpm, 0, None)],
             in_flight: None,
             penalised: vec![],
         }

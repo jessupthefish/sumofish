@@ -28,12 +28,12 @@ import chess, torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from chessgpu.engines.neural_engine import load_policy      # noqa: E402
-from chessgpu.hlgauss import HLGauss                        # noqa: E402
-from chessgpu.mcts import MCTS                              # noqa: E402
-from chessgpu.model import ChessTransformer, ModelConfig    # noqa: E402
-from chessgpu.rust_mcts import RustMCTS                     # noqa: E402
-from chessgpu.value_policy import ValuePolicy               # noqa: E402
+from sumofish.engines.neural_engine import load_policy      # noqa: E402
+from sumofish.hlgauss import HLGauss                        # noqa: E402
+from sumofish.mcts import MCTS                              # noqa: E402
+from sumofish.model import ChessTransformer, ModelConfig    # noqa: E402
+from sumofish.rust_mcts import RustMCTS                     # noqa: E402
+from sumofish.value_policy import ValuePolicy               # noqa: E402
 
 
 def load_nets(device="cuda:0"):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Oracle 5: the Stage C acceptance test. A byte-identical visit vector.
 
-Runs the REAL `chessgpu.mcts.MCTS` and the Rust `sumofish_core.Mcts` on the same
+Runs the REAL `sumofish.mcts.MCTS` and the Rust `sumofish_core.Mcts` on the same
 position with the same budget, and requires the root visit counts to match
 exactly, move for move, in order.
 
@@ -47,11 +47,11 @@ import numpy as np
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "mcts.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.mcts import MCTS, _softmax_over_legal  # noqa: E402
+from sumofish.mcts import MCTS, _softmax_over_legal  # noqa: E402
 
 ACTION_SPACE = 1968
 
@@ -249,7 +249,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {failures} of {len(games)} visit vectors differ")
         return 1
-    print(f"OK: {len(games)} visit vectors byte-identical to chessgpu.mcts")
+    print(f"OK: {len(games)} visit vectors byte-identical to sumofish.mcts")
     return 0
 
 

@@ -71,7 +71,7 @@ same move into both implementations, and compares the full FEN after every ply.
 5,000 games, 1,374,804 plies, every FEN field identical at every ply
 ```
 
-**4. Terminal parity against `chessgpu/rules.py`** (`tests/terminal_parity.py`).
+**4. Terminal parity against `sumofish/rules.py`** (`tests/terminal_parity.py`).
 Mate, stalemate, insufficient material, fifty-move, threefold. Repetition needs
 help: random legal play essentially never reaches a threefold, so the corpus adds
 deliberate four-move cycles, the same cycles with pawn-move and rook-move
@@ -87,7 +87,7 @@ repeats passes trivially and reports coverage it does not have.
 298,106 plies; 18 threefolds from the cycles, 21 more from biased random play
 ```
 
-**5. Identity against `chessgpu.mcts`** (`tests/identity_search.py`). The Stage C
+**5. Identity against `sumofish.mcts`** (`tests/identity_search.py`). The Stage C
 acceptance test: the REAL Python MCTS and the Rust one, same position, same
 budget, and a **byte-identical root visit vector**, move for move, in order.
 
@@ -211,7 +211,7 @@ k backups -- so the tree ends in exactly the state it would have had: k visits,
 k copies of the value. Only the number of rows asked of the network changes.
 
 Verified: Rust with dedup ON produces **byte-identical visit vectors to
-`chessgpu.mcts`, which has no dedup at all**.
+`sumofish.mcts`, which has no dedup at all**.
 
 One trap, and it is the reason this is a real port rather than a rewrite:
 **backups must still run in DESCENT order.** Grouping them by leaf -- the obvious
@@ -333,7 +333,7 @@ the capture is actually available. On `8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1`, `e4xd
 would expose the black king to `Qh4` along the fourth rank, so python-chess writes
 `-` while a naive port echoes `d3`.
 
-That reaches the network: `chessgpu/tokenizer.py:156-160` gates the ep field on
+That reaches the network: `sumofish/tokenizer.py:156-160` gates the ep field on
 exactly this predicate when building the 77 tokens. Getting it wrong feeds the
 model a different position and changes its evaluation, with no illegal move ever
 played and no test failing. Deciding it requires move generation, so `to_fen`

@@ -29,7 +29,7 @@ and is comparable across every architecture change you can make.
 ## Rules
 
 1. **Only edit `research/train.py`**, and only below the `EDITABLE` line.
-2. **Never touch `chessgpu/`.** The tokenizer is verified byte-exact against
+2. **Never touch `sumofish/`.** The tokenizer is verified byte-exact against
    DeepMind's published implementation over 12,000 real positions. If you
    "improve" it, every number stops being comparable and the pretrained
    checkpoints stop being a valid reference.

@@ -1,0 +1,11 @@
+[Unit]
+Description=SumoFish bot watchdog (detects silently-stalled games)
+After=sumofish-bot.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/home/nomad/.config/sumofish/bot.env
+ExecStart=/home/nomad/dev/active/sumofish/.venv/bin/python /home/nomad/dev/active/sumofish/scripts/watchdog.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-watchdog

@@ -8,7 +8,7 @@ guards against was found live, not by review: `MIN_SECONDS` (the floor,
 "always look at something") was applied AFTER the ceiling clamp
 (`remaining_s * MAX_FRACTION`), so at very low remaining time the floor could
 win and hand back a budget bigger than the side to move's entire remaining
-clock. `chess-gpu-bot.service` plays live blitz/bullet, where a sub-200ms
+clock. `sumofish-bot.service` plays live blitz/bullet, where a sub-200ms
 clock is a real, repeated scramble, not a corner case -- and losing on time
 is a strictly worse outcome than an instamove, per this module's own
 docstring.
@@ -26,8 +26,8 @@ import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chessgpu.engines.search_engine import MAX_FRACTION, MIN_SECONDS, think_time
-from chessgpu.uci import Limits
+from sumofish.engines.search_engine import MAX_FRACTION, MIN_SECONDS, think_time
+from sumofish.uci import Limits
 
 
 def check(name: str, limits: Limits, side: chess.Color, predicate, describe) -> bool:

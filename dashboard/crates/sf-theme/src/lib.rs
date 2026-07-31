@@ -72,9 +72,19 @@ macro_rules! inks {
 
 inks! {
     // --- ground and text ---
-    BG        = "bg",         0x282828;
+    // BG must match the real terminal background or every explicitly-styled
+    // cell (nearly all of them -- every `Styles::*()` function sets `.bg()`)
+    // reads as a lighter patch against whatever's NOT explicitly styled
+    // (inter-panel gaps, the outer margin), which is the terminal's own
+    // default. Checked against the actual profile in use
+    // (`~/.local/share/konsole/GruvboxHard.colorscheme`, `[Background]
+    // Color=29,32,33`): that is `0x1d2021`, not the `0x282828` this used to
+    // hold -- reported directly as "all the text has a softer grey
+    // background", 2026-07-30. Swapped with `BG_HARD`, which held the
+    // correct value already but was never actually applied anywhere.
+    BG        = "bg",         0x1d2021;
     BG_SOFT   = "bg-soft",    0x32302f;
-    BG_HARD   = "bg-hard",    0x1d2021;
+    BG_HARD   = "bg-hard",    0x282828;
     FG        = "fg",         0xebdbb2;
     DIM       = "dim",        0x928374;
     FAINT     = "faint",      0x665c54;
@@ -199,9 +209,13 @@ impl Styles {
     pub fn track(t: Track) -> Style {
         Style::new().fg(t.ink().color()).bg(BG.color())
     }
-    /// The badge in the header: ground and figure swapped.
+    /// The badge in the header. Was ground-and-figure swapped (dark text on a
+    /// solid accent chip); changed 2026-07-30 to coloured text on the same
+    /// background every other panel uses, per direct report that the
+    /// swapped chips read as a mismatched grey/coloured block sitting on top
+    /// of the panel rather than belonging to it.
     pub fn badge() -> Style {
-        Style::new().fg(BG.color()).bg(ACCENT.color()).add_modifier(Modifier::BOLD)
+        Style::new().fg(ACCENT.color()).bg(BG.color()).add_modifier(Modifier::BOLD)
     }
 }
 

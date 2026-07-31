@@ -104,6 +104,11 @@ pub struct BotState {
     /// panel therefore showed a green dot through two SIGKILLs today. Verified
     /// over D-Bus in the M0 probe.
     pub watchdog: Tracked<WatchdogState>,
+    /// The bot's own journal, raw and unfiltered -- what `sumofish log` used to
+    /// shell out to `journalctl -f` for. Distinct from `tape`: most of what a
+    /// process logs matches none of `journal::Parser`'s recognized patterns and
+    /// would otherwise never appear anywhere in the dashboard at all.
+    pub log: LogLines,
 }
 
 impl BotState {
@@ -120,6 +125,7 @@ impl BotState {
             version: Tracked::new("version", s(600)),
             rating_log: Tracked::new("rating_log", s(120)),
             watchdog: Tracked::new("watchdog", s(60)),
+            log: LogLines::default(),
         }
     }
     /// The game to draw, preferring the one we are actually thinking about.
@@ -235,11 +241,17 @@ pub struct GameState {
     pub resolver: Resolver,
     pub clocks: Clocks,
     pub moves: Vec<MoveRec>,
-    /// Win probability **always in White's frame**. MCTS stores values from each
-    /// node's own side-to-move perspective, so a series across alternating plies
-    /// is a sawtooth rather than a trend; and converting per call site meant one
-    /// site got missed and the move list read 0.97 while the chart read 0.03,
-    /// both correct in their own frame. Store one frame, convert once at the edge.
+    /// Win probability **always in White's frame, and displayed that way
+    /// everywhere, deliberately** (2026-07-30): positive is good for White,
+    /// negative is good for Black, matching every other chess tool. An earlier
+    /// design converted this to "our" frame at each display site so a number was
+    /// always positive when SumoFish was winning -- reverted because it silently
+    /// disagreed with the classical convention every other evaluation display
+    /// uses, which read as a wrong number rather than a different one. MCTS
+    /// still stores values from each node's own side-to-move perspective
+    /// upstream of this, so a series across alternating plies would sawtooth if
+    /// stored that way -- this field is where that gets normalized to one fixed
+    /// frame (White's), not "ours".
     pub curve: BTreeMap<Ply, f32>,
     /// Stockfish's whole-game curve, same frame.
     pub sf_curve: BTreeMap<Ply, f32>,
@@ -269,16 +281,6 @@ impl GameState {
     }
     pub fn resolved(&self) -> Option<&Resolved> {
         self.resolver.resolved()
-    }
-    /// Convert a White-framed probability to our side's. **The single conversion
-    /// point.** Everything that shows a probability goes through it: with
-    /// SumoFish playing Black and being mated, two independent conversions read
-    /// 0.97 and 0.03 and the one that happened to be White's said we were winning.
-    pub fn ours(&self, white_frame: f32) -> f32 {
-        match self.our_colour {
-            shakmaty::Color::White => white_frame,
-            shakmaty::Color::Black => 1.0 - white_frame,
-        }
     }
 }
 
@@ -382,6 +384,12 @@ pub struct FinishedGame {
     pub id: Option<GameId>,
     pub opponent: String,
     pub opponent_rating: Option<i32>,
+    /// From the PGN's WhiteTitle/BlackTitle header. lichess bot accounts
+    /// always carry the literal title "BOT" -- this is how a human opponent
+    /// is told apart from one, which matters because it changes what the
+    /// result means (SumoFish is rated against both, but "beat a 2546" reads
+    /// very differently depending on which kind of 2546 it was).
+    pub opponent_is_bot: bool,
     pub result: String,
     pub reason: String,
     pub our_colour: Option<shakmaty::Color>,
@@ -484,7 +492,7 @@ pub struct GpuProc {
 pub struct Unit {
     pub name: String,
     /// `loaded` / `not-found` / `masked`. A distinct state, not an error:
-    /// `chess-gpu-train.service` is not-found and renders as a permanently red
+    /// `sumofish-train.service` is not-found and renders as a permanently red
     /// dot today, which trains you to ignore the row.
     pub load: String,
     pub active: String,
@@ -525,11 +533,15 @@ pub struct Host {
 #[derive(Clone, Debug)]
 pub struct TrainState {
     pub run: Tracked<TrainRun>,
+    /// The training unit's own journal, raw -- absorbed from `sumofish train`'s
+    /// `journalctl -f`. Global rather than per-bot: there is one training run,
+    /// not one per bot watching it.
+    pub log: LogLines,
 }
 
 impl Default for TrainState {
     fn default() -> Self {
-        Self { run: Tracked::new("train", Duration::from_secs(20)) }
+        Self { run: Tracked::new("train", Duration::from_secs(20)), log: LogLines::default() }
     }
 }
 
@@ -800,6 +812,132 @@ pub fn worst(tracks: impl IntoIterator<Item = Track>) -> Track {
     tracks.into_iter().max().unwrap_or(Track::Lost)
 }
 
+// ---------------------------------------------------------------- raw log
+
+/// The severity a journal line carries. Info covers everything with no explicit
+/// level word, which is the common case and never worth flagging on its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// One raw, unfiltered journal line, as `journalctl -f` would show it -- as
+/// opposed to `TapeEntry`, which is a curated event `journal::Parser` recognized.
+/// Most of what a process logs matches none of that parser's patterns and would
+/// otherwise never appear anywhere in the dashboard at all.
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub at: jiff::Timestamp,
+    pub level: LogLevel,
+    pub text: String,
+}
+
+/// A bounded, newest-last ring of raw log lines. Same shape as `Tape`, kept
+/// separate because the two serve different questions: `Tape` is "what
+/// happened", this is "what did the process actually print".
+#[derive(Clone, Debug)]
+pub struct LogLines {
+    entries: std::collections::VecDeque<LogEntry>,
+    cap: usize,
+}
+
+impl Default for LogLines {
+    fn default() -> Self {
+        Self::new(200)
+    }
+}
+
+impl LogLines {
+    pub fn new(cap: usize) -> Self {
+        Self { entries: std::collections::VecDeque::new(), cap }
+    }
+    pub fn push(&mut self, e: LogEntry) {
+        if self.entries.len() >= self.cap {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(e);
+    }
+    /// The most recent `n` lines, oldest first -- for a scrolling display.
+    pub fn tail(&self, n: usize) -> impl Iterator<Item = &LogEntry> {
+        self.entries.iter().skip(self.entries.len().saturating_sub(n))
+    }
+    /// Newest first -- for "what is the latest problem", where scanning from the
+    /// front would mean walking the whole buffer on every frame.
+    pub fn iter_rev(&self) -> impl Iterator<Item = &LogEntry> {
+        self.entries.iter().rev()
+    }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// One glance at everything, for the header. Every `Tracked` field already
+/// carries its own freshness; this reduces the whole `AppState` to a count of
+/// how many are not `Live` right now, and the worst one among them. Pure
+/// composition, no new I/O and no new polling -- it reads exactly the fields
+/// every panel already reads.
+///
+/// A field that has never been fed at all (`Tracked::get` returns `None`) is
+/// **not** counted as degraded. `lab.queue` and `matches.runs` sit at `None`
+/// for an entire session in which no lab job or match ever ran, and that is a
+/// feature not currently in use, not a broken one -- the same distinction
+/// `Lab::relevance` and `Matches::relevance` already draw by returning
+/// `Relevance::Hidden` rather than complaining. Counting it here would make the
+/// header cry wolf on every normal single-bot session.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Health {
+    /// How many fed-but-stale fields there are right now.
+    pub degraded: u32,
+    /// The worst track among them. `Track::Live` (the default) when
+    /// `degraded == 0`, so a caller never has to special-case the empty count.
+    pub worst: Track,
+}
+
+pub fn health(state: &AppState, now: Instant) -> Health {
+    let mut h = Health::default();
+    let mut note = |t: Track| {
+        if t != Track::Live {
+            h.degraded += 1;
+            h.worst = h.worst.max(t);
+        }
+    };
+    for t in [
+        state.machine.gpus.get(now).map(|(_, t)| t),
+        state.machine.units.get(now).map(|(_, t)| t),
+        state.machine.host.get(now).map(|(_, t)| t),
+        state.train.run.get(now).map(|(_, t)| t),
+        state.lab.queue.get(now).map(|(_, t)| t),
+        state.matches.runs.get(now).map(|(_, t)| t),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        note(t);
+    }
+    for b in state.bots.values() {
+        for t in [
+            b.account.get(now).map(|(_, t)| t),
+            b.playing.get(now).map(|(_, t)| t),
+            b.record.get(now).map(|(_, t)| t),
+            b.results.get(now).map(|(_, t)| t),
+            b.version.get(now).map(|(_, t)| t),
+            b.rating_log.get(now).map(|(_, t)| t),
+            b.watchdog.get(now).map(|(_, t)| t),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            note(t);
+        }
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,14 +957,19 @@ mod tests {
         assert_eq!(t.tail(1).next().unwrap().text, "499");
     }
 
-    /// The single conversion point, and the reason it exists: playing Black and
-    /// being mated must not read as winning.
     #[test]
-    fn ours_converts_once_and_correctly() {
-        let mut g = GameState::new(GameId("x".into()), shakmaty::Color::Black);
-        assert_eq!(g.ours(0.03), 0.97, "White at 3% means we are at 97%");
-        g.our_colour = shakmaty::Color::White;
-        assert_eq!(g.ours(0.03), 0.03);
+    fn log_lines_is_bounded_and_iter_rev_finds_the_latest_problem() {
+        let mut l = LogLines::new(3);
+        for (i, level) in
+            [LogLevel::Info, LogLevel::Info, LogLevel::Warn, LogLevel::Info].into_iter().enumerate()
+        {
+            l.push(LogEntry { at: jiff::Timestamp::UNIX_EPOCH, level, text: format!("{i}") });
+        }
+        // Bounded to 3, so entry "0" (Info) was evicted.
+        assert_eq!(l.len(), 3);
+        assert_eq!(l.tail(1).next().unwrap().text, "3");
+        let problem = l.iter_rev().find(|e| e.level != LogLevel::Info);
+        assert_eq!(problem.unwrap().text, "2", "the warn is still in the buffer");
     }
 
     /// The training panel's arithmetic, against the run that is live right now:
@@ -854,10 +997,78 @@ mod tests {
         assert!(r.progress().is_none());
     }
 
+    /// An `AppState` nobody has fed anything into is not "degraded" -- it is
+    /// the state the dashboard is in for its first second, and `matches`/`lab`
+    /// stay unfed for entire sessions that never run either. Every field is
+    /// technically `Track::Lost` if you ask `.track()` directly, but `health`
+    /// must not count a field that has never been fed at all.
+    #[test]
+    fn a_freshly_started_state_is_not_degraded() {
+        let st = AppState::default();
+        let h = health(&st, Instant::now());
+        assert_eq!(h.degraded, 0, "an unfed field is unused, not broken");
+        assert_eq!(h.worst, Track::Live);
+    }
+
+    /// The core contract: one field that was fed and then went stale is
+    /// counted, and its track is reported as the worst.
+    #[test]
+    fn one_stale_bot_field_is_counted_and_reported() {
+        let base = Instant::now();
+        let cfg = Arc::new(BotConfig {
+            id: BotId("sumofish".into()),
+            user: "SumoFish".into(),
+            label: String::new(),
+            unit: None,
+            telemetry: "/dev/null".into(),
+            pgn_dir: None,
+            versions: None,
+            rating_log: None,
+            watch: true,
+        });
+        let mut bot = BotState::new(cfg.clone());
+        // account's interval is 45s; 6x that is well past Lost.
+        bot.account.set(Account::default(), base);
+        let mut st = AppState::default();
+        st.bots.insert(cfg.id.clone(), bot);
+
+        let fresh = health(&st, base);
+        assert_eq!(fresh.degraded, 0, "just fed, should read live");
+
+        let stale = health(&st, base + Duration::from_secs(300));
+        assert_eq!(stale.degraded, 1, "one fed-then-abandoned field");
+        assert_eq!(stale.worst, Track::Lost);
+    }
+
+    /// Two fields going bad at once is two, not one -- and the worse of the
+    /// two tracks wins, not the first one seen.
+    #[test]
+    fn multiple_stale_fields_add_up_and_worst_wins() {
+        let base = Instant::now();
+        let mut st = AppState::default();
+        // train.run: interval 20s. Coast in (40s, 120s], Lost past 120s.
+        st.train.run.set(TrainRun::default(), base);
+        // machine.host: interval 30s. Coast in (60s, 180s], Lost past 180s.
+        st.machine.host.set(Host::default(), base);
+
+        // Both merely coasting: two degraded, worst is Coast.
+        let coasting = health(&st, base + Duration::from_secs(70));
+        assert_eq!(coasting.degraded, 2);
+        assert_eq!(coasting.worst, Track::Coast);
+
+        // Push past train.run's 120s Lost floor but before host's 180s one:
+        // only train.run is Lost, host is still Coast. Worst must be Lost even
+        // though train.run was declared before host in the composition list,
+        // and the count must not double-count either field.
+        let mixed = health(&st, base + Duration::from_secs(150));
+        assert_eq!(mixed.degraded, 2);
+        assert_eq!(mixed.worst, Track::Lost);
+    }
+
     #[test]
     fn units_distinguish_missing_from_broken() {
         let mut u = Unit {
-            name: "chess-gpu-train.service".into(),
+            name: "sumofish-train.service".into(),
             load: "not-found".into(),
             active: "inactive".into(),
             sub: "dead".into(),

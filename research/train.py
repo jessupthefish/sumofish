@@ -14,7 +14,7 @@ base 2. Lower is better. Random is log2(1968) = 10.94 bits. It is the chess
 analogue of Karpathy's bits-per-byte, and it stays comparable if you change
 the architecture, the optimizer, or the batch size.
 
-Everything imported from `chessgpu` is frozen infrastructure and is verified
+Everything imported from `sumofish` is frozen infrastructure and is verified
 byte-exact against DeepMind's reference. Do not edit it, and do not
 reimplement the tokenizer here. Change the model and the training recipe.
 """
@@ -34,8 +34,8 @@ from torch import Tensor, nn
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from chessgpu.data import make_loader  # noqa: E402
-from chessgpu.tokenizer import NUM_ACTIONS, SEQUENCE_LENGTH, VOCAB_SIZE  # noqa: E402
+from sumofish.data import make_loader  # noqa: E402
+from sumofish.tokenizer import NUM_ACTIONS, SEQUENCE_LENGTH, VOCAB_SIZE  # noqa: E402
 # The metric, from outside the editable surface. This import is ABOVE the marker
 # so `check_frozen` covers it, and `run.py` also rejects a `def evaluate` below
 # the marker, because a later definition would shadow this name.
@@ -65,7 +65,7 @@ EMBED_DIM = 256
 NUM_LAYERS = 8
 NUM_HEADS = 8
 WIDENING = 4
-CAUSAL = True          # upstream trains causally; see note in chessgpu/model.py
+CAUSAL = True          # upstream trains causally; see note in sumofish/model.py
 POST_LN = True
 
 

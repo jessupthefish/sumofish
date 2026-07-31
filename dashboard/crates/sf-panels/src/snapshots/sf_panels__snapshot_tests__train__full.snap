@@ -8,7 +8,7 @@ expression: as_text(&buf)
 │loss 2.7221 ███▇▇▇▇▆▆▆▆▅▅▅▅▄▄▄▄▃▃▃▃▂▂▂▂▁▁▁ 2.744-2.860      │
 │val  2.5762 █▇▆▅▄▃▂▁ 2.640-2.990                            │
 │grad 3.60    lr 7.07e-5                                     │
-│                                                            │
+│error CUDA out of memory: tried to allocate 512.00 MiB      │
 │                                                            │
 │                                                            │
 │                                                            │

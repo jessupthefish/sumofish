@@ -31,18 +31,18 @@ ROOT = Path(__file__).resolve().parent.parent
 # at startup; that is the only source of truth for which run is live.
 ACTIVE = ROOT / "runs" / "active.json"
 
-# Training has no unit of its own. It is a SUBPROCESS of chess-gpu-lab.service,
+# Training has no unit of its own. It is a SUBPROCESS of sumofish-lab.service,
 # which owns the GPU roadmap and starts training runs itself.
 #
-# This said `chess-gpu-train.service` until 2026-07-29, which stopped existing
+# This said `sumofish-train.service` until 2026-07-29, which stopped existing
 # when the lab took over. The result was worse than a no-op: `is-active` returned
 # non-zero, so main() logged "not active; nothing to watch" and returned, every
 # five minutes, forever. The journal showed a watchdog dutifully running and it
 # had never once looked at a training run -- including a 37-hour one, the exact
 # case it was written for. A green timer is indistinguishable from a working
 # watchdog, which is why this one now watches the PROCESS.
-LAB_UNIT = "chess-gpu-lab.service"
-STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "chess-gpu/train_watchdog.json"
+LAB_UNIT = "sumofish-lab.service"
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "sumofish/train_watchdog.json"
 
 # Generous: a puzzle eval plus a checkpoint write plus a torch.compile after a
 # restart can legitimately take several minutes with no new step logged.

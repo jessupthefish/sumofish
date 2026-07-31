@@ -16,7 +16,7 @@
 #                                       threefold, with deliberate repetition
 #                                       cycles because random play never
 #                                       reaches one
-#   5. identity vs chessgpu.mcts     -- a BYTE-IDENTICAL root visit vector, the
+#   5. identity vs sumofish.mcts     -- a BYTE-IDENTICAL root visit vector, the
 #                                       Stage C acceptance test
 #   6. softmax                       -- what is and is not reproducible; layer 3
 #                                       is a canary on a known blocker
@@ -68,7 +68,7 @@ else
 fi
 
 echo
-echo "=== oracle 4: terminal parity vs chessgpu/rules.py ==="
+echo "=== oracle 4: terminal parity vs sumofish/rules.py ==="
 if [ "$DEEP" = "--deep" ]; then
     $PY tests/terminal_parity.py --games 3000 | tail -5
 else
@@ -76,7 +76,7 @@ else
 fi
 
 echo
-echo "=== oracle 5: identity vs chessgpu.mcts (byte-identical visits) ==="
+echo "=== oracle 5: identity vs sumofish.mcts (byte-identical visits) ==="
 if [ "$DEEP" = "--deep" ]; then
     $PY tests/identity_search.py --positions 40 --sims 800 --batch 64 | tail -2
 else

@@ -1,0 +1,12 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+expression: as_text(&buf)
+---
+┌ bot log ─────────────────────────────┐
+│21:14:07 info  Got move f8g7 from th… │
+│21:14:07 info  Entering game loop     │
+│21:14:07 warn  Retrying account/play… │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

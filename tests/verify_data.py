@@ -27,7 +27,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from chessgpu import bagz, tokenizer  # noqa: E402
+from sumofish import bagz, tokenizer  # noqa: E402
 
 DATA = ROOT / "data"
 REFERENCE = ROOT / "reference" / "tokenizer.py"

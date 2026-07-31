@@ -33,7 +33,7 @@ import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chessgpu.rust_mcts import RustMCTS
+from sumofish.rust_mcts import RustMCTS
 
 
 def deterministic_evaluator(fens: list[str], actions: list[list[int]]):
@@ -98,7 +98,7 @@ def main() -> int:
     ))
 
     # Exception safety: search_engine's own telemetry emission must never be
-    # able to cost the engine a move, mirroring chessgpu/mcts.py's own
+    # able to cost the engine a move, mirroring sumofish/mcts.py's own
     # `report()`'s try/except around on_progress.
     mcts2 = make_mcts()
     board2 = chess.Board()

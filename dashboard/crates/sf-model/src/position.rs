@@ -57,7 +57,7 @@ impl std::borrow::Borrow<str> for GameId {
 }
 
 /// The engine process that produced a record. Stamped unconditionally by
-/// `chessgpu/telemetry.py` and read by nothing in the Python -- so it is a free,
+/// `sumofish/telemetry.py` and read by nothing in the Python -- so it is a free,
 /// perfect partition of an interleaved log into per-engine streams.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct Pid(pub u32);

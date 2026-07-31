@@ -19,16 +19,16 @@ use anyhow::{Context, Result};
 use std::fmt::Write as _;
 
 /// The units that actually matter. Note what the Python polls today:
-/// ("chess-gpu-bot", "chess-gpu-train") — and `chess-gpu-train.service` does not
-/// exist, so it renders a permanently red dot, while `chess-gpu-lab` (the thing
+/// ("sumofish-bot", "sumofish-train") — and `sumofish-train.service` does not
+/// exist, so it renders a permanently red dot, while `sumofish-lab` (the thing
 /// doing all the work) is absent entirely.
 const UNITS: &[&str] = &[
-    "chess-gpu-bot.service",
-    "chess-gpu-lab.service",
-    "chess-gpu-train.service",
-    "chess-gpu-watchdog.timer",
-    "chess-gpu-train-watchdog.timer",
-    "chess-gpu-rating.timer",
+    "sumofish-bot.service",
+    "sumofish-lab.service",
+    "sumofish-train.service",
+    "sumofish-watchdog.timer",
+    "sumofish-train-watchdog.timer",
+    "sumofish-rating.timer",
 ];
 
 pub fn run() -> Result<()> {
@@ -269,7 +269,7 @@ async fn timer_props(conn: &zbus::Connection, unit: &str) -> Result<(u64, u64)> 
     ))
 }
 
-/// Unit object paths are escaped: `chess-gpu-bot.service` becomes
+/// Unit object paths are escaped: `sumofish-bot.service` becomes
 /// `/org/freedesktop/systemd1/unit/chess_2dgpu_2dbot_2eservice`. Never build
 /// these by interpolation.
 fn unit_path(unit: &str) -> zbus::zvariant::OwnedObjectPath {

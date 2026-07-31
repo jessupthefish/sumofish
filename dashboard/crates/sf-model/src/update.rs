@@ -27,6 +27,16 @@ pub enum Update {
     /// A position observation for a game. The resolver decides what it means.
     Position { bot: BotId, obs: Obs },
     Clocks { bot: BotId, game: GameId, clocks: Clocks },
+    /// The opponent's remaining time, from a source that only ever knows their
+    /// side -- the public `/api/stream/game/{id}` feed, delayed a few moves by
+    /// lichess policy. Deliberately its own variant rather than folded into
+    /// `Clocks`: that one is a full-struct replace from `/api/account/playing`,
+    /// refreshed every 2s and authoritative for `ticking`/`as_of`/our own side.
+    /// Merging this into it field-by-field would either clobber that on every
+    /// delayed poll or require re-deriving which fields are "ours to touch",
+    /// both worse than a variant that can only ever write the one thing it
+    /// actually knows.
+    OpponentClock { bot: BotId, game: GameId, remaining: std::time::Duration },
     Moves { bot: BotId, game: GameId, moves: Vec<MoveRec> },
     GameFinished { bot: BotId, game: GameId, outcome: GameOutcome },
     Results { bot: BotId, games: Vec<FinishedGame> },
@@ -34,6 +44,12 @@ pub enum Update {
     VersionInfo { bot: BotId, version: Version },
     RatingLog { bot: BotId, samples: Vec<RatingSample> },
     Watchdog { bot: BotId, state: WatchdogState },
+    /// One raw journal line from the bot's own unit, unfiltered -- absorbed from
+    /// `sumofish log`'s `journalctl -f`.
+    BotLog { bot: BotId, entry: LogEntry },
+    /// One raw journal line from the training unit. Global: there is one
+    /// training run, not one per bot.
+    TrainLog(LogEntry),
 
     // ---- engine telemetry ----
     Search { bot: BotId, game: GameId, snapshot: SearchSnapshot },
@@ -88,6 +104,7 @@ impl Update {
             | VersionInfo { bot, .. }
             | RatingLog { bot, .. }
             | Watchdog { bot, .. }
+            | BotLog { bot, .. }
             | Search { bot, .. }
             | Eval { bot, .. }
             | StockfishEval { bot, .. }
@@ -196,8 +213,28 @@ pub fn apply(st: &mut AppState, u: Update, now: Instant) -> Applied {
             })
         }
 
+        // `/api/account/playing` (the only caller of this variant) can only
+        // ever know OUR OWN side -- `secondsLeft` is documented as the
+        // account owner's own remaining time -- so it always sends the
+        // opponent's side as `None` here. A bare `g.clocks = clocks` would
+        // therefore erase whatever `OpponentClock` last wrote every single
+        // time this fires, since this poll runs every 2s against
+        // `OpponentClock`'s 16s: the delayed value would be visible for at
+        // most a couple of seconds out of every sixteen. Carry forward
+        // whichever side the incoming update has no opinion on; the side it
+        // DOES carry (ours) still fully replaces, same as before.
         Clocks { bot, game, clocks } => with_game(st, &bot, &game, |g| {
-            g.clocks = clocks;
+            let white = clocks.white.or(g.clocks.white);
+            let black = clocks.black.or(g.clocks.black);
+            g.clocks = crate::state::Clocks { white, black, ..clocks };
+            Applied::state()
+        }),
+
+        OpponentClock { bot, game, remaining } => with_game(st, &bot, &game, |g| {
+            match !g.our_colour {
+                shakmaty::Color::White => g.clocks.white = Some(remaining),
+                shakmaty::Color::Black => g.clocks.black = Some(remaining),
+            }
             Applied::state()
         }),
 
@@ -246,6 +283,14 @@ pub fn apply(st: &mut AppState, u: Update, now: Instant) -> Applied {
             b.watchdog.set(merged, now);
             Applied::state()
         }),
+        BotLog { bot, entry } => with_bot(st, &bot, |b| {
+            b.log.push(entry);
+            Applied::state()
+        }),
+        TrainLog(entry) => {
+            st.train.log.push(entry);
+            Applied::state()
+        }
 
         Search { bot, game, snapshot } => with_game(st, &bot, &game, |g| {
             // Count how often the search changed its mind, which happens in 32%
@@ -419,6 +464,7 @@ mod tests {
     use crate::position::{parse_fen, parse_uci};
     use shakmaty::Position;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     const START: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -493,6 +539,127 @@ mod tests {
         // Only when it genuinely leaves the list do we move.
         apply(&mut st, Update::Playing { bot: BotId("a".into()), games: vec![mk(&g2)] }, now);
         assert_eq!(st.bots["a"].focus_game, Some(g2));
+    }
+
+    /// `OpponentClock` may only ever write the opponent's side, never ours --
+    /// `/api/account/playing`'s 2s poll is what owns `ticking`/`as_of`/our own
+    /// clock, and a delayed, opponent-only update must not be able to stomp on
+    /// any of that even if it arrives in between two playing polls.
+    #[test]
+    fn opponent_clock_writes_only_the_opponents_side_and_leaves_the_rest_alone() {
+        let (mut st, now) = seeded();
+        let game = GameId("g1".into());
+        apply(
+            &mut st,
+            Update::Playing {
+                bot: BotId("a".into()),
+                games: vec![PlayingGame {
+                    id: game.clone(),
+                    our_colour: shakmaty::Color::White,
+                    fen: START.into(),
+                    last_move: None,
+                    is_my_turn: true,
+                    seconds_left: Some(600),
+                    opponent: Opponent::default(),
+                    speed: "rapid".into(),
+                    rated: true,
+                }],
+            },
+            now,
+        );
+        apply(
+            &mut st,
+            Update::Clocks {
+                bot: BotId("a".into()),
+                game: game.clone(),
+                clocks: Clocks {
+                    white: Some(Duration::from_secs(600)),
+                    black: None,
+                    as_of: Some(now),
+                    source: Some(crate::position::Source::Playing),
+                    ticking: Some(shakmaty::Color::White),
+                },
+            },
+            now,
+        );
+
+        apply(
+            &mut st,
+            Update::OpponentClock { bot: BotId("a".into()), game: game.clone(), remaining: Duration::from_secs(422) },
+            now,
+        );
+
+        let g = &st.bots["a"].games[&game];
+        assert_eq!(g.clocks.black, Some(Duration::from_secs(422)), "the opponent (Black) gets the new value");
+        assert_eq!(g.clocks.white, Some(Duration::from_secs(600)), "our own clock must be untouched");
+        assert_eq!(g.clocks.ticking, Some(shakmaty::Color::White), "ticking is owned by the playing poll, not this");
+        assert_eq!(g.clocks.as_of, Some(now), "as_of is owned by the playing poll, not this");
+    }
+
+    /// The bug found live: `/api/account/playing` polls every 2s and
+    /// `OpponentClock` only every 16s (tied to the export poll), and the
+    /// naive `g.clocks = clocks` in the `Clocks` handler wiped the
+    /// opponent's side back to `None` on every single one of those 2s
+    /// polls -- since `playing_updates` can never set it, it is always
+    /// `None` in that update. The opponent's clock was visible for at most
+    /// a couple of seconds out of every sixteen, which in practice reads as
+    /// "never shows at all." A `Clocks` update must carry the opponent's
+    /// side forward when it has no opinion on it.
+    #[test]
+    fn a_later_playing_poll_does_not_erase_the_opponents_clock() {
+        let (mut st, now) = seeded();
+        let game = GameId("g1".into());
+        apply(
+            &mut st,
+            Update::Playing {
+                bot: BotId("a".into()),
+                games: vec![PlayingGame {
+                    id: game.clone(),
+                    our_colour: shakmaty::Color::White,
+                    fen: START.into(),
+                    last_move: None,
+                    is_my_turn: true,
+                    seconds_left: Some(600),
+                    opponent: Opponent::default(),
+                    speed: "rapid".into(),
+                    rated: true,
+                }],
+            },
+            now,
+        );
+        // The 16s export poll lands first, giving Black's (the opponent's)
+        // last known time.
+        apply(
+            &mut st,
+            Update::OpponentClock { bot: BotId("a".into()), game: game.clone(), remaining: Duration::from_secs(17) },
+            now,
+        );
+        // Then the ordinary 2s playing poll fires, same as it does five more
+        // times before the next export poll -- it only ever knows our own
+        // side (White here), so Black is `None` in this update.
+        apply(
+            &mut st,
+            Update::Clocks {
+                bot: BotId("a".into()),
+                game: game.clone(),
+                clocks: Clocks {
+                    white: Some(Duration::from_secs(598)),
+                    black: None,
+                    as_of: Some(now),
+                    source: Some(crate::position::Source::Playing),
+                    ticking: Some(shakmaty::Color::White),
+                },
+            },
+            now,
+        );
+
+        let g = &st.bots["a"].games[&game];
+        assert_eq!(g.clocks.white, Some(Duration::from_secs(598)), "our own side still fully replaces");
+        assert_eq!(
+            g.clocks.black,
+            Some(Duration::from_secs(17)),
+            "the opponent's delayed value must survive a playing poll that has no opinion on it"
+        );
     }
 
     /// Telemetry arrives before the poll, so the board must not wait for

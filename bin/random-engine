@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# UCI wrapper invoked by lichess-bot. Keeps venv and path details out of config.yml.
-# PYTHONPATH is set explicitly so this works whether or not the package is
-# installed into the venv, and regardless of the caller's working directory.
-set -euo pipefail
-ROOT=/home/nomad/dev/active/chess-gpu
-exec env PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" -m chessgpu.engines.random_engine "$@"

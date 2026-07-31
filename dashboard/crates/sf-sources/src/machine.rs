@@ -16,9 +16,9 @@
 //!
 //! Two things this gets right that the subprocess version could not:
 //!
-//! - `not-found` is a **load state**, not an error. `chess-gpu-train.service` does
+//! - `not-found` is a **load state**, not an error. `sumofish-train.service` does
 //!   not exist, and the Python renders it as a permanently red dot, which teaches
-//!   you to ignore the row. Meanwhile `chess-gpu-lab` -- the unit doing all the
+//!   you to ignore the row. Meanwhile `sumofish-lab` -- the unit doing all the
 //!   work -- is not polled at all.
 //! - systemd's `NRestarts` is **not** the restart count you want. `watchdog.py` uses
 //!   `systemctl kill` + `restart` rather than letting `Restart=always` fire, so the
@@ -278,7 +278,7 @@ fn monotonic_now_us() -> Option<u64> {
     Some((secs * 1_000_000.0) as u64)
 }
 
-/// Unit object paths are escaped: `chess-gpu-bot.service` becomes
+/// Unit object paths are escaped: `sumofish-bot.service` becomes
 /// `/org/freedesktop/systemd1/unit/chess_2dgpu_2dbot_2eservice`. Never build these
 /// by string interpolation.
 fn unit_path(unit: &str) -> zbus::zvariant::OwnedObjectPath {
@@ -301,13 +301,13 @@ mod tests {
 
     #[test]
     fn unit_paths_are_escaped_not_interpolated() {
-        let p = unit_path("chess-gpu-bot.service");
+        let p = unit_path("sumofish-bot.service");
         assert_eq!(
             p.as_str(),
-            "/org/freedesktop/systemd1/unit/chess_2dgpu_2dbot_2eservice"
+            "/org/freedesktop/systemd1/unit/sumofish_2dbot_2eservice"
         );
         // A templated unit, which is what a second bot would use.
-        let p = unit_path("chess-gpu-bot@sumofish.service");
+        let p = unit_path("sumofish-bot@second.service");
         assert!(p.as_str().contains("_40"), "@ must be escaped, got {p}");
     }
 
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn missing_and_broken_are_different_states() {
         let missing = Unit {
-            name: "chess-gpu-train.service".into(),
+            name: "sumofish-train.service".into(),
             load: "not-found".into(),
             active: "inactive".into(),
             sub: "dead".into(),

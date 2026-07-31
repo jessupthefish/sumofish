@@ -11,7 +11,7 @@
 //!
 //! # Why order is part of the contract
 //!
-//! `chessgpu/mcts.py::_expand` inserts children in `board.legal_moves` order,
+//! `sumofish/mcts.py::_expand` inserts children in `board.legal_moves` order,
 //! and `_select_child` iterates that dict taking a strict `>`, so the FIRST
 //! move at a given PUCT score wins a tie. Change the generation order and tied
 //! children resolve differently, the engine plays a different move, and every
@@ -48,7 +48,7 @@
 //! actually available; here `e4xd3` would expose the black king to `Qh4` along
 //! the fourth rank, so it writes `-`.
 //!
-//! That reaches the network: `chessgpu/tokenizer.py:156-160` gates the ep field
+//! That reaches the network: `sumofish/tokenizer.py:156-160` gates the ep field
 //! on exactly this predicate when building the 77 tokens, so getting it wrong
 //! changes the model's input and therefore its evaluation, with no illegal move
 //! ever played and no test failing.

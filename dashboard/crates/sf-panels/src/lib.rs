@@ -26,10 +26,12 @@ sf_layout::panels! {
     train,
     machine,
     tape,
+    log,
     lab,
     matches,
     versions,
-    api,
+    rating,
+    footer,
 }
 
 #[cfg(test)]

@@ -79,7 +79,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from chessgpu.mcts import MCTS  # noqa: E402
+from sumofish.mcts import MCTS  # noqa: E402
 from match import load_prior, load_value  # noqa: E402
 
 SESSIONS = ROOT / "runs" / "acceptance"

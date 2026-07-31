@@ -23,6 +23,8 @@ pub struct Matches;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("matches"),
     title: "matches",
+    keybind: None,
+    help: "head-to-head matches: a verdict on a code change, one game at a time",
     region: RegionId::RailB,
     scope: Scope::Global,
     weight: Weight::Normal,

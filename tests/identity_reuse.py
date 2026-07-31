@@ -43,11 +43,11 @@ import chess
 import sumofish_core as core
 
 ROOT = Path(__file__).resolve().parent.parent
-for candidate in (ROOT, ROOT.parent / "chess-gpu"):
-    if (candidate / "chessgpu" / "mcts.py").exists():
+for candidate in (ROOT, ROOT.parent / "sumofish"):
+    if (candidate / "sumofish" / "mcts.py").exists():
         sys.path.insert(0, str(candidate))
         break
-from chessgpu.mcts import MCTS  # noqa: E402
+from sumofish.mcts import MCTS  # noqa: E402
 
 from identity_search import MockPolicy, MockValuePolicy, rust_evaluate  # noqa: E402
 

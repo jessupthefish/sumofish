@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample SumoFish's lichess rating
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nomad/dev/active/sumofish
+ExecStart=/home/nomad/dev/active/sumofish/.venv/bin/python /home/nomad/dev/active/sumofish/scripts/rating_log.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-rating

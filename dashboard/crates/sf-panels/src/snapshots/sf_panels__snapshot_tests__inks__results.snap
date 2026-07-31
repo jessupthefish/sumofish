@@ -3,7 +3,7 @@ source: crates/sf-panels/src/snapshot_tests.rs
 expression: map
 ---
 -ffffffffffffff-----------------------------------------------
----------GGdddXXX............................................-
+-----GGdddXXX................................................-
 -------GGddddddddddddddddddddddddddGGGGG-------..............-
 ---------dddddddddddddddddddddddddd---------------...........-
 -------XXddddddddddddddddddddddddddXXXXX-------------........-

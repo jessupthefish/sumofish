@@ -3,9 +3,9 @@ source: crates/sf-panels/src/snapshot_tests.rs
 expression: as_text(&buf)
 ---
 ┌ engine search ─────────────────────────────────────────────┐
+│                                                            │
 │waiting for the engine to move                              │
 │logs/engine.jsonl                                           │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

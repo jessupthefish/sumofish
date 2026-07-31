@@ -1,0 +1,45 @@
+[Unit]
+Description=SumoFish lab (autonomous experiment queue)
+After=network-online.target
+# A plan that fails on its first job would otherwise restart forever and look
+# like it is working. Eight tries in half an hour is generous for a real
+# transient and short of a loop.
+StartLimitIntervalSec=1800
+StartLimitBurst=8
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nomad/dev/active/sumofish
+
+# The plan contains a ~35-hour training run and two days of matches. A KDE
+# power-profile change or an idle timeout partway through would cost the run,
+# so the whole queue holds sleep off for its lifetime, the same way the
+# training unit does.
+ExecStart=/usr/bin/systemd-inhibit \
+    --what=sleep:idle:handle-lid-switch \
+    --who=sumofish-lab \
+    --why="experiment queue running" \
+    /home/nomad/dev/active/sumofish/.venv/bin/python /home/nomad/dev/active/sumofish/scripts/lab.py run
+
+# on-failure only. The runner exits 0 when the plan is complete, and restarting
+# a finished plan would do nothing forever; it exits 1 when a job failed, which
+# is worth retrying a few times in case the cause was transient.
+Restart=on-failure
+RestartSec=120
+
+# SIGTERM reaches the runner, which forwards it to whatever job is running.
+# train.py answers SIGTERM by checkpointing, and that takes real time, so do
+# not shorten this: killing it halfway loses the run, not just the step.
+KillSignal=SIGTERM
+TimeoutStopSec=900
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-lab
+
+# Below the bot in priority. The lab can afford to be slow; a game on a clock
+# cannot.
+Nice=5
+
+[Install]
+WantedBy=default.target

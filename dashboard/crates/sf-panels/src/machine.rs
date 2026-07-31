@@ -15,6 +15,8 @@ pub struct Machine;
 static SPEC: PanelSpec = PanelSpec {
     id: PanelId("machine"),
     title: "machine",
+    keybind: None,
+    help: "is training starving the bot, and is anything actually up",
     region: RegionId::Rail,
     scope: Scope::Global,
     weight: Weight::High,
@@ -165,7 +167,7 @@ impl Panel for Machine {
                         ("\u{25cf}", Styles::ink(sf_theme::BAD))
                     };
                     row.push(Span::styled(glyph, style));
-                    let short = u.name.strip_prefix("chess-gpu-").unwrap_or(&u.name);
+                    let short = u.name.strip_prefix("sumofish-").unwrap_or(&u.name);
                     let short = short.strip_suffix(".service").unwrap_or(short);
                     row.push(Span::styled(
                         format!(" {short} "),

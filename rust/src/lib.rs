@@ -115,7 +115,7 @@ impl PyBoard {
 }
 
 /// A board plus the history a tree search needs. `push`/`pop`, repetition, and
-/// the terminal test. Mirrors what `chessgpu/rules.py` asks of `chess.Board`.
+/// the terminal test. Mirrors what `sumofish/rules.py` asks of `chess.Board`.
 #[pyclass(name = "Position")]
 pub struct PyPosition {
     inner: position::Position,
@@ -223,7 +223,7 @@ impl tree::Evaluator for PyEvaluator<'_, '_> {
 }
 
 /// MCTS over a value net, with a policy net supplying priors. A faithful port of
-/// `chessgpu/mcts.py`; see `tree.rs` for which known defects are reproduced on
+/// `sumofish/mcts.py`; see `tree.rs` for which known defects are reproduced on
 /// purpose and why.
 #[pyclass(name = "Mcts")]
 pub struct PyMcts {
@@ -266,9 +266,9 @@ impl PyMcts {
     }
 
     /// The root's value estimate, from the root's own side-to-move
-    /// perspective: `value_sum / visits`, matching `chessgpu/mcts.py`'s
+    /// perspective: `value_sum / visits`, matching `sumofish/mcts.py`'s
     /// `Node.q` exactly, including its zero-visits fallback (0.0, not a
-    /// panic or a misleading 0.5). `chessgpu/rust_mcts.py::_Root.q` reads
+    /// panic or a misleading 0.5). `sumofish/rust_mcts.py::_Root.q` reads
     /// this as `self._core.root_q`; `scripts/match.py::Player.move` returns
     /// it as the win probability used for adjudication and the per-ply
     /// curve. Never wired up before now -- `search()` raised on every real
@@ -290,7 +290,7 @@ impl PyMcts {
     /// left untouched.
     ///
     /// `max_seconds`, when given, stops early once elapsed (checked between
-    /// batches). `chessgpu/rust_mcts.py::search` always passes this
+    /// batches). `sumofish/rust_mcts.py::search` always passes this
     /// positionally, even when it is `None` -- this parameter existing at all,
     /// with this name, in this position, is load-bearing for that call site.
     #[pyo3(signature = (position, simulations, evaluate, max_seconds = None))]
@@ -350,7 +350,7 @@ impl PyMcts {
     }
 
     /// Top-N root children by visits: `(uci, visits, q, prior)`. Never
-    /// exposed here before now -- `chessgpu/rust_mcts.py::report` has called
+    /// exposed here before now -- `sumofish/rust_mcts.py::report` has called
     /// this since the wrapper was written, a path only reachable through a
     /// real `move()`/UCI call, not the identity/perft suite. Found live: the
     /// bot's UCI `chooser` caught the `AttributeError` and fell back to the
