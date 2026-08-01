@@ -31,7 +31,7 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
-## Where things stand (2026-07-31, session 7)
+## Where things stand (2026-08-01, session 7)
 
 > **The 2026-07-29 overnight block that stood here is deleted, not demoted, per
 > this file's own rule.** Its run finished. Every unit-state claim in it had also
@@ -46,10 +46,14 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   Best held-out is step 595k: **val 2.1117, puzzles 0.699**. The unit is gone
 >   (it was transient; `is-enabled` reports `not-found`, which is expected and
 >   not a fault).
-> - **That checkpoint has never been deployed.** `runs/value.pt` still dates from
->   2026-07-28 22:12 and is the ~300k-era net (val ~2.1438, puzzles ~0.687). The
->   bot has been playing the OLDER net for two days. A fixed-time match to settle
->   it is running now -- see below.
+> - **DEPLOYED 2026-07-31 23:17:28.** `runs/value.pt` is now the 600k checkpoint,
+>   selected on held-out loss per PHILOSOPHY's checkpoint rule and NOT on a match:
+>   the sizing pilot went 4/4 draws by threefold repetition at 406s/game, so the
+>   300-game gate would have cost ~34 GPU-hours to most likely terminate on the
+>   null. Both arms share a policy net and are two checkpoints of one run, which
+>   is close to the mirror-match blindness PHILOSOPHY warns of. The promotion is
+>   UNMEASURED in Elo terms; `scripts/promote.py --rollback` reverses it and
+>   `runs/value.pt.previous` holds the outgoing net.
 > - **The bot is DOWN** (stopped 21:12:20, clean exit, no game abandoned) and its
 >   opponent window was changed today; see "Open, smaller". It is `enabled`, so it
 >   WILL come back on next login/boot. That is a hazard during any wall-clock
@@ -60,11 +64,15 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   exits, verified at 21:25 and 21:30 with a match already running, so it does
 >   NOT mistake a match for training. But its remedy is restarting the LAB, so it
 >   is only harmless while no training process exists.
-> - **The lab is PARKED on a dead job.** `runs/lab/state.json` has
->   `current: train-136m` from ~2.7 days ago, `sumofish-lab` is inactive, and
->   there is no `runs/136M-sv/`. The queue cannot advance until that job is reset.
-> - **Something IS measuring strength**: a 20-game fixed-time pilot,
->   `runs/matches/pilot-600k-vs-live-2026-07-31`, sizing the full promotion match.
+> - **The lab is unparked.** `current` was `train-136m` for ~2.7 days; that job is
+>   now DELETED from the plan (see roadmap 7/8 below) and `current` is cleared, so
+>   the runner starts from the first unsatisfied job. **It is still inactive and
+>   starting it now begins ~10 GPU-h of re-earning the retracted ladder** -- the
+>   four `sims-*` rungs are deliberately marked FAILED, not completed.
+> - **Nothing is measuring strength right now.** The pilot was stopped at 4 games
+>   once its purpose (sizing, and the 4/4 draw finding) was served; its games and
+>   config are kept. The bot is down for the overnight retrain, so the lichess
+>   anchor is paused too.
 >
 > > **HOW TO READ THE RATING, and why it is confounded.** Two things changed
 > within 20 minutes of each other on 2026-07-31, so any rating movement from
@@ -101,6 +109,32 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > `scripts/promote.py --rollback`. Doing neither is also defensible -- both
 > changes are believed good and the combined effect is what gets played -- but
 > then stop treating the rating as evidence for either one individually.
+
+> **OVERNIGHT RUN FINISHED 2026-08-01 11:31, and it is a clear win.**
+> `runs/9M-bc-2026-08-01` -- the policy prior retrained, roadmap item 4, the
+> "biggest neglected lever", frozen at 40.9% puzzles since session 1. Warm start
+> from `runs/policy.pt` transferred **93/93 tensors**; 300,000 steps at lr 2e-4;
+> exit 0.
+>
+> | | incumbent `runs/policy.pt` | new `best.pt` |
+> |---|---|---|
+> | held-out loss | 1.66670 | **1.59138** (-0.0753) |
+> | puzzles | 0.409 | **0.435-0.447** |
+>
+> The incumbent's held-out number did not exist before today -- `runs/9M-causal`
+> logged 31 puzzle evals and zero `val_loss` -- so `scripts/eval_heldout.py` was
+> written to compute it on `train.py`'s own terms. It reproduces train.py's
+> logged 1.59485 for step 280k EXACTLY, which is what licenses the comparison.
+>
+> **NOT PROMOTED.** The policy net shapes every search the engine runs, and
+> `scripts/promote.py` only swaps `runs/value.pt`, so this needs a deliberate
+> decision and a different mechanism. Held-out loss is also an instrument, not
+> the target. `best.pt` == `final.pt`, i.e. the run was still improving at step
+> 300k and never overfit -- **more training is available for free.**
+>
+> Note for whoever tunes next: `c_puct`/FPU tuning is gated behind this retrain
+> (roadmap 4 before the tuning), so the values depend on the prior's sharpness
+> and should not be settled against the OLD prior.
 
 **Standing rule, promoted out of the deleted block because it is not status:**
 > if you run two Claude sessions at once, say so up front. A second session

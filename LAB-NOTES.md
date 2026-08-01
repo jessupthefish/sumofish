@@ -708,3 +708,45 @@ and say so, because a note that was believed for a month is itself evidence.
   contaminate any before/after comparison spanning that moment. If a game must be
   ended early for machine time, record the game ids and the timestamp so the
   rating can be read around them.
+
+- **A warm restart gets visibly WORSE for about the first quarter of the run, and
+  that is not a failure.** Restarting a converged checkpoint at a fresh cosine
+  schedule knocks it off its annealed minimum: the LR warms back up to near the
+  donor's peak, the solution is perturbed, and it re-anneals only as the schedule
+  decays. Measured twice in this repo, at two targets, with matching shapes:
+
+        run                  lr     baseline      worst dip        final
+        9M-sv-continue (SV)  3e-4   0.687 puz     0.660 (-2.7)     0.700 (+1.3)
+        9M-bc-2026-08-01     2e-4   0.409 puz     0.381 (-2.8) ... pending
+
+  The value run stayed BELOW its donor on held-out loss from step 305k to ~380k
+  -- 75k steps, 27% of the run -- peaking at +0.027 worse, and then finished
+  -0.032 BETTER. That is the checkpoint now deployed. So: do not judge a warm
+  restart before ~30% of its schedule has elapsed, and do not kill one on an
+  early eval. The first eval of `9M-bc-2026-08-01` at step 10k was -2.8 puzzle
+  points and looked exactly like a botched learning rate.
+- Corollary for reading these runs: **train loss above the donor's is expected
+  during the dip too** (1.84 vs 1.754 here) and is not independent evidence of
+  anything. Both numbers move together because both are measuring the same
+  perturbation.
+- The genuine failure mode this resembles -- LR too high for a warm start, model
+  never recovers -- is distinguished by WHERE the curve is at ~30-40% of the
+  schedule, not by how bad the early evals look. Check there, not at step 10k.
+- **I then wrote a health check for that run keyed on PUZZLE ACCURACY and it
+  returned the wrong verdict.** At step 90k it printed "STILL BELOW BASELINE --
+  lr likely too high" off a 0.405 -> 0.386 move, which is **1.23 sigma** on a
+  metric whose sigma is 1.55 points at n=1000. Held-out loss over the same span
+  went 1.6966 -> 1.6701, monotonically, never once the wrong way. PHILOSOPHY
+  already says "select on held-out loss, not on a noisy eval"; the lesson is that
+  this applies to AUTOMATED MONITORS too, not just to promotions. A check that
+  can cry wolf at 1.2 sigma will eventually kill a good run at 3am with nobody
+  awake to overrule it. Gate monitors on the same metric you would gate a
+  decision on.
+- **`runs/9M-causal` (the BC donor, source of the live `runs/policy.pt`) has 31
+  puzzle evals and ZERO val_loss.** So the policy net has no held-out-loss
+  history at all, and any "is the retrain better" question is forced onto the
+  +-1.5% metric or onto a match. The value net does not have this problem. Fix by
+  evaluating `policy.pt` against the same held-out set the new run uses, so the
+  comparison is like-for-like; until then, do not select a policy checkpoint the
+  way the value checkpoints were selected, because the evidence is not the same
+  kind.
