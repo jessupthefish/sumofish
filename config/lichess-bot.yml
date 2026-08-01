@@ -134,18 +134,40 @@ matchmaking:
                                    # Two concurrent 15+10 games is roughly 115
                                    # a day, so this still saturates lichess's
                                    # ~100 bot-vs-bot cap. Nothing is lost.
-  opponent_max_rating: 2200        # KEEP, and note it resets in effect: the
-                                   # bullet rating is settled (1957, RD 69) but
-                                   # RAPID starts from the placeholder again,
-                                   # provisional, so without this matchmaking
-                                   # reads 3000 as real all over again.
-                                   # Original note follows.
-                                   # Hard ceiling while the 3000 placeholder is
-                                   # still provisional. Without it, matchmaking
-                                   # reads 3000 as real and hunts 2500-3500.
-                                   # Raise or delete once ~30 rated games have
-                                   # let Glicko find the true number.
-  opponent_rating_difference: 500
+  # Opponent window, 2026-07-31. RAPID is settled (2346, RD 45, 168 rated
+  # games), so the 3000-placeholder problem the old ceiling guarded against is
+  # over and the training wheel comes off. What replaced it is an ASYMMETRIC
+  # window, deliberately.
+  #
+  # `opponent_rating_difference` used to sit here at 500 and SILENTLY OVERRODE
+  # both bounds below: upstream matchmaking.py recomputes min/max as
+  # rating +/- diff whenever the key is present and our rating is known, so the
+  # old `opponent_max_rating: 2200` never applied at all and the real window was
+  # [1846, 2846]. It is deleted, not zeroed -- the key has no default, and a
+  # missing one reads as None, which is the "use min/max" path. Do not
+  # reintroduce it without also deleting these two lines.
+  #
+  # It has to go because the fix is not "narrower". Measured against the live
+  # /api/bot/online list (333 bots, 291 with rated rapid), the bot population is
+  # bottom-heavy relative to us, so a symmetric window cannot stop feeding us
+  # weaker opponents no matter how tight it is:
+  #
+  #   diff 500 -> [1846,2846]   150 candidates   94 below us,  56 at/above
+  #   diff 250 -> [2096,2596]    86 candidates   52 below us,  34 at/above
+  #   2200-3000 (this)          114 candidates   31 below us,  83 at/above
+  #
+  # `rating_preference` stays "none", i.e. uniform weights over the survivors,
+  # so the table above IS the diet. Skew is bought with the bounds, not the
+  # weighting; "high" is the extra lever if this is still too soft.
+  #
+  # Floor 2200 is ~150 under us: close games still count, 1900s no longer do.
+  # Ceiling 3000 keeps the 2900s in and stops below the 3000-3099 bucket, which
+  # is 27 Stockfish-class engines. Raising it to 3100 adds those and takes the
+  # pool to 133/25-below -- available if the losing record is acceptable.
+  # These are STATIC and do not track the rating the way the old diff did:
+  # revisit both if rapid moves more than ~150 in either direction.
+  opponent_min_rating: 2200
+  opponent_max_rating: 3000
   rating_preference: "none"
   challenge_mode: "rated"          # Outgoing challenges must be RATED too, or
                                    # the bot accepts rated games but only ever

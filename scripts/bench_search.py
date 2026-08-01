@@ -23,12 +23,36 @@ magnitude and kill a scale-up that was actually affordable.
 
 Weights are random. This measures cost, not quality, and an untrained net of
 the right shape costs exactly what a trained one costs.
+
+WHICH CORE THIS MEASURES, 2026-07-31. Until today this file imported
+`sumofish.mcts` directly and instantiated it unconditionally, so every number it
+ever produced -- including the `scale_m = 2.17` still sitting in
+`runs/lab/state.json` and feeding `decide_scale`'s break-even bar -- is the cost
+ratio as felt by the PYTHON tree, measured before the Rust port. That is the
+exact trap LAB-NOTES records ("do not extrapolate a speedup from a profile taken
+before the previous speedup; re-profile after every port"), and it went
+unnoticed because `m` is an input to the port's own justification rather than an
+output of it.
+
+It matters because `m` is not a property of the net, it is a property of the net
+DIVIDED BY the tree around it: the paragraph above says so itself ("the network
+is only ~9% of search wall clock"). That 9% was the Python profile. With the
+tree in Rust the network dominates instead, so the same dearer net is diluted by
+much less and `m` must come out WORSE. A stale `m` therefore understates the
+cost of scaling, which is the direction that wrongly licenses a 35-hour run.
+
+So the core is now selected by `select_mcts_class()` -- the same resolution the
+engine and `match.py` use, Rust unless `CHESSGPU_CORE=python` -- and it is
+recorded in the output. `--core` pins it explicitly for an A/B. Re-running with
+`--core python` should reproduce the historical number and is how you check the
+harness rather than the tree.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -41,8 +65,8 @@ sys.path.insert(0, str(ROOT))
 
 from sumofish.engines.neural_engine import load_policy  # noqa: E402
 from sumofish.hlgauss import HLGauss  # noqa: E402
-from sumofish.mcts import MCTS  # noqa: E402
 from sumofish.model import PRESETS, ChessTransformer, ModelConfig  # noqa: E402
+from sumofish.rust_mcts import select_mcts_class  # noqa: E402
 from sumofish.value_policy import ValuePolicy  # noqa: E402
 
 # A quiet middlegame with a typical branching factor. Not the opening, where
@@ -50,8 +74,8 @@ from sumofish.value_policy import ValuePolicy  # noqa: E402
 POSITION = "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2Q1RK1 w - - 0 9"
 
 
-def search_nps(value: ValuePolicy, policy, seconds: float, batch: int) -> float:
-    mcts = MCTS(value, policy=policy, simulations=10**9, batch=batch, reuse=False)
+def search_nps(mcts_cls, value: ValuePolicy, policy, seconds: float, batch: int) -> float:
+    mcts = mcts_cls(value, policy=policy, simulations=10**9, batch=batch, reuse=False)
     board = chess.Board(POSITION)
     mcts.search(board.copy(), deadline=time.perf_counter() + 3.0)   # warm
     best = 0.0
@@ -72,7 +96,17 @@ def main() -> None:
     ap.add_argument("--seconds", type=float, default=6.0)
     ap.add_argument("--out", default=None)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--core", default=None, choices=("rust", "python"),
+                    help="pin the search core. Default: whatever CHESSGPU_CORE "
+                         "resolves to, i.e. the core that actually plays.")
     args = ap.parse_args()
+
+    # Pin by env rather than by passing the class around, so `select_mcts_class`
+    # stays the single place that decides and a typo still fails loudly there.
+    if args.core:
+        os.environ["CHESSGPU_CORE"] = args.core
+    mcts_cls, core_name = select_mcts_class()
+    print(f"  core: {core_name}  (batch {args.batch}, {args.seconds}s per arm)")
 
     policy, _ = load_policy(str(ROOT / "runs/policy.pt"), device=args.device)
 
@@ -81,7 +115,7 @@ def main() -> None:
         cfg = ModelConfig(**{**PRESETS[name].__dict__, "output_size": args.bins})
         model = ChessTransformer(cfg)
         value = ValuePolicy(model, HLGauss(bins=args.bins), device=args.device)
-        results[name] = search_nps(value, policy, args.seconds, args.batch)
+        results[name] = search_nps(mcts_cls, value, policy, args.seconds, args.batch)
         print(f"  {name:>5}  {results[name]:7.0f} nps in the search loop "
               f"({model.num_parameters():,} params)")
         del model, value
@@ -93,6 +127,10 @@ def main() -> None:
            "nps": {k: round(v) for k, v in results.items()},
            "ratio": round(ratio, 3),
            "doublings_lost": round(__import__("math").log2(ratio), 3),
+           # `core` is not decoration: a ratio is only comparable to another
+           # ratio measured on the same tree. The historical 2.17 carries no
+           # such field, which is precisely why it outlived the port.
+           "core": core_name,
            "batch": args.batch, "position": POSITION}
     print(f"\n  {args.preset} costs {ratio:.2f}x per node as the search feels it, "
           f"= {out['doublings_lost']:.2f} doublings of simulations at equal time")

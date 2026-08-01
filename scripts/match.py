@@ -88,6 +88,7 @@ from sumofish.hlgauss import HLGauss  # noqa: E402
 from sumofish.mcts import MCTS  # noqa: E402
 from sumofish.model import ChessTransformer, ModelConfig  # noqa: E402
 from sumofish.rules import terminal_value, terminal_value_legacy  # noqa: E402
+from sumofish.rust_mcts import select_mcts_class  # noqa: E402
 from sumofish.value_policy import ValuePolicy  # noqa: E402
 
 # The match statistics live in `elo.py` so that `lab.py` can read a result
@@ -661,8 +662,32 @@ def main() -> None:
     ap.add_argument("--max-plies", type=int, default=300)
     ap.add_argument("--adjudicate-wp", type=float, default=0.97)
     ap.add_argument("--adjudicate-plies", type=int, default=10)
-    ap.add_argument("--core", default="python", choices=("python", "rust"),
-                    help="search implementation for both sides unless overridden")
+    # Resolved through `select_mcts_class`, not hardcoded, so ONE place decides
+    # which core is "the" core and a typo in CHESSGPU_CORE still fails loudly
+    # there rather than silently selecting the other engine.
+    #
+    # This default was `"python"` until 2026-07-31, and it had been wrong since
+    # the Rust core went live on 2026-07-30. The cost is specific to fixed-TIME
+    # matches and it is severe: measured the same day, the Python tree runs the
+    # 9M at 3,041 nps against Rust's 8,135 (see runs/lab/profile-2026-07-31.json),
+    # so a `--time` match on the defaults handed both arms ~2.7x less search than
+    # the deployed engine gets and then reported the result as strength. Fixed-SIMS
+    # matches were unaffected -- the identity proof means the two cores build the
+    # same tree -- which is exactly why this survived: the failure is invisible in
+    # the experiment most often run and total in the one that decides promotions.
+    #
+    # Third instance of the same family. `bench_search.py` imported the Python
+    # MCTS outright (its `scale_m` was 1.7x too cheap as a result) and
+    # `rust_mcts.select_mcts_class` itself defaulted to Python until 07-31.
+    # LAB-NOTES already says "re-profile after every port"; the generalisation it
+    # was missing is that a port has to sweep the DEFAULTS of every instrument
+    # that consumes it, because each one keeps its own idea of what normal is.
+    ap.add_argument("--core", default=select_mcts_class()[1],
+                    choices=("python", "rust"),
+                    help="search implementation for both sides unless overridden. "
+                         "Defaults to what CHESSGPU_CORE resolves to, i.e. the core "
+                         "that actually plays. Pass --core python for the oracle "
+                         "comparison in tests/identity_*.py.")
     for _s in ("a", "b"):
         ap.add_argument(f"--{_s}-core", default=None, choices=("python", "rust"))
         ap.add_argument(f"--{_s}-dedup", action="store_true",

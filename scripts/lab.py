@@ -231,6 +231,35 @@ def ablation_argv(causal: str) -> list[str]:
     )
 
 
+def sweep_argv(preset: str, causal: str) -> list[str]:
+    """One arm of the width sweep: same tokens, same order, different width.
+
+    PHILOSOPHY has said since 2026-07-29 that `runs/` contains ZERO measurements
+    of d(loss)/d(params) -- every run in it is a 9M, so the scaling curve has no
+    points at all, not two. Every argument about "scale it up" has therefore been
+    a preference. Three points make it an argument.
+
+    MATCHED TOKENS, not matched wall clock, and the distinction is the whole
+    design. 20,000 steps at batch 1024 is 20.5M positions for every arm, so the
+    only thing that differs is width. Matching wall clock instead would hand the
+    small net 15x the data and measure the two effects summed, which is the
+    confound that makes most published scaling folklore useless.
+
+    `--seed 1234` is shared with the causal ablation above for the same reason it
+    is shared there: identical data order means the arms differ in one thing.
+    """
+    return python(
+        str(ROOT / "train.py"),
+        "--target", "state_value", "--value-bins", "64", "--preset", preset,
+        "--steps", "20000", "--batch-size", "1024", "--workers", "8",
+        "--lr", "3e-4", "--warmup", "2000", "--seed", "1234",
+        "--log-every", "500", "--eval-every", "2500", "--eval-puzzles", "1000",
+        "--ckpt-every", "20000", "--val-batches", "32", "--compile", "1",
+        "--causal", causal, "--run", f"sweep-{preset}",
+        "--auto-resume",
+    )
+
+
 # --- decisions -------------------------------------------------------------
 
 
@@ -319,6 +348,80 @@ def decide_scale(facts: dict) -> dict:
             f"regardless and letting the fixed-time match decide"}
 
 
+def decide_scaling_curve(facts: dict) -> dict:
+    """d(held-out loss)/d(log2 params), measured instead of assumed.
+
+    This replaces `train-136m`, which was 35 GPU-hours committed to the least
+    examined number in the plan. Its justification was `scale_bar = D x log2(m)`
+    = 265 Elo, and on 2026-07-31 BOTH inputs turned out to be unsound:
+
+      - `m` was 2.17, measured by `bench_search.py` while that script hardcoded
+        the PYTHON tree. On the core that actually plays it is 3.06, so the real
+        cost is 1.61 doublings of forgone search, not 0.83. And `m` is not a
+        property of the net -- it is the net divided by the tree around it, so
+        putting the tree in Rust made every future scale-up MORE expensive,
+        invisibly, because `m` is an input to the port's justification rather
+        than an output of it.
+      - `D` = 237.2 comes from the exchange-rate ladder retracted in
+        docs/2026-07-29-ladder-retraction.md, and PHILOSOPHY forbids justifying
+        any proposal with an Elo-per-doubling figure.
+
+    Meanwhile the 9M is measured to be UNDERFITTING at 600k steps (held-out
+    2.1120 below train 2.1845, gap never widening across 63 evals), which is the
+    signature of a model that has not run out of capacity. Spending 35 hours
+    widening a net that is not capacity-bound, to pay a search cost twice what
+    was budgeted, against a benefit nobody has measured, is the expensive way to
+    learn what six hours can tell you first.
+
+    So: three points, then decide. A curve that is still falling steeply at 9M
+    is an argument for width. A flat one is proof that the 35 hours would have
+    bought nothing, and it costs a sixth as much to find out.
+    """
+    import math
+
+    arms = {}
+    for preset, params in (("tiny", 0.3e6), ("9M", 8.9e6), ("136M", 136.3e6)):
+        rows = jsonl(ROOT / f"runs/sweep-{preset}/log.jsonl")
+        evals = [r for r in rows if "val_loss" in r]
+        steps = [r for r in rows if "loss" in r]
+        arms[preset] = {"params": params,
+                        "val_loss": evals[-1]["val_loss"] if evals else None,
+                        "puzzle_acc": evals[-1]["puzzle_acc"] if evals else None,
+                        "steps": steps[-1]["step"] if steps else 0}
+
+    usable = [(p, a) for p, a in arms.items() if a["val_loss"] is not None]
+    if len(usable) < 2:
+        return {"sweep_arms": arms, "sweep_why":
+                "fewer than two arms produced a held-out loss; the scaling curve "
+                "still has no points and no scaling proposal is licensed"}
+
+    usable.sort(key=lambda pa: pa[1]["params"])
+    slopes = []
+    for (p0, a0), (p1, a1) in zip(usable, usable[1:]):
+        d_log2 = math.log2(a1["params"] / a0["params"])
+        slopes.append({"from": p0, "to": p1,
+                       "d_val_loss": round(a1["val_loss"] - a0["val_loss"], 4),
+                       "per_doubling": round((a1["val_loss"] - a0["val_loss"]) / d_log2, 4)})
+
+    top = slopes[-1]
+    # The sign convention: val_loss FALLING with width is a negative slope, which
+    # is the case that argues FOR scaling. A slope at or above zero means the
+    # widest arm was no better than the one below it at matched tokens.
+    verdict = ("still improving with width" if top["per_doubling"] < -0.005
+               else "FLAT -- width bought nothing at matched tokens")
+    losses = ", ".join("{}={:.4f}".format(p, a["val_loss"]) for p, a in usable)
+    return {"sweep_arms": arms, "sweep_slopes": slopes,
+            "sweep_per_doubling": top["per_doubling"],
+            "sweep_why":
+            f"held-out loss changes {top['per_doubling']:+.4f} per doubling of "
+            f"parameters between {top['from']} and {top['to']} at matched tokens "
+            f"({losses}). "
+            f"{verdict}. This is the COST-FREE half of the trade; the search cost "
+            f"of the same step is a measured 1.61 doublings (m=3.06, see "
+            f"runs/lab/profile-2026-07-31.json), and the Elo value of a doubling "
+            f"remains RETRACTED, so this licenses an ordering, never an Elo claim"}
+
+
 def decide_promote(facts: dict) -> dict:
     """Deploy a winning checkpoint, if it also survives the smoke gate.
 
@@ -326,18 +429,21 @@ def decide_promote(facts: dict) -> dict:
     an untracked binary of unknown origin, and "which run was this, measured
     against what, by how much" is exactly what nobody will be able to answer.
     """
-    # Two candidates now, judged on the same clock. Whichever won by more, and
-    # only if it won at all: a bigger net and a longer-trained one are different
-    # bets and there is no reason to assume the expensive one wins.
+    # ONE candidate now. The 136M contender was removed 2026-08-01 along with the
+    # job that would have trained it; leaving it here would have made the
+    # fallback branch below select a `runs/136M-sv/best.pt` that cannot exist and
+    # report "no candidate at ..." as though a match had been lost. The list
+    # shape is kept because the "different bets, no reason to assume the
+    # expensive one wins" reasoning is right and the sweep may re-earn a second
+    # contender.
     contenders = [
-        (match_verdict("lab-136m-vs-current"), ROOT / "runs/136M-sv/best.pt", "136M"),
         (match_verdict("lab-9m-long-vs-current"), ROOT / "runs/9M-sv-long/best.pt", "9M-long"),
     ]
     winners = [c for c in contenders if c[0]["decisive"] and c[0]["elo"] > 0]
     if winners:
         verdict, candidate, which = max(winners, key=lambda c: c[0]["elo"])
     else:
-        verdict, candidate, which = contenders[0][0], contenders[0][1], "136M"
+        verdict, candidate, which = contenders[0]
 
     if not verdict["decisive"]:
         return {"promoted": False, "promote_why":
@@ -490,36 +596,38 @@ PLAN: list[Job] = [
     # evidence from this engine (see MCTS.c_puct_at), and the GPU those matches
     # would have burned goes to training instead, which is where it was wanted.
 
-    Job(id="train-136m", what="the 136M state-value run, only if `scale` said so",
-        argv=lambda f: python(
-            str(ROOT / "train.py"),
-            "--target", "state_value", "--value-bins", "64", "--preset", "136M",
-            # Warm-started, because this project measured warm-starting at
-            # +15.3 puzzle points and the first version of this job did not do
-            # it. A cold 136M spends a large part of its budget learning what a
-            # chess position is before it starts learning to evaluate one, and
-            # the resulting match then cannot separate scale from
-            # initialisation.
-            "--init-from", "runs/9M-causal/best.pt",
-            "--steps", "400000", "--batch-size", "256",
-            # Scaled for the batch. 3e-4 was tuned at batch 1024; carrying it
-            # unchanged to batch 256 is roughly 4x more aggressive per sample,
-            # into a model with 15x the parameters.
-            "--lr", "7.5e-5", "--warmup", "4000",
-            "--workers", "8", "--causal", f.get("causal", "1"),
-            # Every 5k, not every 20k. At 821 samples/s and batch 256 that was
-            # 6.9 hours between held-out numbers, so the first signal that the
-            # run was going badly arrived at hour seven of thirty-five.
-            "--log-every", "500", "--eval-every", "5000",
-            "--eval-puzzles", "1000", "--ckpt-every", "10000",
-            "--val-batches", "32", "--compile", "1",
-            "--run", "136M-sv", "--auto-resume"),
-        probe=lambda: train_progress("136M-sv"),
-        timeout=50 * HOUR, truncation_is_failure=True,
-        # After the tuning matches, deliberately. They are six hours and
-        # certain to produce a usable number; this is thirty-five and
-        # gated on arithmetic. Cheap certain Elo first.
-        needs=["scale"]),
+    # `train-136m` STOOD HERE AND IS DELETED, 2026-08-01. It was 35 GPU-hours
+    # committed to the least examined number in the plan, and the lab was parked
+    # on it -- `current: train-136m` -- for 2.7 days having never produced a
+    # `runs/136M-sv/`. See `decide_scaling_curve` above for the full argument;
+    # in one line: its `scale_bar` of 265 Elo was built from an `m` measured on
+    # the wrong search core (2.17 vs a real 3.06) and a `D` from a RETRACTED
+    # ladder, while the 9M it would replace is measured to be underfitting and
+    # still improving from training alone.
+    #
+    # Deleted rather than left in with a `needs` that never fires, because a job
+    # sitting in the plan is a claim that it is worth doing. It is replaced by
+    # the sweep below, which answers the same question -- does width help? -- for
+    # a sixth of the compute, and answers it BEFORE spending rather than after.
+    # `runs/lab/state.json.bak-2026-07-31` has the pre-change state if the old
+    # plan is ever wanted back.
+    Job(id="sweep-tiny", what="width sweep arm: 0.3M params, 20k steps, matched tokens",
+        argv=lambda f: sweep_argv("tiny", f.get("causal", "1")),
+        probe=lambda: train_progress("sweep-tiny"),
+        timeout=2 * HOUR, truncation_is_failure=True, needs=["causal"]),
+    Job(id="sweep-9m", what="width sweep arm: 8.9M params, same tokens and seed",
+        argv=lambda f: sweep_argv("9M", f.get("causal", "1")),
+        probe=lambda: train_progress("sweep-9M"),
+        timeout=4 * HOUR, truncation_is_failure=True, needs=["causal"]),
+    Job(id="sweep-136m", what="width sweep arm: 136M params, same tokens and seed",
+        argv=lambda f: sweep_argv("136M", f.get("causal", "1")),
+        probe=lambda: train_progress("sweep-136M"),
+        # The dear arm, and the reason the whole sweep is affordable anyway:
+        # 20k steps of 136M is hours, where the deleted job was 400k steps.
+        timeout=12 * HOUR, truncation_is_failure=True, needs=["causal"]),
+    Job(id="scaling-curve", what="d(held-out loss)/d(log2 params), the curve's first points",
+        decide=decide_scaling_curve,
+        needs=["sweep-tiny", "sweep-9m", "sweep-136m"]),
 
     # The other way to spend unlimited compute, and the one with no downside at
     # play time. The 9M is UNDERFITTING, measured: held-out loss 2.1438 against
@@ -551,21 +659,16 @@ PLAN: list[Job] = [
         probe=lambda: match_progress("lab-9m-long-vs-current"),
         timeout=12 * HOUR, needs=["train-9m-long"]),
 
-    Job(id="match-136m", what="the trained 136M against the live 9M, on a CLOCK",
-        # Fixed time, not fixed simulations, and this is the whole point of the
-        # job. Equal simulations measures whose judgement is better; equal wall
-        # clock measures who wins a game, and a bigger net pays for its
-        # judgement in simulations it no longer gets to run. 0.5s is inside the
-        # band the bot's own time management hands a bullet or blitz move.
-        argv=lambda f: match_argv("lab-136m-vs-current",
-                                  "--a-value", str(ROOT / "runs/136M-sv/best.pt"),
-                                  "--b-value", str(ROOT / "runs/value.pt"),
-                                  "--a-label", "136M", "--b-label", "live-9M",
-                                  games=200, budget=("--time", "3.0")),
-        probe=lambda: match_progress("lab-136m-vs-current"),
-        timeout=20 * HOUR, needs=["train-136m"]),
+    # `match-136m` went with `train-136m`: it existed only to play a checkpoint
+    # that is no longer going to be trained. Its reasoning survives and is worth
+    # keeping, because it applies to EVERY candidate net this lab ever weighs --
+    # equal simulations measures whose judgement is better, equal wall clock
+    # measures who wins a game, and a bigger net pays for its judgement in
+    # simulations it no longer gets to run. That is why `match-9m-long` below is
+    # also a fixed-TIME match. Re-measured 2026-07-31, the size of that payment
+    # is 1.61 doublings for a 136M, not the 0.83 the old plan assumed.
     Job(id="promote", what="deploy the winner, if it wins AND boots AND is fast enough",
-        decide=decide_promote, needs=["match-136m", "match-9m-long"]),
+        decide=decide_promote, needs=["match-9m-long"]),
     Job(id="report", what="write runs/lab/report.md", decide=write_report),
 ]
 

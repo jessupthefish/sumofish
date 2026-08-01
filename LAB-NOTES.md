@@ -622,3 +622,89 @@ and say so, because a note that was believed for a month is itself evidence.
   `multiprocessing.Pool` workers (including the live engine subprocess) are
   mid-game untouched, exactly what `quit_after_all_games_finish` is designed
   to protect.
+
+## 2026-07-31: a port has to sweep the DEFAULTS of everything downstream
+
+- **The Rust port silently broke three instruments by leaving their defaults
+  pointed at Python.** `LAB-NOTES` already said "re-profile after every port".
+  That was too narrow. The port changed which core is *normal*, and every tool
+  that consumes the core kept its own private idea of normal:
+
+  | instrument | stale default | what it cost |
+  |---|---|---|
+  | `rust_mcts.select_mcts_class` | defaulted Python | fixed 07-31, was the known one |
+  | `scripts/bench_search.py` | imported `sumofish.mcts` outright, never consulted the selector | `scale_m` measured 1.7x too CHEAP |
+  | `scripts/match.py:664` | `--core` defaulted `"python"` | every fixed-TIME match since 07-30 measured a 2.7x-slower engine |
+
+- **Why `match.py` survived nine months of use is the transferable part.** The
+  failure is *invisible* in a fixed-SIMULATION match -- the identity proof means
+  both cores build the same tree, so the result is genuinely unaffected -- and
+  *total* in a fixed-TIME match, where one arm simply gets 2.7x less search than
+  the deployed engine. So the bug hid in the experiment that is run constantly
+  and only bit the one that decides promotions. **When a flag is inert in the
+  common experiment and decisive in the rare one, its default gets no testing
+  from use.** Audit those deliberately; nothing else will.
+
+- **`m` is not a property of the model, it is the model divided by the tree
+  around it.** This is why the stale `scale_m` mattered and why the direction is
+  counterintuitive: making the TREE faster makes every future model scale-up more
+  EXPENSIVE, because the dearer forward pass is no longer diluted by anything.
+  Measured on an idle box at batch 64 (`runs/lab/profile-2026-07-31.json`):
+
+        core     9M nps   136M nps   m      doublings lost
+        python    3,041      1,706   1.78x  0.83
+        rust      7,763      2,537   3.06x  1.61
+
+  The Rust port did not merely fail to help the case for a bigger net. It
+  roughly doubled the search a bigger net has to pay for. And `m` is an INPUT to
+  the port's own justification rather than an output of it, so nothing in the
+  port's verification could have caught this.
+
+- **Network share, measured directly rather than inferred** (time the evaluator
+  alone, divide by per-node search time): Rust **~100%** (102.2%, tree -2.2%),
+  Python **38.2%**. The long-quoted "9% in Python" is wrong by ~4x and every
+  extrapolation that used it as a denominator inherited that. The `89.3%` for
+  Rust is essentially right. Over 100% is not a paradox: a synthetic full batch
+  of 64 costs marginally more than the search's real ragged batches, so it means
+  the tree term is below the noise, ~5% here.
+
+- **Neither of those two numbers had an artifact behind it** -- both existed only
+  as prose in `STATE.md` and this file. That is how a wrong one survives next to
+  a right one. A profile figure quoted in prose with no JSON beside it should be
+  read as a rumour.
+
+- **`code_fingerprint()` hashes `sumofish/**/*.py` plus the git SHA, and NOT
+  `scripts/match.py`.** So editing the harness mid-match does not disturb a
+  running match's provenance, but it also means the fingerprint would not catch
+  a harness edit that changed how games are played. Worth knowing in both
+  directions before editing anything mid-experiment.
+
+## 2026-08-01: draining the bot is two commands, not one
+
+- **`systemctl kill --kill-who=main --signal=SIGINT sumofish-bot` drains the bot
+  correctly and then systemd puts it straight back.** The unit is
+  `Restart=always` with `RestartUSec=10s`, and `kill` signals the process without
+  marking the UNIT stopped, so the clean shutdown looks exactly like a crash to
+  systemd: `Scheduled restart job, restart counter is at 1` ten seconds later.
+  Bit me tonight -- the bot came back at 03:14:22 and spent several minutes
+  contending with a training run that had just been launched precisely because
+  the bot was supposed to be down.
+- The earlier note recommending `systemctl kill --kill-who=main` over
+  `systemctl stop` is still right about *why* (stop signals the whole cgroup and
+  takes the engine subprocess out mid-game, abandoning a live rated game). It was
+  incomplete. **The correct sequence is BOTH, in order**: `kill --kill-who=main
+  --signal=SIGINT` to drain, wait for the games to finish and the main pid to
+  exit, then `systemctl stop` to keep it down. Checking `is-active` once right
+  after the drain is not enough -- the restart lands 10 seconds later, so a check
+  that runs immediately sees `inactive` and reports success.
+- Generalisation: **`systemctl kill` and `systemctl stop` answer different
+  questions.** `kill` is "signal this process"; `stop` is "I intend this unit to
+  be down". Only the second one survives a `Restart=` policy. Any unit with
+  `Restart=always` cannot be taken down by signalling alone, no matter how
+  gracefully.
+- Unrelated but from the same hour: conceding a live rated game to free the GPU
+  puts a loss in `logs/rating.jsonl` that is **indistinguishable from a loss the
+  engine earned**. Two of them cost ~14 rapid Elo at RD 45 and will silently
+  contaminate any before/after comparison spanning that moment. If a game must be
+  ended early for machine time, record the game ids and the timestamp so the
+  rating can be read around them.

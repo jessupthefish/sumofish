@@ -31,35 +31,83 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
-## Where things stand (2026-07-29, end of session 6)
+## Where things stand (2026-07-31, session 7)
 
-> **OVERNIGHT STATE, left running 2026-07-29 ~20:10.**
+> **The 2026-07-29 overnight block that stood here is deleted, not demoted, per
+> this file's own rule.** Its run finished. Every unit-state claim in it had also
+> gone false, in the direction that matters: it said the bot no longer autostarts
+> (it is `enabled` again) and that the train watchdog was STOPPED (it is `active`
+> and `enabled`, firing every 5 minutes). A reader trusting it would have
+> mis-modelled what can wake up and take the GPU.
+
+> **CURRENT, 2026-07-31 ~21:35.**
 >
-> - `sumofish-continue.service` is training the 9M value net from step 321,746
->   to 600,000. ~8 h. systemd-supervised, `Restart=on-failure`, `--auto-resume`,
->   so a crash resumes from `latest.pt` instead of losing the night.
->   Watch: `journalctl --user -u sumofish-continue -f`.
-> - **The bot is DOWN and no longer autostarts.** It was stopped for the GPU,
->   then restarted at 19:42:31 by what was almost certainly a PARALLEL Claude
->   Code session doing dashboard work (commits by Jessupthefish at 19:41
->   "the results panel was empty" and 19:47 "snapshot every panel" -- both want
->   a live bot to populate panels). The watchdog explicitly declined ("not ours
->   to restart") and nothing in the repo starts it, so it came from outside.
->   **If you run two sessions at once, say so up front**: a second session
->   starting the bot during a wall-clock match silently invalidates the match,
->   and starting it during training halves the throughput of both. `systemctl --user disable` removed the unit symlink
->   as well as the autostart, so it was re-linked: the unit is `linked` and
->   `inactive`, startable with `systemctl --user start sumofish-bot`, and no
->   longer pulled in by `default.target`. Restore autostart with
->   `systemctl --user enable sumofish-bot` -- but find the restarter first,
->   because an unexplained start during a wall-clock match invalidates it.
-> - `sumofish-train-watchdog.timer` is STOPPED. Its remedy is restarting the
->   LAB, and this run is direct, so it would have launched a conflicting job.
->   The systemd unit above supersedes it for this run. Restart the timer when
->   lab-managed training resumes.
-> - **Nothing is measuring strength right now.** Training is not measurement,
->   and the bot -- the only absolute anchor -- is paused. The rungs get priced
->   with `scripts/ladder.py` once the run has produced them.
+> - **The 9M continue run FINISHED.** `runs/9M-sv-continue` reached step 600,000.
+>   Best held-out is step 595k: **val 2.1117, puzzles 0.699**. The unit is gone
+>   (it was transient; `is-enabled` reports `not-found`, which is expected and
+>   not a fault).
+> - **That checkpoint has never been deployed.** `runs/value.pt` still dates from
+>   2026-07-28 22:12 and is the ~300k-era net (val ~2.1438, puzzles ~0.687). The
+>   bot has been playing the OLDER net for two days. A fixed-time match to settle
+>   it is running now -- see below.
+> - **The bot is DOWN** (stopped 21:12:20, clean exit, no game abandoned) and its
+>   opponent window was changed today; see "Open, smaller". It is `enabled`, so it
+>   WILL come back on next login/boot. That is a hazard during any wall-clock
+>   experiment: `systemctl --user disable sumofish-bot` if one is due to span a
+>   reboot.
+> - **`sumofish-train-watchdog.timer` is ACTIVE**, every 5 minutes. It is
+>   currently harmless -- it logs "no live training process; nothing to watch" and
+>   exits, verified at 21:25 and 21:30 with a match already running, so it does
+>   NOT mistake a match for training. But its remedy is restarting the LAB, so it
+>   is only harmless while no training process exists.
+> - **The lab is PARKED on a dead job.** `runs/lab/state.json` has
+>   `current: train-136m` from ~2.7 days ago, `sumofish-lab` is inactive, and
+>   there is no `runs/136M-sv/`. The queue cannot advance until that job is reset.
+> - **Something IS measuring strength**: a 20-game fixed-time pilot,
+>   `runs/matches/pilot-600k-vs-live-2026-07-31`, sizing the full promotion match.
+>
+> > **HOW TO READ THE RATING, and why it is confounded.** Two things changed
+> within 20 minutes of each other on 2026-07-31, so any rating movement from
+> here has two candidate causes and the rating alone cannot separate them:
+>
+> | when | change |
+> |---|---|
+> | ~21:05 | opponent window 1846-2846 (symmetric) -> 2200-3000 (asymmetric, harder) |
+> | 23:17:28 | value net ~300k-era -> 600k checkpoint |
+> | 23:17:50 | bot restarted, both changes live together |
+> | ~03:15 (08-01) | bot drained for the policy retrain |
+>
+> They push in OPPOSITE directions, which is the awkward part: a better net
+> should raise the rating, a harder pool should lower it, and a null result is
+> equally consistent with "both worked" and "neither did".
+>
+> First data, 08-01 03:15: **8 games, rapid 2339 -> 2357 (+18), 170 -> 178
+> games.** That is not a result and must not be quoted as one -- 8 games is worth
+> roughly +-300 Elo, so the interval swamps the point estimate by an order of
+> magnitude. What it is: not negative, which is weak evidence against the worry
+> that the harder pool would sink the rating outright.
+>
+> **Two of the games after that are ARTIFICIAL LOSSES and must be excluded.**
+> Steven conceded the two in flight (`WUtbaAsG`, `qCL90DHS`) at ~03:14 to free the
+> GPU for the overnight run. They are resignations by the operator, not by the
+> engine, and they are indistinguishable from real losses in `logs/rating.jsonl`
+> and in the lichess history. Any rating read that spans 2026-08-01 03:14 is
+> carrying two losses the engine did not earn -- worth roughly -14 rapid Elo at
+> RD 45. **The clean baseline for judging the promoted net is the rating BEFORE
+> 03:14, or a fresh sample after ~30 more games have washed them out.**
+>
+> To actually separate them, revert ONE and hold the other for ~50 games. The
+> cheaper revert is the window (`config/lichess-bot.yml`, one line); the net has
+> `scripts/promote.py --rollback`. Doing neither is also defensible -- both
+> changes are believed good and the combined effect is what gets played -- but
+> then stop treating the rating as evidence for either one individually.
+
+**Standing rule, promoted out of the deleted block because it is not status:**
+> if you run two Claude sessions at once, say so up front. A second session
+> starting the bot during a wall-clock match silently invalidates the match, and
+> starting it during training halves the throughput of both. This has happened
+> once already (an unexplained bot start at 19:42:31 on 07-29, from outside the
+> repo -- the watchdog declined and nothing in-tree does it).
 
 **The engine is Rust, provably identically, and 3.6x faster. The two extra
 speed flags were measured and cost 168 Elo, so they are off.**
@@ -77,6 +125,20 @@ same clock**. The earlier "8.9x" was extrapolated from the *Python* profile
 where the network was 9% of wall clock; with the tree in Rust the network is
 **89.3%** and the tree is 1.3%, so the same arithmetic gives a different answer.
 Re-profile after every port.
+
+**Re-measured 2026-07-31 on an idle box** (`runs/lab/profile-2026-07-31.json`,
+batch 64). Neither of the two figures above had an artifact behind it; only one
+survives:
+- Network share in **Rust: ~100%** (network 102.2%, tree -2.2%). Over 100% is
+  slop -- a synthetic full batch costs marginally more than the search's real
+  ragged ones -- and means the tree is *unmeasurable* at this batch, not that
+  the arithmetic broke. So **89.3% is essentially confirmed**; if anything it
+  understates it.
+- Network share in **Python: 38.2%, not 9%**. The 9% is the bad number. Every
+  extrapolation that used it as the denominator was wrong by ~4x.
+- **The 3.6x does not reproduce here: 2.67x** (3,041 -> 8,135 nps at batch 64).
+  Not necessarily a contradiction -- different batch, different day -- but 3.6x
+  has no artifact either. Re-earn it before quoting it again.
 
 **2. `dedup` and `compile` are OFF, and that is a measured decision, not
 caution.** Both are faster per call and both preserve the tree at a fixed
@@ -176,14 +238,49 @@ sizing script does not do.
 
 **7. The scaling curve has zero points.** A width sweep (~6 GPU-h) at matched
 tokens is what makes "scale it up" an argument instead of a preference.
+**Now IN THE PLAN, 2026-08-01**: `sweep-tiny` / `sweep-9m` / `sweep-136m` +
+`scaling-curve` in `scripts/lab.py`, three arms at 20k steps and batch 1024
+(20.5M positions each) sharing `--seed 1234`, so the arms differ in width and
+nothing else. Matched TOKENS, not matched clock -- matching clock would hand the
+small net 15x the data and measure the two effects summed. They replace
+`train-136m`, which is deleted: see below.
 
-**8. `d(loss)/d(params)`, then kernels.** Not before 4-7.
+**8. `d(loss)/d(params)`, then kernels.** Not before 4-7. Item 7 is now the
+thing that produces it.
+
+**`train-136m` is DELETED from the lab plan (2026-08-01), not deferred.** It was
+35 GPU-hours resting on `scale_bar = D x log2(m) = 265 Elo`, and both inputs were
+unsound: `m` was 2.17 measured on the *Python* tree (really 3.06, so 1.61
+doublings of forgone search, not 0.83) and `D = 237.2` came from the retracted
+ladder. The 9M it would have replaced is measured to be underfitting and still
+improving from training alone. The sweep answers the same question for a sixth of
+the compute and answers it *before* spending. `runs/lab/state.json.bak-2026-07-31`
+restores the old plan if wanted. `match-136m` went with it, and `promote` now
+needs only `match-9m-long`.
+
+**The four `sims-*` ladder rungs are now marked FAILED in the lab state**, not
+completed, and their Elo figures are withheld from the status board. They were
+the replayed matches; leaving them rendering as `+218 / +283 / +237` on the
+`sumofish-lab` board was a live-looking claim at a point of use, which is exactly
+what PHILOSOPHY says to delete rather than annotate. **Consequence to be aware
+of: the lab will now try to re-earn them (~10 GPU-h) the next time it runs.**
+That is roadmap item 2 and is intended -- but it is a real resource commitment
+that will start on its own, so decide before `systemctl --user start sumofish-lab`.
 
 **Open, smaller:**
 
-- Remove `opponent_max_rating: 2200` from `config/lichess-bot.yml` once the
-  rating is non-provisional (~30 rated games). A training wheel that exists
-  only because lichess starts every BOT at a fake 3000.
+- ~~Remove `opponent_max_rating: 2200`~~ **Done 2026-07-31.** Rapid is settled
+  (2346, RD 45, 168 rated games) so the training wheel came off. The real find
+  was that it had never been ON: `opponent_rating_difference: 500` silently
+  overrides both bounds whenever the rating is known (upstream
+  `matchmaking.py:175-178`), so the effective window was always [1846, 2846] and
+  the 2200 ceiling was dead config. Replaced with an ASYMMETRIC window,
+  `opponent_min_rating: 2200` / `opponent_max_rating: 3000`, because the bot pool
+  is bottom-heavy relative to us and a symmetric window cannot stop feeding us
+  weaker opponents at any width. Measured against the live 333-bot online list:
+  the old window gave 150 candidates, 94 of them BELOW us; the new one gives 114,
+  only 31 below. These bounds are static and do not track the rating -- revisit
+  if rapid moves more than ~150.
 - **Fixed 2026-07-30.** This line previously said "virtual loss is applied to
   N and not Q" -- backwards. Direct code read confirmed the actual defect was
   the opposite: virtual loss was applied via a real `backup()` call, so it
@@ -213,9 +310,30 @@ tokens is what makes "scale it up" an argument instead of a preference.
   not capacity-bound -- 307M samples is under one epoch of a 36GB bag, so
   overfitting is not available as an explanation. An earlier version of this
   file asserted the opposite and steered a 37-hour run.
+- **Extended to 600k, and it is STILL underfitting.** `runs/9M-sv-continue`:
+  val 2.1522 at 305k -> **2.1120 at 600k**, puzzles 0.682 -> **0.700**. Held-out
+  loss sits *below* train loss at all 63 evals and the gap never widens
+  (-0.092 at 305k, -0.066 at 600k), so nothing has been memorised. Val was still
+  falling at the end (-0.0049 over the last quarter). Caveat that cuts against
+  the point and is recorded anyway: there is no dropout in `model.py`, so that is
+  not the cause, but train loss is a running average while val is a clean pass,
+  so some of the negative gap is bookkeeping. The load-bearing part is that the
+  gap does not WIDEN across a 2x extension. **Doubling the training at fixed
+  parameters bought real held-out gain at zero cost per move in a game.**
+- **The cost of scaling, re-measured on the core that plays** (2026-07-31): a
+  136M value net costs **3.06x per node**, = **1.61 doublings of search
+  forgone**, not the 2.17x / 0.83 doublings in `runs/lab/state.json`. That
+  stored figure came from `bench_search.py` back when it hardcoded the *Python*
+  tree. `m` is not a property of the net, it is the net divided by the tree
+  around it -- so **the Rust port made every future scale-up more expensive**,
+  and did so invisibly, because `m` is an input to the port's justification
+  rather than an output of it. Cost side measured; benefit side still zero
+  points. See `runs/lab/profile-2026-07-31.json`.
 - Puzzle accuracy at n=1000 has a binomial sigma of +-1.5%, larger than the
   entire 150k->300k gain anyone was reading off it.
 - Post-port profile: network **89.3%**, tree 1.3%. Launch-bound below ~128 rows.
+  Re-measured 07-31 at batch 64: network ~100%, tree unmeasurable. The Rust
+  search is network-bound to the point where tree work does not show up.
 - The prior softmax **cannot** be ported: numpy's float32 `exp` is not correctly
   rounded and differs from a correctly-rounded double `exp` on 39.7% of inputs,
   which reaches 95.4% of positions getting at least one differing prior. A
