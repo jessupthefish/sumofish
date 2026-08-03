@@ -100,6 +100,17 @@ LAB = ROOT / "runs" / "lab"
 STATE = LAB / "state.json"
 EVENTS = LAB / "log.jsonl"
 
+# Jobs are spawned with `subprocess.Popen(argv, cwd=ROOT)`, which inherits this
+# process's environment, so setting it here reaches every job. `setdefault`, not
+# assignment, so an operator running one job by hand with a different allocator
+# config keeps theirs.
+#
+# expandable_segments stops the caching allocator from fragmenting a 16 GB card
+# into pieces too small for the next activation. The 136M sweep arm OOMs without
+# it at a batch size that fits with it, which is the difference between a queue
+# that runs overnight and one that halts at 00:34 and is still halted at 08:00.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 HOUR = 3600
 
 # A match may not be called decisive on fewer pairs than this even if the
@@ -248,16 +259,44 @@ def sweep_argv(preset: str, causal: str) -> list[str]:
     `--seed 1234` is shared with the causal ablation above for the same reason it
     is shared there: identical data order means the arms differ in one thing.
     """
+    BATCH, ACCUM = "128", "8"   # effective batch 128 x 8 = 1024, see below
     return python(
         str(ROOT / "train.py"),
         "--target", "state_value", "--value-bins", "64", "--preset", preset,
-        "--steps", "20000", "--batch-size", "1024", "--workers", "8",
+        "--steps", "20000", "--batch-size", BATCH, "--accum", ACCUM,
+        "--workers", "8",
         "--lr", "3e-4", "--warmup", "2000", "--seed", "1234",
         "--log-every", "500", "--eval-every", "2500", "--eval-puzzles", "1000",
         "--ckpt-every", "20000", "--val-batches", "32", "--compile", "1",
         "--causal", causal, "--run", f"sweep-{preset}",
         "--auto-resume",
     )
+
+
+# WHY BATCH 128 x ACCUM 8 AND NOT BATCH 1024, 2026-08-02. The first version of
+# this sweep passed `--batch-size 1024` to every arm and the 136M arm died on
+# `torch.OutOfMemoryError` fifteen seconds in, three times, taking the whole
+# queue down with it (the lab halts on a failed job). 136M at batch 1024 needs
+# well over the card's 16 GB once activations at embedding_dim=1024 are counted;
+# it does not fit at batch 256 either, measured, with ~12.9 GB free.
+#
+# The information that would have prevented this was RIGHT THERE in the job this
+# sweep replaced: `train-136m` used `--batch-size 256` and carried a comment
+# about scaling the LR for it. Deleting a job deletes its hard-won constraints
+# along with its reasoning -- when replacing one, read what its parameters were
+# defending against, not just what it concluded.
+#
+# Gradient accumulation is the fix that keeps the experiment honest: 128 x 8 is
+# the same 1,024 positions per optimiser step as before, `train.py` divides the
+# loss by `--accum`, and there is no batchnorm anywhere in the model, so the
+# update is equivalent up to float ordering.
+#
+# ALL THREE arms use it, including the two that had already run fine at batch
+# 1024. Re-running them costs ~51 minutes and buys the thing this sweep exists
+# for: `sweep_argv`'s docstring promises the arms differ in width and nothing
+# else, and an arm with a different accumulation structure is a second
+# difference. A scaling curve is an argument, and an argument with a known
+# confound in it is worth less than the GPU-hour it saves.
 
 
 # --- decisions -------------------------------------------------------------
