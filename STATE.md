@@ -45,14 +45,29 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
 > **CURRENT, 2026-08-05 ~17:30.**
 >
-> - **The bot is DRAINING and will be down.** `kill --kill-who=main
->   --signal=SIGINT` at 17:29:51, two games in flight, then `stop` once the main
->   pid exits. Taken down to give the 136M sweep arm an uncontended GPU.
->   **Autostart is off for the duration** (the unit is `linked`, not `enabled`),
->   because the sweep arm's own unit IS enabled and a reboot would otherwise
->   bring both up to fight over the card. `systemctl --user enable sumofish-bot`
->   puts it back, and that is the last step of this experiment, not an optional
->   tidy-up: forget it and the bot silently stops coming back after a reboot.
+> - **The bot is UP and playing, and the sweep runs alongside it.** It was
+>   drained at 17:29:51 and the drain was ABANDONED at 17:44 for two reasons, the
+>   second of which is the important one.
+>
+>   **It could not converge.** `SIGINT` makes lichess-bot answer "Waiting for
+>   games to finish before quitting", but its MATCHMAKER keeps running and keeps
+>   issuing outgoing challenges at `challenge_timeout: 1`. Fifteen minutes in it
+>   had gone from two live games to three, one of them started ten minutes AFTER
+>   the drain. "Wait for the main pid to exit" is a wait that does not end while
+>   matchmaking is on, and `systemctl stop` is clean only at zero games, so there
+>   is no safe moment to take. Draining this bot means turning off matchmaking
+>   first, which needs a restart, which abandons the games you were protecting.
+>
+>   **And it was the wrong thing to want.** The sweep's output is held-out loss
+>   at a fixed 20,000 steps, which is a function of data, order and seed -- GPU
+>   contention changes how long it takes and not what it computes. Worse, the
+>   `tiny` and `9M` arms both ran on 08-02 while the bot was playing (the rating
+>   log shows games accumulating right through both), so an idle box would have
+>   made the 136M arm the ODD one out. The premise for the drain was mine and it
+>   was wrong; the comparable condition is the contended one.
+>
+>   Autostart is back on. It was briefly off, which is where the next note comes
+>   from.
 >
 >   > **`systemctl --user disable` DELETES A SYMLINKED UNIT FILE.** These units
 >   > are symlinks from `~/.config/systemd/user/` into `systemd/` in the repo, and
@@ -62,9 +77,10 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   > supervisor polling `systemctl show -p MainPID` sees an empty string at that
 >   > moment and cannot tell it from "the process exited". Restore with
 >   > `ln -sf <repo>/systemd/<unit> ~/.config/systemd/user/<unit>` +
->   > `daemon-reload`; the unit comes back as `linked`, which is the wanted state
->   > anyway. To turn off autostart without this, delete only the
->   > `default.target.wants/` symlink.
+>   > `daemon-reload`, which brings it back as `linked`; `enable` then puts the
+>   > autostart link back and it reads `enabled` again, which is where it is now.
+>   > To turn off autostart WITHOUT this, delete only the
+>   > `default.target.wants/` symlink and leave the unit symlink alone.
 > - **`sumofish-train-continue.service` is still `enabled`** and points at the
 >   FINISHED 600k run. Harmless as it stands -- `latest.pt` is at step 600,000 of
 >   600,000, so `--auto-resume` loads it and exits -- but it is a unit that starts

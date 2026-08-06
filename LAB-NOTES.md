@@ -798,3 +798,29 @@ and say so, because a note that was believed for a month is itself evidence.
   machine's actual journal instead of over fixtures someone wrote. **Keep at
   least one test whose input is real production data**; the hand-written fixtures
   had passed this whole time.
+- **A drained lichess-bot does not converge, because the matchmaker ignores the
+  drain.** `systemctl kill --kill-who=main --signal=SIGINT` gets you "Waiting for
+  games to finish before quitting", and then `matchmaking.py` goes right on
+  issuing OUTGOING challenges at `challenge_timeout: 1`. Fifteen minutes into a
+  drain the bot had gone from two live games to three, one started ten minutes
+  after the SIGINT. So the earlier note's "wait for the main pid to exit, then
+  `stop`" is a wait with no end while matchmaking is on, and `stop` is clean only
+  at zero games. **Draining this bot for real means `allow_matchmaking: false`
+  first, which needs a restart, which abandons the games the drain existed to
+  protect.** Plan the restart for a moment you have already chosen instead.
+- **And check whether the thing you are draining for actually cares.** The drain
+  above was to give a training run an uncontended GPU. Training's output at a
+  fixed step count is a function of data, order and seed; contention changes the
+  wall clock and nothing else. Worse, the two arms this one is compared against
+  were themselves trained while the bot played, so an idle box would have made
+  the third arm the odd one out. Cost: 15 minutes and a deleted unit file, for a
+  premise that inverted on ten seconds of thought about what the metric is.
+- **`train.py` opens `log.jsonl` with mode `"a"`, so a re-run of a dead run
+  appends to the corpse.** Restarting `sweep-136M` left the log holding the
+  previous attempt's steps 500-5,000 followed by the new run's step 500, and
+  `train_progress` reads `steps[-1]`, so for the first ten minutes the lab board
+  would have reported "step 5,000 val 2.8646" for a run that had just started.
+  `best.pt` is the same hazard with worse consequences: it survives from the dead
+  run until the new run's first eval beats it, so between them the file is a
+  different experiment's checkpoint under the current experiment's name. Move
+  both aside before relaunching (`log.jsonl.dead-<date>`, `best.pt.dead-<date>`).
