@@ -245,18 +245,39 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > crippled base buys little; doubling from a healthy one buys the ~240 the upper
 > rungs show.
 >
-> Screening run in flight: `runs/matches/sims-400-vs-200-vlossfix`, the same rung
-> with the fix ON for both arms, 100 games. **100 games is a screen, not a rung**
-> -- the ladder's are 300 -- and it can only say whether the effect is large
-> enough to be worth re-earning the whole ladder for. If it is, the ladder is
-> re-earned with `--a-vloss-fix --b-vloss-fix`, and `match_argv` should pass them
-> by default so no future lab match measures the undeployed engine again.
+> **CONFIRMED, and it is the whole anomaly.** The same rung re-screened with the
+> fix ON for both arms: **+214.8 +-69.8, W60 D35 L5 over 100 games, LOS 100%**
+> (`runs/matches/sims-400-vs-200-vlossfix`), against **+29.0 +-25.1** with it
+> off. The intervals do not overlap and the rung lands in line with the other
+> three. 100 games is a screen and not a rung -- the ladder's are 300 -- so treat
+> the point estimate as indicative and the direction as settled.
 >
-> **The other candidate, if this one fails: tree reuse.** Every rung ran with
-> `reuse: true`, and carrying the tree between moves adds roughly a fixed number
-> of nodes per move regardless of the nominal sim count, which is proportionally
-> a much larger subsidy to a 200-sim arm than to a 3200-sim one. Same predicted
-> shape, different mechanism.
+> **Consequences, all acted on:**
+>
+> - `match_argv` now passes `--a-vloss-fix --b-vloss-fix`, so every future lab
+>   match measures the engine that plays. Deliberately set there and NOT in
+>   `match.py`, whose defaults must stay off: `tests/identity_*.py` need all
+>   three defects off for the Rust/Python identity to hold. The identity test and
+>   the strength test want opposite defaults.
+> - **All four rungs and the `scale` decision are WITHDRAWN**, and `scale_D` /
+>   `scale_bar` / `scale_why` are withdrawn out of `facts` so the 377 Elo bar is
+>   not readable as live at the one place it gets used. `scale_m` (3.06, the
+>   forward-pass cost ratio) survives: it never depended on the ladder.
+> - Re-earning the ladder is ~10 GPU-h and **nothing starts it automatically**.
+>   The withdrawn jobs are only eligible; `sumofish-sweep-136m.service` is
+>   `--only`, so tonight's run cannot walk into them.
+> - The withdrawal lives in **`runs/lab/withdrawn.json`**, not in `state.json`,
+>   and `load_state()` overlays it. That is not tidiness: `run()` reads the state
+>   once at startup and writes that snapshot back at every job boundary, so a
+>   withdrawal edited into `state.json` during tonight's 8-hour job would have
+>   been silently reverted at ~01:45 by a process holding a copy from 17:44. A
+>   retraction has to survive a runner that disagrees with it.
+>
+> **The other candidate, no longer needed but not disproven: tree reuse.** Every
+> rung ran with `reuse: true`, which subsidises a 200-sim arm proportionally more
+> than a 3200-sim one. It predicts the same shape and the vloss fix has now
+> explained that shape, so it is not worth chasing on its own evidence -- but the
+> re-earned ladder will still carry it, on both arms, as the bot does.
 
 > **Nothing is measuring strength against external opposition right now.** The
 > bot is draining, so the lichess anchor is paused, and no match is running.

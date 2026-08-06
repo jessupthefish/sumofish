@@ -223,8 +223,31 @@ def python(*args: str) -> list[str]:
 
 
 def match_argv(name: str, *extra: str, games: int = 300, budget=("--sims", "400")):
+    """A match between two configurations of THE ENGINE THAT PLAYS.
+
+    `--a-vloss-fix`/`--b-vloss-fix` are not an option here, they are the
+    deployment. `sumofish-bot.service` has run `CHESSGPU_VLOSS_FIX=1` since
+    2026-07-30, and `match.py`'s flags are `store_true` defaulting to off, so
+    every lab match before 2026-08-05 measured an engine that has not played a
+    rated game in a week. That is not a small discrepancy: the fix earned its
+    default at +364 Elo, and re-screening the ladder's first rung with it on
+    moved that rung from **+29.0 +-25.1 to +214.8 +-69.8** (100 games, LOS 100%),
+    which is the whole of that rung's famous anomaly.
+
+    Deliberately set HERE and not in `match.py`, whose defaults must stay off:
+    `tests/identity_*.py` compare the Rust core against `sumofish.mcts` and the
+    identity holds only with all three known defects off. The identity test and
+    the strength test want opposite defaults, which is exactly why the lab
+    states its own rather than inheriting.
+
+    The other three deployment flags already agree: core is rust either way,
+    and dedup/compile/mate_distance are off in both the unit and `match.py`.
+    Re-check this list against `systemd/sumofish-bot.service` when any of them
+    changes, because nothing enforces the correspondence.
+    """
     return python(str(ROOT / "scripts/match.py"), "--name", name,
                   "--games", str(games), *budget,
+                  "--a-vloss-fix", "--b-vloss-fix",
                   "--elo0", str(ELO0), "--elo1", str(ELO1), *extra)
 
 
@@ -722,10 +745,58 @@ for _job in PLAN:
 # state
 
 
+WITHDRAWN = LAB / "withdrawn.json"
+
+
 def load_state() -> dict:
-    if STATE.exists():
-        return json.loads(STATE.read_text())
-    return {"done": {}, "facts": {}, "current": None, "started": None}
+    state = (json.loads(STATE.read_text()) if STATE.exists()
+             else {"done": {}, "facts": {}, "current": None, "started": None})
+    return apply_withdrawals(state)
+
+
+def apply_withdrawals(state: dict) -> dict:
+    """Overlay `runs/lab/withdrawn.json` on whatever the state file says.
+
+    A withdrawal is an assertion ABOUT a result -- "this number was measured on
+    the wrong thing" -- and it has to survive a runner that disagrees. `run()`
+    reads the state once at startup and writes that snapshot back at every job
+    boundary, so a withdrawal edited into `state.json` while a long job is in
+    flight is silently reverted hours later by a process holding a stale copy.
+    That is how a retracted number comes back to life on the board with nobody
+    touching it. Keeping withdrawals in a file the runner never writes means the
+    worst a stale runner can do is lose them for the length of one save, because
+    the next load puts them back.
+
+    Format: {"<job id>": {"summary": "...", "detail": "..."}}. The original
+    fields are preserved under `superseded_*` so nothing is destroyed, and the
+    outcome becomes `failed`, which is what makes `satisfied()` false and so
+    what makes the job eligible to run again.
+    """
+    if not WITHDRAWN.exists():
+        return state
+    doc = json.loads(WITHDRAWN.read_text())
+    # `_facts` withdraws derived FACTS as well as job records. A fact outlives
+    # the job that produced it and is read by later jobs by name, so withdrawing
+    # the job while leaving `scale_D: 233.7` sitting in `facts` would leave the
+    # number live at the only place it is actually used. Renamed rather than
+    # deleted: a later job reading it by name should fail loudly, not silently
+    # fall back to a default.
+    for key in doc.pop("_facts", {}).get("keys", []):
+        if key in state.get("facts", {}):
+            state["facts"][f"{key}_withdrawn"] = state["facts"].pop(key)
+    if "_facts" in doc:
+        state.setdefault("facts", {})["withdrawn_why"] = doc["_facts"].get("detail", "")
+    for job_id, why in doc.items():
+        record = state.get("done", {}).get(job_id)
+        if not record or record.get("outcome") == "failed":
+            continue
+        for field in ("summary", "detail"):
+            if field in record:
+                record.setdefault(f"superseded_{field}", record[field])
+            record[field] = why.get(field, why.get("summary", "withdrawn"))
+        record["outcome"] = "failed"
+        record["withdrawn"] = True
+    return state
 
 
 def save_state(state: dict) -> None:

@@ -868,3 +868,37 @@ and say so, because a note that was believed for a month is itself evidence.
   whatever the nominal sim count, so it is proportionally a far larger subsidy to
   a 200-sim arm than to a 3200-sim one and would compress the bottom of the
   ladder specifically. Needs games rather than positions, so it needs the GPU.
+- **RESOLVED, same day: the flat first rung was the virtual-loss defect.** Every
+  ladder rung ran with `vloss_fix: false` while the bot has run
+  `CHESSGPU_VLOSS_FIX=1` since 2026-07-30. Re-screening 200 -> 400 with the fix
+  ON for both arms: **+214.8 +-69.8, W60 D35 L5, LOS 100%** against +29.0 +-25.1
+  with it off, non-overlapping intervals, and the rung lands in line with the
+  other three. The mechanism explains the SHAPE, not just the size: with the fix
+  off, virtual loss is added straight into `value_sum`, so at batch 64 there are
+  up to 64 fake values in the tree at once. That is a third of a 200-simulation
+  search and 2% of a 3200-simulation one, so the damage is worst exactly where
+  the ladder was flat -- and the fix's own +364 verdict was measured at 400 sims,
+  inside that same crippled regime.
+- **The general fault: the lab's matches were configured like the code's
+  defaults, not like the deployment.** `--a-vloss-fix` is `store_true`, default
+  off, and `match_argv` never passed it, so EVERY lab match since the port has
+  measured an engine that does not play. Nothing enforces the correspondence
+  between `systemd/sumofish-bot.service`'s environment and what the harness
+  builds; it is now written down in `match_argv`'s docstring, with the other
+  three flags (core, dedup, mate_distance) checked and agreeing. Check that list
+  against the unit whenever either side changes. Note the deliberate asymmetry:
+  `match.py`'s own defaults must stay OFF, because `tests/identity_*.py` needs
+  all three defects off for the Rust/Python identity to hold. The identity test
+  and the strength test want opposite defaults, which is why the lab states its
+  own instead of inheriting.
+- **A retraction has to survive a runner that disagrees with it.** `lab.py`'s
+  `run()` reads `state.json` ONCE at startup and writes that snapshot back at
+  every job boundary. Marking the four rungs withdrawn in `state.json` while an
+  8-hour training job was in flight would have been silently reverted at ~01:45
+  by a process holding a copy of the state from 17:44, putting four retracted
+  numbers back on the board with nobody touching them. Withdrawals now live in
+  `runs/lab/withdrawn.json` and are overlaid by `load_state()`, so the worst a
+  stale runner can do is lose them for the length of one save. The same overlay
+  withdraws derived FACTS (`scale_D`, `scale_bar`), by renaming rather than
+  deleting, so a later job that reads one by name fails loudly instead of
+  falling back to a default.
