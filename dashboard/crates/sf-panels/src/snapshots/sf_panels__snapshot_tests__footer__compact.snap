@@ -1,5 +1,6 @@
 ---
 source: crates/sf-panels/src/snapshot_tests.rs
+assertion_line: 82
 expression: as_text(&buf)
 ---
-r redraw Tab cycle bot 1-9 select bot ?…
+r redraw Tab cycle bot 1-9 select bot g…

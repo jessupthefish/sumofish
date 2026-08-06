@@ -36,6 +36,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("r", "redraw"),
     ("Tab", "cycle bot"),
     ("1-9", "select bot"),
+    ("g", "cycle game"),
     ("?", "help"),
 ];
 
@@ -50,12 +51,17 @@ static SPEC: PanelSpec = PanelSpec {
     // `?` exists, which is the entire problem this panel exists to fix.
     weight: Weight::Pinned,
     variants: &[
-        // Every binding, spelled out. 59 columns of actual content; 60 leaves a
-        // one-column margin so "eligible" also means "will not truncate".
-        Variant::fixed(VariantId::Full, 60, 1),
+        // Every binding, spelled out. 72 columns of actual content (was 59
+        // before `g`/"cycle game" joined the set); 73 leaves a one-column
+        // margin so "eligible" also means "will not truncate" -- the exact
+        // failure this file's own Lab Notes already recorded once, from a
+        // `min` set to a round guess instead of the composed string's real
+        // length.
+        Variant::fixed(VariantId::Full, 73, 1),
         // `^C` dropped -- `q` already covers quit, and every terminal user knows
-        // Ctrl-C regardless of whether this bar says so. 44 columns of content.
-        Variant::fixed(VariantId::Compact, 45, 1),
+        // Ctrl-C regardless of whether this bar says so. 57 columns of content
+        // (was 44).
+        Variant::fixed(VariantId::Compact, 58, 1),
         // The one binding that matters most once everything else has been
         // dropped: how to find out about the rest.
         Variant::fixed(VariantId::Glyph, 8, 1),
@@ -75,7 +81,7 @@ impl Panel for Footer {
         let pairs: &[(&str, &str)] = match variant {
             VariantId::Full => KEYS,
             VariantId::Compact => &KEYS[2..], // drop the redundant q/^C second line
-            _ => &KEYS[5..],                  // just "? help"
+            _ => &KEYS[KEYS.len() - 1..],     // just "? help", however many entries precede it
         };
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, (key, what)) in pairs.iter().enumerate() {

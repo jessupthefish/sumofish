@@ -1,0 +1,13 @@
+---
+source: crates/sf-panels/src/snapshot_tests.rs
+assertion_line: 82
+expression: as_text(&buf)
+---
+┌ games ───────────────────────────────┐
+│1 Ghidorah_X       2288  to move  12:…│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

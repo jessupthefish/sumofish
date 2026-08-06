@@ -3,4 +3,4 @@ source: crates/sf-panels/src/snapshot_tests.rs
 assertion_line: 82
 expression: as_text(&buf)
 ---
-q quit ^C quit r redraw Tab cycle bot 1-9 select bot g cycle …
+1 games, 1 to move

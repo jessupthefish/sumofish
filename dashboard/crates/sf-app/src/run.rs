@@ -185,6 +185,16 @@ async fn event_loop(
                                 painter.forget();
                                 dirty = true;
                             }
+                            // Cycles the FOCUSED bot's own simultaneous games --
+                            // a different axis from Tab/1-9, which cycle which
+                            // bot the rest of the screen is about. `1`-`9` was
+                            // already claimed there, so this can't reuse digits
+                            // the way bot selection does.
+                            (KeyCode::Char('g'), _) => {
+                                cycle_game_focus(state);
+                                painter.forget();
+                                dirty = true;
+                            }
                             // Direct selection, so you do not have to Tab past a bot
                             // to reach the one you want. The numbers are on screen.
                             (KeyCode::Char(c @ '1'..='9'), _) => {
@@ -694,6 +704,21 @@ fn cycle_focus(state: &mut AppState) {
     }
     let cur = state.focus.as_ref().and_then(|f| ids.iter().position(|i| i == f)).unwrap_or(0);
     state.focus = Some(ids[(cur + 1) % ids.len()].clone());
+}
+
+/// Cycles which of the FOCUSED bot's own simultaneous games the board (and
+/// every other per-game panel) is about. A no-op with zero or one game --
+/// there's nothing to cycle to, same reasoning `cycle_focus` uses for one bot.
+fn cycle_game_focus(state: &mut AppState) {
+    let Some(bot_id) = state.focus.clone() else { return };
+    let Some(bot) = state.bots.get_mut(&bot_id) else { return };
+    let Some((games, _)) = bot.playing.get(Instant::now()) else { return };
+    let ids: Vec<sf_model::GameId> = games.iter().map(|g| g.id.clone()).collect();
+    if ids.len() < 2 {
+        return;
+    }
+    let cur = bot.focus_game.as_ref().and_then(|f| ids.iter().position(|i| i == f)).unwrap_or(0);
+    bot.focus_game = Some(ids[(cur + 1) % ids.len()].clone());
 }
 
 /// Build the initial state from config. Shared with `--snapshot`, so a snapshot and
