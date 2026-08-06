@@ -711,7 +711,22 @@ PLAN: list[Job] = [
             "--val-batches", "32", "--compile", "1",
             "--run", "9M-sv-long", "--auto-resume"),
         probe=lambda: train_progress("9M-sv-long"),
-        timeout=40 * HOUR, truncation_is_failure=False),
+        # 60h, measured rather than guessed. At the sustained 6,507 samples/s
+        # this box actually delivers (batch 1024, bot playing alongside), 900k
+        # steps is 39.3h of pure training -- against the 40h this job used to
+        # carry, a margin of 1.8% before a single one of its 90 evals or 90
+        # checkpoint writes. It would have overrun.
+        #
+        # And truncation is a FAILURE here, which it was not. The pair is what
+        # made the old setting dangerous: the deadline would have fired around
+        # step 700k, partway down the cosine schedule, and `truncation_is_failure
+        # =False` would have recorded that as an acceptable outcome. A net cut
+        # off mid-anneal is typically WORSE than one that finished its schedule,
+        # so the queue would then have handed `match-9m-long` a checkpoint it
+        # was likely to lose with, and spent a further match proving it. A run
+        # that cannot finish its schedule has not answered the question it was
+        # asked; say so and halt.
+        timeout=60 * HOUR, truncation_is_failure=True),
     Job(id="match-9m-long", what="the longer-trained 9M against the live one, on a clock",
         argv=lambda f: match_argv("lab-9m-long-vs-current",
                                   "--a-value", str(ROOT / "runs/9M-sv-long/best.pt"),
