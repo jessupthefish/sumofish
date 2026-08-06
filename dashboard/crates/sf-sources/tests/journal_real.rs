@@ -29,6 +29,7 @@ fn the_real_bot_journal_parses() {
     }
     let mut p = Parser::default();
     let (mut tb, mut engine, mut over, mut term, mut other) = (0, 0, 0, 0, 0);
+    let mut unattributed = 0;
     let mut sample = None;
     for l in &lines {
         match p.feed(l) {
@@ -42,6 +43,11 @@ fn the_real_bot_journal_parses() {
                 assert!(!uci.is_empty(), "a tablebase event with no move");
                 assert!(uci.len() >= 4 && uci.len() <= 5, "implausible uci {uci:?}");
             }
+            // Not a failure: it is the parser declining to invent a move whose
+            // record scrolled out of the window. It is counted rather than
+            // ignored because a rise in it means lichess-bot's logging has grown
+            // chattier and the window can no longer span one message.
+            Some(Event::TablebaseUnattributed) => unattributed += 1,
             Some(Event::Engine) => engine += 1,
             Some(Event::GameOver(_)) => over += 1,
             Some(Event::EngineTerminated) => term += 1,
@@ -50,9 +56,17 @@ fn the_real_bot_journal_parses() {
         }
     }
     println!(
-        "{} lines: {tb} tablebase, {engine} engine, {over} game-over, {term} terminated, {other} other",
+        "{} lines: {tb} tablebase ({unattributed} unattributed), {engine} engine, {over} game-over, {term} terminated, {other} other",
         lines.len()
     );
+    if tb + unattributed > 100 {
+        let lost = unattributed as f64 / (tb + unattributed) as f64;
+        assert!(
+            lost < 0.1,
+            "{unattributed} of {} tablebase moves lost their move record -- the window is too small for how lichess-bot now logs",
+            tb + unattributed
+        );
+    }
     if let Some(s) = sample {
         println!("first tablebase move: {s}");
     }

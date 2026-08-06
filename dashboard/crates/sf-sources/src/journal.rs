@@ -80,6 +80,10 @@ impl JournalLine {
 pub enum Event {
     /// A move the tablebase supplied, not the engine.
     Tablebase { game: Option<GameId>, uci: String, wdl: Option<i32>, dtz: Option<i32>, dtm: Option<i32> },
+    /// The tablebase marker arrived but its move record did not survive the
+    /// window. The move happened; which move it was is not recoverable from the
+    /// log, so nothing is attributed to any game. See `tablebase_detail`.
+    TablebaseUnattributed,
     /// A move the engine chose. Only interesting as the complement of the above.
     Engine,
     GameOver(Option<GameId>),
@@ -152,11 +156,30 @@ impl Parser {
 
     /// Reassemble the wrapped `Got move ... from tablebase... for game ...` that
     /// precedes the `Source:` marker.
+    ///
+    /// The marker is reliable; the detail behind it is not always reachable. A
+    /// spectator greeting logged between the two wraps to seven lines and pushes
+    /// the move record out of an eight-line window, and then there is no move to
+    /// report. That is `TablebaseUnattributed`, and it is deliberately not a
+    /// `Tablebase` with a best guess in it: the guess this used to make was the
+    /// first token of whatever else was in the window (`***`, the redacted chat
+    /// line) paired with the *previous* move's game id and wdl/dtz/dtm, so a real
+    /// game got a move it never played, marked tablebase, with plausible-looking
+    /// numbers attached. Once per 623 tablebase moves in a 36-hour sample.
     fn tablebase_detail(&self) -> Event {
         let joined = squash(&self.window.iter().cloned().collect::<Vec<_>>().join(" "));
         // Take the LAST occurrence: the window may hold two moves' worth.
-        let tail = joined.rsplit_once("Got move ").map(|(_, t)| t).unwrap_or(&joined);
+        let Some((_, tail)) = joined.rsplit_once("Got move ") else {
+            return Event::TablebaseUnattributed;
+        };
         let uci = tail.split_whitespace().next().unwrap_or_default().to_string();
+        // A second gate, because "the record is present" and "the record is the
+        // one this marker belongs to" are different claims and only the first is
+        // checked above. A token that is not a move means the split landed on
+        // something that merely contained the phrase.
+        if !looks_like_uci(&uci) {
+            return Event::TablebaseUnattributed;
+        }
         Event::Tablebase {
             game: after(tail, "for game ").map(|g| GameId(g.to_string())),
             uci,
@@ -175,6 +198,18 @@ fn after<'a>(hay: &'a str, key: &str) -> Option<&'a str> {
         .unwrap_or(rest.len());
     let tok = rest[..end].trim();
     (!tok.is_empty()).then_some(tok)
+}
+
+/// `e2e4`, or `e7e8q` with a promotion. Deliberately shape-only: whether the move
+/// is legal in the position is a question this file has no board to answer, and
+/// the failure being guarded against is a chat line, not an illegal move.
+fn looks_like_uci(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 4 && b.len() != 5 {
+        return false;
+    }
+    let square = |f: u8, r: u8| f.is_ascii_lowercase() && (b'a'..=b'h').contains(&f) && (b'1'..=b'8').contains(&r);
+    square(b[0], b[1]) && square(b[2], b[3]) && (b.len() == 4 || matches!(b[4], b'q' | b'r' | b'b' | b'n'))
 }
 
 fn parse_num(s: &str) -> Option<i32> {
@@ -389,6 +424,15 @@ impl JournalSource {
                 v.push(tape(TapeKind::Game, format!("{uci} from the tablebase,{detail}")));
                 v
             }
+            // No `MoveOrigin`, and `last_uci` is left alone: the previous move's
+            // uci is stale but true, and overwriting it with a guess is the bug
+            // this variant exists to prevent. A tape line, because a move the
+            // search panel did not produce still needs explaining, and Warn
+            // rather than Game because it is also the only signal that the
+            // window is too small for how lichess-bot is currently logging.
+            Event::TablebaseUnattributed => {
+                vec![tape(TapeKind::Warn, "a tablebase move, move not recovered".into())]
+            }
             Event::Engine => vec![],
             Event::GameOver(g) => vec![tape(
                 TapeKind::Game,
@@ -448,6 +492,58 @@ mod tests {
                 dtm: Some(8),
             })
         );
+    }
+
+    /// The real failure, copied out of the journal at 2026-08-04 05:21. A
+    /// spectator greeting between the move record and the marker wraps to seven
+    /// lines, which is the whole window bar one, so the move is gone by the time
+    /// the marker arrives. What must NOT happen is what used to: `***` reported
+    /// as a tablebase move in game `13R83ebQ`, carrying the wdl/dtz/dtm of the
+    /// move before it.
+    #[test]
+    fn a_move_record_pushed_out_of_the_window_is_not_guessed_at() {
+        let mut p = Parser::default();
+        let mut last = None;
+        for l in [
+            "                             0, dtz: 0, dtm: 0) for game",
+            "                             13R83ebQ",
+            "                    INFO     ***                             conversation.py:100",
+            "                             https://lichess.org/XD0SGUO9/wh",
+            "                             ite [spectator] SumoFish: Hi,",
+            "                             I'm SumoFish. A policy net",
+            "                             proposes moves, a value net",
+            "                             scores positions, and MCTS",
+            "                             searches between them.",
+            "                    INFO     Source: Lichess EGTB          engine_wrapper.py:334",
+        ] {
+            last = p.feed(l);
+        }
+        assert_eq!(last, Some(Event::TablebaseUnattributed));
+    }
+
+    /// The second gate, independent of the first: the phrase is in the window but
+    /// what follows it is not a move. Shape alone settles it.
+    #[test]
+    fn a_got_move_that_is_not_followed_by_a_move_is_not_attributed() {
+        let mut p = Parser::default();
+        let mut last = None;
+        for l in [
+            "[07/28/26 18:53:05] INFO     Got move from the operator    conversation.py:100",
+            "                    INFO     Source: Lichess EGTB          engine_wrapper.py:334",
+        ] {
+            last = p.feed(l);
+        }
+        assert_eq!(last, Some(Event::TablebaseUnattributed));
+    }
+
+    #[test]
+    fn uci_shape_accepts_moves_and_promotions_and_nothing_else() {
+        for good in ["e2e4", "a1h8", "e7e8q", "b2b1n"] {
+            assert!(looks_like_uci(good), "{good} should parse as a move");
+        }
+        for bad in ["***", "", "e2e", "e2e4k", "i2i4", "e0e9", "E2E4", "from"] {
+            assert!(!looks_like_uci(bad), "{bad:?} should not parse as a move");
+        }
     }
 
     /// The complement, and the reason the tablebase case matters: an engine move
