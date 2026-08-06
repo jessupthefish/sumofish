@@ -63,19 +63,38 @@ def load() -> list[dict]:
 
 
 def checkpoint_facts() -> dict:
-    """What is actually deployed, not what is in the repo."""
-    live = ROOT / "runs" / "value.pt"
-    if not live.exists():
-        return {}
-    digest = hashlib.sha256(live.read_bytes()).hexdigest()[:12]
-    try:
-        import torch
-        ck = torch.load(live, map_location="cpu", weights_only=False)
-        return {"checkpoint_sha": digest, "step": ck.get("step"),
-                "width": ck.get("cfg", {}).get("embedding_dim"),
-                "layers": ck.get("cfg", {}).get("num_layers")}
-    except Exception:                                    # noqa: BLE001
-        return {"checkpoint_sha": digest}
+    """What is actually deployed, not what is in the repo.
+
+    BOTH nets, because the engine is both. Recording only the value net was a
+    real hole and it opened: `runs/policy.pt` was replaced on 2026-08-01 and
+    nothing in the registry could see it, so v3's record went on accumulating
+    across a player that had changed. A version is a claim that *this* is the bot
+    now, and half of "this" is the prior that shapes every search.
+    """
+    facts: dict = {}
+    for name, keys in (
+        ("value", ("checkpoint_sha", "step", "width", "layers")),
+        ("policy", ("policy_sha", "policy_step", None, None)),
+    ):
+        live = ROOT / "runs" / f"{name}.pt"
+        if not live.exists():
+            continue
+        sha_key, step_key, width_key, layers_key = keys
+        facts[sha_key] = hashlib.sha256(live.read_bytes()).hexdigest()[:12]
+        try:
+            import torch
+            ck = torch.load(live, map_location="cpu", weights_only=False)
+        except Exception:                                # noqa: BLE001
+            continue
+        facts[step_key] = ck.get("step")
+        # Shape is recorded once. The two nets are the same architecture today
+        # and a version that changes only one of their widths would be a
+        # different kind of release than this file has ever cut; write the pair
+        # out separately when that happens rather than guessing at it now.
+        if width_key:
+            facts[width_key] = ck.get("cfg", {}).get("embedding_dim")
+            facts[layers_key] = ck.get("cfg", {}).get("num_layers")
+    return facts
 
 
 def time_control() -> str:
@@ -164,8 +183,10 @@ Released {when}. Part of [[SumoFish]].
 ## What was playing
 
 - time control **{entry.get('time_control', '?')}**
-- checkpoint step **{entry.get('step', '?')}**, {entry.get('width', '?')}-wide,
+- value net at step **{entry.get('step', '?')}**, {entry.get('width', '?')}-wide,
   {entry.get('layers', '?')} layers (`{entry.get('checkpoint_sha', '?')}`)
+- policy net at step **{entry.get('policy_step', '?')}**
+  (`{entry.get('policy_sha', '?')}`)
 - commit `{entry['sha'][:12]}`
 
 Rating at release:
