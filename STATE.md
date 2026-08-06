@@ -31,110 +31,157 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
-## Where things stand (2026-08-01, session 7)
+## Where things stand (2026-08-05, session 8)
 
-> **The 2026-07-29 overnight block that stood here is deleted, not demoted, per
-> this file's own rule.** Its run finished. Every unit-state claim in it had also
-> gone false, in the direction that matters: it said the bot no longer autostarts
-> (it is `enabled` again) and that the train watchdog was STOPPED (it is `active`
-> and `enabled`, firing every 5 minutes). A reader trusting it would have
-> mis-modelled what can wake up and take the GPU.
+> **The 2026-08-01 session-7 block that stood here is deleted, not demoted, per
+> this file's own rule.** Two of its claims had gone false in the direction that
+> matters. It said the retrained policy net was **NOT PROMOTED**; it was promoted
+> at 11:5x that same morning, about twenty minutes after the block was written,
+> and has been what the bot plays with ever since. It said the four `sims-*`
+> rungs were **deliberately marked FAILED**; they were re-run honestly on 08-02
+> and all four completed. A reader trusting it would have believed the live
+> engine was a configuration that has not existed for four days, and would have
+> re-earned a ladder that already exists.
 
-> **CURRENT, 2026-07-31 ~21:35.**
+> **CURRENT, 2026-08-05 ~17:30.**
 >
-> - **The 9M continue run FINISHED.** `runs/9M-sv-continue` reached step 600,000.
->   Best held-out is step 595k: **val 2.1117, puzzles 0.699**. The unit is gone
->   (it was transient; `is-enabled` reports `not-found`, which is expected and
->   not a fault).
-> - **DEPLOYED 2026-07-31 23:17:28.** `runs/value.pt` is now the 600k checkpoint,
->   selected on held-out loss per PHILOSOPHY's checkpoint rule and NOT on a match:
->   the sizing pilot went 4/4 draws by threefold repetition at 406s/game, so the
->   300-game gate would have cost ~34 GPU-hours to most likely terminate on the
->   null. Both arms share a policy net and are two checkpoints of one run, which
->   is close to the mirror-match blindness PHILOSOPHY warns of. The promotion is
->   UNMEASURED in Elo terms; `scripts/promote.py --rollback` reverses it and
->   `runs/value.pt.previous` holds the outgoing net.
-> - **The bot is DOWN** (stopped 21:12:20, clean exit, no game abandoned) and its
->   opponent window was changed today; see "Open, smaller". It is `enabled`, so it
->   WILL come back on next login/boot. That is a hazard during any wall-clock
->   experiment: `systemctl --user disable sumofish-bot` if one is due to span a
->   reboot.
-> - **`sumofish-train-watchdog.timer` is ACTIVE**, every 5 minutes. It is
->   currently harmless -- it logs "no live training process; nothing to watch" and
->   exits, verified at 21:25 and 21:30 with a match already running, so it does
->   NOT mistake a match for training. But its remedy is restarting the LAB, so it
->   is only harmless while no training process exists.
-> - **The lab is unparked.** `current` was `train-136m` for ~2.7 days; that job is
->   now DELETED from the plan (see roadmap 7/8 below) and `current` is cleared, so
->   the runner starts from the first unsatisfied job. **It is still inactive and
->   starting it now begins ~10 GPU-h of re-earning the retracted ladder** -- the
->   four `sims-*` rungs are deliberately marked FAILED, not completed.
-> - **Nothing is measuring strength right now.** The pilot was stopped at 4 games
->   once its purpose (sizing, and the 4/4 draw finding) was served; its games and
->   config are kept. The bot is down for the overnight retrain, so the lichess
->   anchor is paused too.
+> - **The bot is DRAINING and will be down.** `kill --kill-who=main
+>   --signal=SIGINT` at 17:29:51, two games in flight, then `stop` once the main
+>   pid exits. Taken down to give the 136M sweep arm an uncontended GPU.
+>   **Autostart is off for the duration** (the unit is `linked`, not `enabled`),
+>   because the sweep arm's own unit IS enabled and a reboot would otherwise
+>   bring both up to fight over the card. `systemctl --user enable sumofish-bot`
+>   puts it back, and that is the last step of this experiment, not an optional
+>   tidy-up: forget it and the bot silently stops coming back after a reboot.
 >
-> > **HOW TO READ THE RATING, and why it is confounded.** Two things changed
-> within 20 minutes of each other on 2026-07-31, so any rating movement from
-> here has two candidate causes and the rating alone cannot separate them:
+>   > **`systemctl --user disable` DELETES A SYMLINKED UNIT FILE.** These units
+>   > are symlinks from `~/.config/systemd/user/` into `systemd/` in the repo, and
+>   > `disable` removes *every* symlink to the unit, the installing one included.
+>   > So the unit did not become disabled, it ceased to exist: `is-enabled`
+>   > answered `not-found` while the bot was still running two rated games. Any
+>   > supervisor polling `systemctl show -p MainPID` sees an empty string at that
+>   > moment and cannot tell it from "the process exited". Restore with
+>   > `ln -sf <repo>/systemd/<unit> ~/.config/systemd/user/<unit>` +
+>   > `daemon-reload`; the unit comes back as `linked`, which is the wanted state
+>   > anyway. To turn off autostart without this, delete only the
+>   > `default.target.wants/` symlink.
+> - **`sumofish-train-continue.service` is still `enabled`** and points at the
+>   FINISHED 600k run. Harmless as it stands -- `latest.pt` is at step 600,000 of
+>   600,000, so `--auto-resume` loads it and exits -- but it is a unit that starts
+>   a training job on every boot and whose exit depends on a file being where it
+>   was. Disable it when the sweep is done, and mind the symlink trap above.
+> - **The live engine is the 600k value net plus the retrained policy net.**
+>   `runs/value.pt` = `9M-sv-continue` step 595k, promoted 07-31 23:17.
+>   `runs/policy.pt` = `9M-bc-2026-08-01` step 300k, promoted 08-01 11:5x by
+>   manual copy, because `scripts/promote.py` only handles `runs/value.pt`.
+>   Rollbacks: `scripts/promote.py --rollback` for the value net,
+>   `cp runs/policy.pt.previous runs/policy.pt` for the policy net.
+> - **No version has been cut for either of them.** `VERSIONS.jsonl` still ends
+>   at **v3** (2026-07-30, the virtual-loss fix), so v3's win/loss record now
+>   averages three different players: v3 as shipped, v3 + the 600k value net, and
+>   v3 + both nets. That is exactly the scoping the registry exists to prevent,
+>   and the pre-push hook cannot catch it, because it triggers on diffs to
+>   `sumofish/` and `config/lichess-bot.yml` and a promotion is neither. **Cut a
+>   version before reading any record scoped to one.**
+> - **The rating rose 126 points across the two promotions and has been flat for
+>   ~85 games.** 2349 at n=180 when the policy net went live, **2475 at n=367**
+>   now, RD 45 throughout, and level between 2460 and 2488 since 08-03 22:50.
+>   Read it as converged, not still climbing.
 >
-> | when | change |
-> |---|---|
-> | ~21:05 | opponent window 1846-2846 (symmetric) -> 2200-3000 (asymmetric, harder) |
-> | 23:17:28 | value net ~300k-era -> 600k checkpoint |
-> | 23:17:50 | bot restarted, both changes live together |
-> | ~03:15 (08-01) | bot drained for the policy retrain |
+> > **WHAT THAT +126 CAN AND CANNOT BE ATTRIBUTED TO.** Three things changed
+> inside 15 hours, and the rating alone separates none of them:
 >
-> They push in OPPOSITE directions, which is the awkward part: a better net
-> should raise the rating, a harder pool should lower it, and a null result is
-> equally consistent with "both worked" and "neither did".
->
-> First data, 08-01 03:15: **8 games, rapid 2339 -> 2357 (+18), 170 -> 178
-> games.** That is not a result and must not be quoted as one -- 8 games is worth
-> roughly +-300 Elo, so the interval swamps the point estimate by an order of
-> magnitude. What it is: not negative, which is weak evidence against the worry
-> that the harder pool would sink the rating outright.
->
-> **Two of the games after that are ARTIFICIAL LOSSES and must be excluded.**
-> Steven conceded the two in flight (`WUtbaAsG`, `qCL90DHS`) at ~03:14 to free the
-> GPU for the overnight run. They are resignations by the operator, not by the
-> engine, and they are indistinguishable from real losses in `logs/rating.jsonl`
-> and in the lichess history. Any rating read that spans 2026-08-01 03:14 is
-> carrying two losses the engine did not earn -- worth roughly -14 rapid Elo at
-> RD 45. **The clean baseline for judging the promoted net is the rating BEFORE
-> 03:14, or a fresh sample after ~30 more games have washed them out.**
->
-> To actually separate them, revert ONE and hold the other for ~50 games. The
-> cheaper revert is the window (`config/lichess-bot.yml`, one line); the net has
-> `scripts/promote.py --rollback`. Doing neither is also defensible -- both
-> changes are believed good and the combined effect is what gets played -- but
-> then stop treating the rating as evidence for either one individually.
-
-> **OVERNIGHT RUN FINISHED 2026-08-01 11:31, and it is a clear win.**
-> `runs/9M-bc-2026-08-01` -- the policy prior retrained, roadmap item 4, the
-> "biggest neglected lever", frozen at 40.9% puzzles since session 1. Warm start
-> from `runs/policy.pt` transferred **93/93 tensors**; 300,000 steps at lr 2e-4;
-> exit 0.
->
-> | | incumbent `runs/policy.pt` | new `best.pt` |
+> | when | change | direction it should push |
 > |---|---|---|
-> | held-out loss | 1.66670 | **1.59138** (-0.0753) |
-> | puzzles | 0.409 | **0.435-0.447** |
+> | 07-31 ~21:05 | opponent window 1846-2846 -> 2200-3000 | down |
+> | 07-31 23:17 | value net ~300k -> 600k checkpoint | up |
+> | 08-01 11:5x | policy prior retrained, -0.075 held-out | up |
 >
-> The incumbent's held-out number did not exist before today -- `runs/9M-causal`
-> logged 31 puzzle evals and zero `val_loss` -- so `scripts/eval_heldout.py` was
-> written to compute it on `train.py`'s own terms. It reproduces train.py's
-> logged 1.59485 for step 280k EXACTLY, which is what licenses the comparison.
+> The move is roughly 2.8x the instrument's own RD and it happened *against* a
+> deliberately harder pool, so something real is in it. Which of the two nets it
+> is, or whether it is both, is not in this data and no amount of further games
+> will put it there. To separate them, revert ONE and hold the other for ~50
+> games; the cheaper revert is the policy net, which is a file copy.
 >
-> **NOT PROMOTED.** The policy net shapes every search the engine runs, and
-> `scripts/promote.py` only swaps `runs/value.pt`, so this needs a deliberate
-> decision and a different mechanism. Held-out loss is also an instrument, not
-> the target. `best.pt` == `final.pt`, i.e. the run was still improving at step
-> 300k and never overfit -- **more training is available for free.**
+> Two caveats that ride along with any read spanning that window. The 2349
+> baseline is depressed by roughly 14 Elo: **two games at ~03:14 on 08-01
+> (`WUtbaAsG`, `qCL90DHS`) are operator resignations**, conceded to free the GPU,
+> and they sit in `logs/rating.jsonl` and in lichess's history indistinguishable
+> from losses the engine earned. And the 2477/266-game figure in the README was
+> taken on 08-03; it is 2475/366 now, which is the same number with 100 more
+> games behind it.
+
+> **THE WIDTH SWEEP IS TWO ARMS OF THREE, and the third is being re-run tonight.**
+> Matched tokens (20k steps x 1024 effective batch = 20.5M positions), matched
+> seed, matched data order; width is the only variable.
 >
-> Note for whoever tunes next: `c_puct`/FPU tuning is gated behind this retrain
-> (roadmap 4 before the tuning), so the values depend on the prior's sharpness
-> and should not be settled against the OLD prior.
+> | arm | params | held-out | puzzles | state |
+> |---|---|---|---|---|
+> | `sweep-tiny` | 0.3M | 2.9690 | 0.300 | done, 20k steps |
+> | `sweep-9M` | 8.9M | 2.5516 | 0.361 | done, 20k steps |
+> | `sweep-136M` | 134.3M | 2.8646 @ 5k | 0.316 @ 5k | **INCOMPLETE, re-running** |
+>
+> The 136M arm reached step 5,000 on 08-02 at 23:06 and the box rebooted at
+> 23:23. Nothing crashed and nothing is wrong with the job: the OOM that halted
+> it earlier that night was already fixed (3a8bf62, batch 128 x accum 8 instead
+> of a flat 1024) and the fix held for 5,000 steps. **Do not read the 2.8646.**
+> It is a fifth of the way through a warmup-and-cosine schedule the other two
+> arms completed, so comparing it to them measures how far each run got.
+>
+> Re-run from scratch rather than resumed from its step-5,000 `best.pt`, which
+> would have saved ~1h45m. The other two arms ran uninterrupted and PHILOSOPHY
+> says in its first line that time is not a constraint, so the arm that decides
+> whether 136M is worth 35 GPU-hours gets the same protocol as the arms it will
+> be compared against.
+>
+> **`runs/lab/state.json` had `current: sweep-136m` with a dead pid** from that
+> reboot, for three days. The lab does not notice a runner that died with the
+> machine; check `ps` against that pid before believing the queue is working.
+>
+> **What runs after it matters more than it does.** `scaling-curve` is a cheap
+> decision, but the job after that is `train-9m-long`: 900,000 steps, days of
+> GPU. `sumofish-lab run --only sweep-136m` runs the one arm and stops. Starting
+> the whole queue via `sumofish-lab.service` starts that too, with nobody awake.
+>
+> So the arm runs under its own unit, **`sumofish-sweep-136m.service`**, which is
+> `--only sweep-136m` and nothing else. Enabled, so a reboot restarts the arm
+> instead of parking the queue on a dead pid; a no-op once the job is satisfied.
+> `KillMode=mixed`, so a `systemctl stop` lets train.py checkpoint.
+>
+> **A reboot before it finishes still costs the whole arm**, because `sweep_argv`
+> sets `--ckpt-every 20000` and `--auto-resume` reads only `latest.pt`, so there
+> is nothing on disk to resume from until step 20,000. Lowering it was considered
+> and rejected: the sweep's whole claim is that the arms differ in width and
+> nothing else, and the other two ran with this value. The mitigation is the unit
+> restarting the arm, not a protocol change. Do not reboot mid-run if it can be
+> helped, and check `sumofish-lab` rather than assuming when you come back.
+
+> **The 136M question already has a bar to clear, and it is high.** The exchange
+> ladder was re-earned honestly on 08-02, all four rungs, 300 games each:
+>
+> | rung | Elo | LOS |
+> |---|---|---|
+> | 200 -> 400 sims | +29.0 +-25.1 | 99% |
+> | 400 -> 800 | +240.8 +-36.3 | 100% |
+> | 800 -> 1600 | +308.2 +-43.8 | 100% |
+> | 1600 -> 3200 | +233.7 +-35.6 | 100% |
+>
+> So a doubling of search is worth **234 Elo** at the top of the measured ladder,
+> and `forward-bench` prices a 136M forward pass at **3.06x** the 9M's inside the
+> search loop. A 136M net therefore has to be **+377 Elo at equal simulations**
+> just to break even on a clock. The retraction in the README stands for the
+> *old* ladder; this one is not that one, and `runs/lab/state.json` holds its
+> numbers under `facts`.
+>
+> The unwelcome part of the first rung: 200 -> 400 is worth only +29, while every
+> doubling above it is worth 8-10x that. Nothing here explains why, and a
+> non-monotonic exchange rate is the sort of thing that is usually an artifact of
+> the harness rather than a fact about chess.
+
+> **Nothing is measuring strength against external opposition right now.** The
+> bot is draining, so the lichess anchor is paused, and no match is running.
+> `scripts/acceptance.py` is set up and waiting on a human.
+
 
 **Standing rule, promoted out of the deleted block because it is not status:**
 > if you run two Claude sessions at once, say so up front. A second session
@@ -196,9 +243,14 @@ matches trusted, 4 REPLAYED, 4 unprovenanced**. See
 `docs/2026-07-29-ladder-retraction.md` for what that invalidated and
 `docs/induced-failures.md` for the two bugs found by inducing the guard.
 
-**Consequence, still in force: no proposal may be justified by an
-Elo-per-doubling figure.** The ladder can be re-earned for ~10 GPU-hours,
-visit-denominated, with a distinct seed per rung. It buys the ordinal only.
+**That consequence is LIFTED as of 2026-08-02, and only for the new ladder.**
+"No proposal may be justified by an Elo-per-doubling figure" stood while the
+only figure available came from the replayed rungs. The ladder has since been
+re-earned on the fixed harness, four rungs, 300 games each, and its numbers are
+in the status block above. What remains retracted is the OLD ladder and
+everything derived from it, including the "+237 Elo per doubling" and the "+50
+per doubling" the README withdraws; do not quote a number from before 08-02
+because a similar one now exists.
 
 **4. Six supervisors were no-ops and are fixed.** `train_watchdog.py` watched a
 unit that does not exist; `watchdog.py` could not restart a unit in `failed`
@@ -212,6 +264,12 @@ enforces the frozen constants and the editable region it always claimed to.
 said must not happen, and it was scheduled for 102.4M positions, 19.3% of an
 epoch, against the 9M's 307M. A promotion match against it would have measured
 the defect, not the width.
+
+That job (`train-136m`) is DELETED from the plan and the width question is now
+asked by the three-arm sweep instead, at 20k matched steps rather than 400k
+unmatched ones. The sweep is a cheaper and better-controlled instrument for the
+same question: it prices d(held-out loss)/d(log2 params) instead of producing
+one net whose one number has nothing to sit beside.
 
 **6. CUDA streams are not the shortcut.** Two streams alone is 1.04x; 1.19x on
 top of `compile`. Halving the two forward passes honestly costs the ~40
@@ -238,19 +296,31 @@ is unaffected (it exercises `ignored_rust_flags` on an explicit dict, not
 `scripts/acceptance.py --games 20`. Twenty blind games, one rating each, arms
 hidden until `reveal`. Every other number here measures strength, which
 PHILOSOPHY ranks third; this is the only thing pointed at goal two, and it
-needs a human by construction.
+needs a human by construction. **Session drawn 2026-08-05 and waiting**; the
+blinding is in `runs/acceptance/`, do not look in the file.
 
-**2. Re-earn the exchange ladder** (~10 GPU-h). Visit-denominated, distinct seed
-per rung, on an idle machine. Until it exists, every "worth N Elo" in any plan
-is a guess, and the plan's ordering is unfalsifiable.
+Its blinding was checked before the session was drawn rather than assumed. Both
+arms pad every reply to `RESPONSE_SECONDS = 2.5`, and nothing in the script
+warns when a search OVERRUNS that pad -- which would let you hear which arm is
+which by move two and contaminate every rating after it. Measured on the live
+nets with the bot playing: 400 sims takes 0.11-0.18s, 1600 sims takes 0.43-0.57s,
+so the padding holds with 4.4x of headroom and survives GPU contention from the
+sweep. Re-measure this if either arm's sim count is ever raised.
+
+**2. Cut v4.** `VERSIONS.jsonl` ends at v3 and the bot has had two net swaps
+since, so every record scoped "to the current version" is currently averaging
+three players. This is the cheapest item on the list and it blocks reading any
+of the others' results honestly.
 
 **3. Stockfish as an absolute anchor**, at pinned nodes. Every match here is
-relative, so the whole ladder floats. The adjudicator half is done.
+relative, so the whole ladder floats -- and now that the exchange ladder has
+been re-earned, this is the only remaining thing that would tie the numbers to
+something outside the project. The adjudicator half is done.
 
-**4. Retrain the policy prior.** Frozen at 40.9% puzzles since session 1 and it
-is the biggest neglected lever: it sets the shape of every search, and
-`c_puct`/FPU/temperature tuning is not worth doing before it, since the right
-values depend on the prior's sharpness.
+**4. Tune `c_puct` / FPU / temperature.** This was gated behind the policy
+retrain, which is now done and deployed, so the gate is open. The right values
+depend on the prior's sharpness and the prior changed on 08-01, which means any
+value in the code today was settled against a net the engine no longer uses.
 
 **5. Shared-trunk two-head net** (~40 GPU-h). Worth ~1.8x now that the network
 is 89% of the search. Warm-start it: 91 of 93 tensors transfer from the 9M body.
@@ -279,6 +349,11 @@ nothing else. Matched TOKENS, not matched clock -- matching clock would hand the
 small net 15x the data and measure the two effects summed. They replace
 `train-136m`, which is deleted: see below.
 
+**Two of the three arms are done** (tiny 2.9690, 9M 2.5516) and the 136M arm is
+re-running as of 2026-08-05; the table in the status block at the top has the
+detail. `scaling-curve` fires on its own once the third lands, and produces the
+first `d(held-out loss)/d(log2 params)` this repository has ever had.
+
 **8. `d(loss)/d(params)`, then kernels.** Not before 4-7. Item 7 is now the
 thing that produces it.
 
@@ -292,14 +367,18 @@ the compute and answers it *before* spending. `runs/lab/state.json.bak-2026-07-3
 restores the old plan if wanted. `match-136m` went with it, and `promote` now
 needs only `match-9m-long`.
 
-**The four `sims-*` ladder rungs are now marked FAILED in the lab state**, not
-completed, and their Elo figures are withheld from the status board. They were
-the replayed matches; leaving them rendering as `+218 / +283 / +237` on the
-`sumofish-lab` board was a live-looking claim at a point of use, which is exactly
-what PHILOSOPHY says to delete rather than annotate. **Consequence to be aware
-of: the lab will now try to re-earn them (~10 GPU-h) the next time it runs.**
-That is roadmap item 2 and is intended -- but it is a real resource commitment
-that will start on its own, so decide before `systemctl --user start sumofish-lab`.
+**The four `sims-*` rungs were marked FAILED on 2026-08-01 and RE-EARNED on
+2026-08-02.** They had been the replayed matches, and leaving them rendering as
+`+218 / +283 / +237` on the `sumofish-lab` board was a live-looking claim at a
+point of use, which is what PHILOSOPHY says to delete rather than annotate.
+Marking them failed made the lab re-run them, which is exactly what the marking
+was for: the board now shows four rungs that were actually played, 300 games
+each, on the fixed harness. The figures are in the status block at the top.
+
+What this bought beyond the numbers: the harness has now produced a ladder
+twice, once fraudulently and once not, from the same code path. The difference
+was `scripts/verify_replays.py` and an elapsed time that could not have produced
+that many games. Keep running it; a replay is invisible to every other check.
 
 **Open, smaller:**
 

@@ -750,3 +750,51 @@ and say so, because a note that was believed for a month is itself evidence.
   comparison is like-for-like; until then, do not select a policy checkpoint the
   way the value checkpoints were selected, because the evidence is not the same
   kind.
+
+## 2026-08-05: two ways to make a thing vanish while it is still running
+
+- **`systemctl --user disable <unit>` deletes the unit file when the unit file is
+  a symlink.** Every unit here is a symlink from `~/.config/systemd/user/` into
+  the repo's `systemd/`, and `disable` removes *all* symlinks pointing at the
+  unit, not just the `default.target.wants/` one that makes it autostart. Ran it
+  on `sumofish-bot` to stop it coming back after a reboot; `is-enabled` then
+  answered **`not-found`** with the bot still playing two rated games. The unit
+  had not been disabled, it had been uninstalled out from under a live process.
+  Restore is `ln -sf <repo>/systemd/<unit> ~/.config/systemd/user/<unit>` plus
+  `daemon-reload`, after which it reads `linked`, which is the state you actually
+  wanted. To turn off autostart non-destructively, remove only the
+  `default.target.wants/<unit>` symlink.
+- **The near-miss that made it dangerous:** a drain supervisor was polling
+  `systemctl --user show -p MainPID --value sumofish-bot` and treating an empty
+  answer as "the main pid is gone, safe to `stop`". A missing unit returns an
+  empty string too. For ten seconds the supervisor's test could not distinguish
+  "the bot finished its games" from "the unit no longer exists", and its next
+  action would have been to take down a bot mid-game. Any liveness check on a
+  systemd unit must test that the unit EXISTS separately from what its MainPID
+  says; `is-active` and `MainPID` answer different questions and a vanished unit
+  fails both in the same direction as a clean exit.
+- **The 136M sweep arm has now died to a reboot twice** (2026-08-02 23:23) and
+  each death cost the whole run, because `sweep_argv` sets `--ckpt-every 20000`
+  and `--auto-resume` reads only `latest.pt`: at 5,000 steps there was nothing on
+  disk to resume from. Lowering `--ckpt-every` for this arm alone was rejected --
+  the sweep's entire claim is that the arms differ in width and nothing else --
+  so the mitigation is at the unit layer: `sumofish-sweep-136m.service`, enabled,
+  so a reboot restarts the arm rather than leaving `runs/lab/state.json` parked
+  on `current: sweep-136m` with a dead pid, which is what it did for three days.
+  **The lab does not notice a runner that died with the machine.** Check its pid
+  against `/proc` before believing the queue is alive.
+- **A log line that is not the engine's can silently become one of the engine's
+  moves.** The dashboard's journal parser reassembles lichess-bot's wrapped
+  `Got move <uci> ... for game <id>` out of an 8-line window when it sees the
+  `Source: Lichess EGTB` marker on a later line. A spectator chat greeting logged
+  between the two wraps to seven lines, pushes the move record out of the window,
+  and the parser then took the first token of whatever was left -- `***`, the
+  redacted chat line -- and paired it with the PREVIOUS move's game id and
+  wdl/dtz/dtm. A real game got a move it never played, with plausible numbers on
+  it. Once in 623 tablebase moves over 36 hours. The fix is to decline rather
+  than guess (`Event::TablebaseUnattributed`); widening the window converts
+  fabrication into stale attribution, which is the same error with no tell.
+  Found only because `the_real_bot_journal_parses` runs the parser over the
+  machine's actual journal instead of over fixtures someone wrote. **Keep at
+  least one test whose input is real production data**; the hand-written fixtures
+  had passed this whole time.
