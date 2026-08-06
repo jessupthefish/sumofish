@@ -349,9 +349,8 @@ def select_mcts_class():
     STATE.md), on the strength of the identity proof against `sumofish.mcts`,
     not on the env var. Rust earned the default; Python is not retired, it
     stays exactly where it is and stays fully reachable -- it is what
-    `tests/identity_*.py`, `scripts/match.py` and `scripts/acceptance.py`
-    compare the Rust core against, and an unset `CHESSGPU_CORE` no longer
-    silently falls back to it.
+    `tests/identity_*.py` and `scripts/match.py` compare the Rust core against,
+    and an unset `CHESSGPU_CORE` no longer silently falls back to it.
     """
     from sumofish.mcts import MCTS
 

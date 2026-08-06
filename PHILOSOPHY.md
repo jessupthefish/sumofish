@@ -8,6 +8,10 @@ ranked "fun to play against" above strength and listed Elo as an anti-goal.
 That is no longer true and you should not act on any summary of this file
 written before this date.
 
+**Amended 2026-08-06.** "Fun to play against" is now CANCELLED, not deferred.
+There is one goal and it is strength. See "Cancelled" below for what that
+removes and the one narrow constraint that survives.
+
 ## The goal
 
 **Build the strongest chess engine one person can build on one consumer GPU,
@@ -149,24 +153,33 @@ This is the part of the file that most changes what you are allowed to claim.
   - Retracted claims get **deleted at the point of use**, not annotated. A
     reader sees `README.md`, never a retraction.
 
-## Deferred, not cancelled
+## Cancelled
 
-**Fun to play against.** It used to be goal two. It is now a thing to build
-*after* there is something strong to build it from, and the argument for it is
-unchanged and still correct: a handicapped strong engine plays twelve immaculate
-moves then hangs its queen for no reason, and that is miserable. Human weakness
-clusters where the pattern is hard to see; random weakness does not.
+**Fun to play against. Cut 2026-08-06, by Steven, and not deferred this time.**
 
-So the constraint that survives is narrow and it is a **design constraint on
-the difficulty feature, not on the engine**: when difficulties are built, they
-come from genuinely weaker models — earlier checkpoints, smaller nets,
-Maia-style human-rating training, calibrated "play the move X centipawns worse
-than best" — never from a strong model instructed to blunder at random. Nothing
-about pursuing maximum strength conflicts with this. It is a prerequisite for
-it: you cannot derive a good 1500 from a bad 2400.
+It was goal two of the original charter, demoted to "deferred, not cancelled" on
+2026-07-29, and it kept coming back: it stayed in this file, it held slot 1 on
+the roadmap in `STATE.md`, and every session surfaced the unplayed blind test as
+outstanding work. That is the whole reason it is being deleted rather than
+demoted again. A deferred goal that resurfaces every session is not deferred,
+it is an open item, and this one had been open with no progress since the
+project began.
 
-`scripts/acceptance.py` (the blind human test) still exists and is still worth
-running eventually. It is no longer a gate on anything.
+The objective is now exactly one thing: **strength, and understanding what
+produces it.** Nothing in this repository measures enjoyment, nothing is gated
+on it, and no proposal should be argued for on those grounds.
+
+`scripts/acceptance.py` and its drawn session are DELETED, not left lying
+around, because a script that exists is a script that gets suggested. Git
+history has it if the question is ever reopened.
+
+**One narrow thing survives, and it is not a goal.** If difficulty levels are
+ever built, they come from genuinely weaker models: earlier checkpoints, smaller
+nets, human-rating training, calibrated "play the move X centipawns worse than
+best". Never a strong model told to blunder at random, which produces twelve
+immaculate moves and then a hung queen. That is a design constraint on a feature
+that does not exist yet, it costs nothing to honour, and it does not compete
+with strength for a single GPU-hour.
 
 ## The roadmap, ordered by expected Elo per unit of effort
 

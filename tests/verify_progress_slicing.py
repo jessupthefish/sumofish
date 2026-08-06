@@ -120,7 +120,7 @@ def main() -> int:
 
     # No deadline, or no on_progress: must take the old, unsliced path (no
     # crash, sensible result) -- this is the fast path every OTHER caller
-    # (scripts/match.py, smoke.py, acceptance.py) still uses. A small
+    # (scripts/match.py, smoke.py) still uses. A small
     # simulation count here, deliberately: with deadline=None there is no
     # clock to bound the search at all, so unlike every other case in this
     # file `self.simulations` IS the only limiter, and the production value

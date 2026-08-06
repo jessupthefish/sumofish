@@ -18,9 +18,12 @@
 > 4. **Measurement discipline is not optional.** A number without an interval is
 >    not a result. Mirror matches are blind to what both sides share. Select on
 >    held-out loss, not on a noisy eval. Never move the yardstick.
-> 5. **Fun to play against is deferred, not cancelled.** When difficulties are
->    built they come from genuinely weaker models, never from a strong model told
->    to blunder. That is a constraint on that feature, not on the engine.
+> 5. **Fun to play against is CANCELLED (2026-08-06), not deferred.** There is
+>    one goal and it is strength. Nothing here measures enjoyment and nothing is
+>    gated on it. The only survivor is a design constraint on a feature that does
+>    not exist: if difficulty levels are ever built they come from genuinely
+>    weaker models, never from a strong model told to blunder. Do not re-raise
+>    this, and do not propose work on those grounds.
 
 A chess engine that evaluates positions with a transformer and searches with
 MCTS over a value net, with a separate policy net supplying priors. The
@@ -279,9 +282,10 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > explained that shape, so it is not worth chasing on its own evidence -- but the
 > re-earned ladder will still carry it, on both arms, as the bot does.
 
-> **Nothing is measuring strength against external opposition right now.** The
-> bot is draining, so the lichess anchor is paused, and no match is running.
-> `scripts/acceptance.py` is set up and waiting on a human.
+> **The lichess rating is the only external measurement running.** No match is
+> in flight and the exchange ladder is withdrawn, so the bot's rapid rating is
+> currently the whole of this project's contact with opposition it did not
+> build itself.
 
 
 **Standing rule, promoted out of the deleted block because it is not status:**
@@ -386,27 +390,18 @@ As of 2026-07-31, `select_mcts_class()`'s default flipped too: an unset
 `CHESSGPU_CORE` now selects Rust, not Python -- `CHESSGPU_CORE=python` is the
 rollback, same as `=rust` used to be the opt-in. `sumofish.mcts` (the
 pre-port Python search) was NOT retired: it's still exactly where it was and
-still the oracle `tests/identity_*.py`, `scripts/match.py` and
-`scripts/acceptance.py` compare Rust against, it's just no longer what an
+still the oracle `tests/identity_*.py` and `scripts/match.py` compare Rust
+against, it's just no longer what an
 absent env var silently falls back to. Verified with a new
 `tests/verify_core_default.py`; existing `tests/verify_rust_flag_guard.py`
 is unaffected (it exercises `ignored_rust_flags` on an explicit dict, not
 `select_mcts_class`'s default).
 
-**1. Play the acceptance test. It has still never been run.**
-`scripts/acceptance.py --games 20`. Twenty blind games, one rating each, arms
-hidden until `reveal`. Every other number here measures strength, which
-PHILOSOPHY ranks third; this is the only thing pointed at goal two, and it
-needs a human by construction. **Session drawn 2026-08-05 and waiting**; the
-blinding is in `runs/acceptance/`, do not look in the file.
-
-Its blinding was checked before the session was drawn rather than assumed. Both
-arms pad every reply to `RESPONSE_SECONDS = 2.5`, and nothing in the script
-warns when a search OVERRUNS that pad -- which would let you hear which arm is
-which by move two and contaminate every rating after it. Measured on the live
-nets with the bot playing: 400 sims takes 0.11-0.18s, 1600 sims takes 0.43-0.57s,
-so the padding holds with 4.4x of headroom and survives GPU contention from the
-sweep. Re-measure this if either arm's sim count is ever raised.
+**1. Re-earn the exchange ladder, with the virtual-loss fix ON.** ~10 GPU-h,
+unattended. Everything else on this list is priced in a currency that does not
+currently exist: `scale_D` and `scale_bar` are withdrawn, so no proposal can be
+argued in Elo until this is back. `match_argv` already passes the flags, so it
+is `sumofish-lab reset --job sims-400-200` (and the other three) then a run.
 
 **2. Cut v4.** `VERSIONS.jsonl` ends at v3 and the bot has had two net swaps
 since, so every record scoped "to the current version" is currently averaging

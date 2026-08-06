@@ -5,8 +5,8 @@ Flipped 2026-07-31: `select_mcts_class()` used to default to Python with Rust
 opt-in via `CHESSGPU_CORE=rust`. Rust has been running every rated game since
 2026-07-30 (see STATE.md) on the strength of the identity proof against
 `sumofish.mcts`, not on the env var, so it earned the default. Python was NOT
-retired -- it's still the oracle `tests/identity_*.py`, `scripts/match.py` and
-`scripts/acceptance.py` compare the Rust core against, still fully reachable
+retired -- it's still the oracle `tests/identity_*.py` and `scripts/match.py`
+compare the Rust core against, still fully reachable
 via `CHESSGPU_CORE=python` -- it just stopped being what an absent env var
 silently falls back to. This checks exactly that one thing changed.
 

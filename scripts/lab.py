@@ -43,9 +43,9 @@ wins its match AND passes that is copied over `runs/value.pt`, with the
 previous checkpoint kept beside it and a provenance sidecar recording what it
 won by. The bot picks it up on its next game; nothing restarts.
 
-What is still not automated is the judgement PHILOSOPHY ranks above strength:
-whether the thing is fun to play. `scripts/acceptance.py` needs a human by
-construction and nothing here substitutes for it.
+Everything the lab measures is strength, which as of 2026-08-06 is the only
+thing PHILOSOPHY asks for. The blind human test that used to sit outside this
+loop is deleted along with the goal it served.
 
 ## Three outcomes, not two
 
