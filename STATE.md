@@ -150,6 +150,17 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > whether 136M is worth 35 GPU-hours gets the same protocol as the arms it will
 > be compared against.
 >
+> **The relaunch is an accidental replicate, and the pipeline is not bit-
+> reproducible.** The same arm, same `--seed 1234`, same data order, run twice:
+> step 500 came out at loss **3.73954** on 08-02 and **3.76445** on 08-05, with
+> grad_norm 12.7 against 28.2. Not investigated -- `--compile 1` means inductor
+> autotunes against whatever else is on the card, and bf16 reductions are not
+> associative -- but worth writing down, because it is the only measurement this
+> repository has of its own run-to-run noise. Calibration: ~0.025 in training
+> loss at step 500, against a tiny-to-9M held-out gap of 0.42. The sweep's
+> ordering is two orders above its noise floor; a future experiment resting on a
+> difference of 0.02 is not.
+>
 > **`runs/lab/state.json` had `current: sweep-136m` with a dead pid** from that
 > reboot, for three days. The lab does not notice a runner that died with the
 > machine; check `ps` against that pid before believing the queue is working.
