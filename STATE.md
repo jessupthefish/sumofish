@@ -222,12 +222,41 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > ordering is two to four positions of noise and it duly came out contradicting
 > the ladder. Both scripts and the full argument are in LAB-NOTES, dated today.
 >
-> **Next candidate, and the one I would bet on: tree reuse.** Every rung ran with
+> **THE LADDER WAS MEASURED ON AN ENGINE THAT HAS NOT BEEN DEPLOYED SINCE
+> 2026-07-30.** Every rung's `config.json` says `vloss_fix: false`, and the live
+> bot has run `CHESSGPU_VLOSS_FIX=1` since 07-30, where it earned its default on
+> an SPRT verdict of W25 D7 L0 and a point estimate of **+364 Elo at 400 sims**.
+> The flags are `--a-vloss-fix`/`--b-vloss-fix`, `store_true`, defaulting to off,
+> and `lab.py`'s `match_argv` never passes them. So does every other lab match.
+>
+> The rungs are still internally valid -- both arms had the defect, so each rung
+> is a fair comparison *of the unfixed engine*. What does not follow is the use
+> the numbers are put to: `D = 233.7` and the `scale_bar = 377 Elo` that prices
+> the 136M decision are about the engine that plays, and that engine has the fix.
+>
+> **And the defect is now the leading explanation for the flat first rung.**
+> With `vloss_fix` off, virtual loss is added straight into `value_sum` rather
+> than to a separate in-flight counter, so it corrupts Q and not just the PUCT
+> denominator (`rust/src/tree.rs`, defect 2 of 3). At batch 64 there are up to 64
+> fake values in the tree at once: against a 200-simulation tree that is a third
+> of the whole search corrupted at any instant, against 3200 it is 2%. The damage
+> is therefore worst exactly where the ladder is flat, and the fix's own +364
+> verdict was measured at 400 sims, in that same crippled regime. Doubling from a
+> crippled base buys little; doubling from a healthy one buys the ~240 the upper
+> rungs show.
+>
+> Screening run in flight: `runs/matches/sims-400-vs-200-vlossfix`, the same rung
+> with the fix ON for both arms, 100 games. **100 games is a screen, not a rung**
+> -- the ladder's are 300 -- and it can only say whether the effect is large
+> enough to be worth re-earning the whole ladder for. If it is, the ladder is
+> re-earned with `--a-vloss-fix --b-vloss-fix`, and `match_argv` should pass them
+> by default so no future lab match measures the undeployed engine again.
+>
+> **The other candidate, if this one fails: tree reuse.** Every rung ran with
 > `reuse: true`, and carrying the tree between moves adds roughly a fixed number
 > of nodes per move regardless of the nominal sim count, which is proportionally
-> a much larger subsidy to a 200-sim arm than to a 3200-sim one. That would
-> compress the bottom of the ladder specifically, which is the observed shape. It
-> needs games rather than positions, so it needs the GPU.
+> a much larger subsidy to a 200-sim arm than to a 3200-sim one. Same predicted
+> shape, different mechanism.
 
 > **Nothing is measuring strength against external opposition right now.** The
 > bot is draining, so the lichess anchor is paused, and no match is running.
