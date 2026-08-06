@@ -201,9 +201,33 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > numbers under `facts`.
 >
 > The unwelcome part of the first rung: 200 -> 400 is worth only +29, while every
-> doubling above it is worth 8-10x that. Nothing here explains why, and a
-> non-monotonic exchange rate is the sort of thing that is usually an artifact of
-> the harness rather than a fact about chess.
+> doubling above it is worth 8-10x that. **Investigated 2026-08-05, and it is
+> still unexplained -- but two explanations are now dead rather than untried.**
+>
+> It is not a difference between the matches: all four rung `config.json`s are
+> identical apart from the two sim counts. It is not prior-lock either, which was
+> the obvious candidate (at 200 sims the search cannot outvote the policy, both
+> arms play the prior's move, identical moves draw).
+> `scripts/prior_dominance.py` measures how often doubling the search changes the
+> move played, over 60 real middlegame positions: **18.3%, 20.0%, 13.3%, 13.3%**
+> across the four rungs. The bottom rung changes its move MORE often than the top
+> one. The moves change; they do not help.
+>
+> Whether the changed moves are BETTER is the surviving question and
+> `scripts/rung_quality.py` cannot currently answer it. Scoring every rung's move
+> against Stockfish at 1M fixed nodes gives a median loss of 5.5-6.5 cp for every
+> rung **and for the bare prior with no search**, because positions sampled
+> uniformly from real games are mostly positions where the move is obvious. The
+> means separate, but positions losing >100 cp number 8/7/4/6/4 out of 60, so the
+> ordering is two to four positions of noise and it duly came out contradicting
+> the ladder. Both scripts and the full argument are in LAB-NOTES, dated today.
+>
+> **Next candidate, and the one I would bet on: tree reuse.** Every rung ran with
+> `reuse: true`, and carrying the tree between moves adds roughly a fixed number
+> of nodes per move regardless of the nominal sim count, which is proportionally
+> a much larger subsidy to a 200-sim arm than to a 3200-sim one. That would
+> compress the bottom of the ladder specifically, which is the observed shape. It
+> needs games rather than positions, so it needs the GPU.
 
 > **Nothing is measuring strength against external opposition right now.** The
 > bot is draining, so the lichess anchor is paused, and no match is running.

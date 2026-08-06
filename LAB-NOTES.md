@@ -824,3 +824,47 @@ and say so, because a note that was believed for a month is itself evidence.
   run until the new run's first eval beats it, so between them the file is a
   different experiment's checkpoint under the current experiment's name. Move
   both aside before relaunching (`log.jsonl.dead-<date>`, `best.pt.dead-<date>`).
+
+## 2026-08-05: chasing the ladder's flat first rung, and failing honestly
+
+- **The re-earned exchange ladder is non-monotonic and it is still unexplained.**
+  200 -> 400 sims is worth +29.0 +-25.1 Elo, while 400 -> 800 is +240.8,
+  800 -> 1600 is +308.2 and 1600 -> 3200 is +233.7. Each rung's `config.json` is
+  identical apart from the two sim counts, so it is not a difference between the
+  matches. Two hypotheses were tested and neither survived contact.
+- **Hypothesis 1, prior-lock: REFUTED.** The idea was that at 200-400 sims the
+  search cannot outvote the policy prior, both arms play the prior's top move,
+  and two engines playing the same move draw. `scripts/prior_dominance.py` runs
+  all five rungs over 60 real middlegame positions and measures how often
+  doubling the search changes the move: **18.3%, 20.0%, 13.3%, 13.3%**. The
+  bottom rung changes its move MORE often than the top one while being worth an
+  eighth as much. The moves change; they do not help.
+- **A six-position smoke test said the opposite and I believed it for several
+  minutes**, all six having 200/400/800 agree exactly. That is what a 60-position
+  sample calls noise. A smoke test proves the code runs. It is not evidence, and
+  it is most dangerous when it agrees with a hypothesis you already like.
+- **Hypothesis 2, move quality: NOT TESTABLE at this sample size, and the reason
+  is the position set.** `scripts/rung_quality.py` scores each rung's chosen move
+  against Stockfish at 1,000,000 fixed nodes. Median centipawn loss came out at
+  5.5-6.5 for every rung **and for the bare policy prior with no search at all**.
+  Positions sampled uniformly out of real games are mostly positions where the
+  move is obvious, so the instrument spends its whole sample on decisions that
+  do not discriminate. To measure what search buys, sample where search could
+  matter: high prior entropy, or positions the rungs already disagree on.
+- **Mean centipawn loss over a small sample is a blunder counter wearing a
+  continuous disguise.** The means (51.6 / 35.2 / 28.7 / 43.4 / 38.8) look like a
+  measurement and duly contradicted the ladder, rating 1600 worse than 800 on a
+  rung the ladder prices at +308. The tail says why: positions losing more than
+  100 cp number **8, 7, 4, 6, 4** out of 60, so the whole ordering rests on two
+  to four positions and "1600 is worse" is two blunders. Print the median and the
+  size of the tail beside any such mean, or the aggregate hides what it is made
+  of. `rung_quality.py` now persists per-position losses; the first version saved
+  aggregates only and the diagnosis cost a second ten-minute run for nothing.
+- **Still open, in the order I would try it.** (1) Blunder rate per rung on
+  several hundred DISCRIMINATING positions -- a 10%-vs-7% difference needs on the
+  order of a thousand to separate, which is ~2 GPU-hours of picks plus CPU for
+  the reference. (2) **Tree reuse**, which every rung ran with (`reuse: true`).
+  Carrying the tree between moves adds roughly a fixed number of nodes per move
+  whatever the nominal sim count, so it is proportionally a far larger subsidy to
+  a 200-sim arm than to a 3200-sim one and would compress the bottom of the
+  ladder specifically. Needs games rather than positions, so it needs the GPU.
