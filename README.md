@@ -23,7 +23,7 @@ Everything here was trained on a single RTX 5070 Ti.
 
 | | |
 |---|---|
-| **Rating on lichess** | **2477 rapid** (15+10, non-provisional, 266 games, RD 45; as of 2026-08-03) |
+| **Rating on lichess** | **2538 rapid** (15+10, non-provisional, 507 games, RD 45; as of 2026-08-08), against a pool averaging 2592 |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
 | State-value model | 68.7% puzzle accuracy, 300k steps |
 | Search vs no search | 7 wins, 17 draws, 0 losses (24 games, so +-200 Elo; indicative only) |
