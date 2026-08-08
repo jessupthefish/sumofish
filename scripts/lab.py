@@ -248,7 +248,12 @@ def match_argv(name: str, *extra: str, games: int = 300, budget=("--sims", "400"
     return python(str(ROOT / "scripts/match.py"), "--name", name,
                   "--games", str(games), *budget,
                   "--a-vloss-fix", "--b-vloss-fix",
-                  "--elo0", str(ELO0), "--elo1", str(ELO1), *extra)
+                  "--elo0", str(ELO0), "--elo1", str(ELO1),
+                  # The lab will not act on fewer pairs than this, so the match
+                  # must not stop below it. Without the floor a large effect
+                  # crosses the SPRT bound in ~8 pairs and `decide_promote`
+                  # then refuses the very verdict it asked for.
+                  "--min-pairs", str(MIN_DECISIVE_PAIRS), *extra)
 
 
 def ablation_argv(causal: str) -> list[str]:
@@ -732,7 +737,7 @@ PLAN: list[Job] = [
                                   "--a-value", str(ROOT / "runs/9M-sv-long/best.pt"),
                                   "--b-value", str(ROOT / "runs/value.pt"),
                                   "--a-label", "9M-long", "--b-label", "live-9M",
-                                  games=200, budget=("--time", "3.0")),
+                                  games=100, budget=("--time", "3.0")),
         probe=lambda: match_progress("lab-9m-long-vs-current"),
         timeout=12 * HOUR, needs=["train-9m-long"]),
 

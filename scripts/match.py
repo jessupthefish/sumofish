@@ -733,6 +733,17 @@ def main() -> None:
     ap.add_argument("--beta", type=float, default=0.05)
     ap.add_argument("--no-sprt", action="store_true",
                     help="play every game; do not stop early")
+    ap.add_argument("--min-pairs", type=int, default=0,
+                    help="do not let the SPRT stop the match below this many "
+                         "pairs. The sequential test crosses its bound in ~8 "
+                         "pairs on a large effect (measured: LLR grows ~0.38 "
+                         "per pair on sims-1600-vs-800), but a CONSUMER of the "
+                         "result may require a larger sample before it will act "
+                         "-- lab.py's decide_promote wants MIN_DECISIVE_PAIRS. "
+                         "Stopping below the consumer's floor produces a "
+                         "correct verdict nobody is allowed to use. Default 0 "
+                         "keeps standalone behaviour unchanged; the lab passes "
+                         "its own floor.")
     ap.add_argument("--name", default=None, help="output directory under runs/matches")
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
@@ -976,7 +987,9 @@ def main() -> None:
                 # triggered by a game that MOVED the statistic, that unpaired
                 # game is systematically A's -- a bias built into the stopping
                 # rule itself.
-                if not args.no_sprt and game_in_pair == 1 and (llr >= upper or llr <= lower):
+                if (not args.no_sprt and game_in_pair == 1
+                        and st["pairs"] >= args.min_pairs
+                        and (llr >= upper or llr <= lower)):
                     verdict = "A is better" if llr >= upper else "A is not better"
                     print(f"\nSPRT concluded after {st['pairs']} pairs "
                           f"({len(records)} games): {verdict} "
