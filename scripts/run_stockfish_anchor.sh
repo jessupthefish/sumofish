@@ -34,20 +34,34 @@
 # node-budget matches one after another keeps that to one match's worth of
 # GPU inference at a time, matching the headroom this job was scoped against.
 #
-# Same SPRT machinery and defaults as tonight's other matches
-# (--elo0 0 --elo1 20 --alpha 0.05 --beta 0.05, match.py's own established
-# defaults): it will stop early if the evidence is decisive, and either way
-# `status.json` always carries a real Elo estimate with a 95% interval, never
-# a bare win/loss tally, per PHILOSOPHY's measurement discipline.
+# --no-sprt, and that is deliberate. Fixed 2026-08-09: the sequential test
+# exists to answer "is A better than B" as cheaply as possible, and it stops the
+# moment the LLR crosses its bound -- which on a clear gap is about eight pairs
+# (measured: LLR grows ~0.38/pair on sims-1600-vs-800). An ANCHOR does not want
+# that answer. It wants a tight interval around a point estimate, and an early
+# stop delivers the widest interval the test will accept. So both budgets play
+# their full 600 games and `status.json` carries a real Elo with a 95% interval.
+#
+# --a-vloss-fix, also fixed 2026-08-09 and the more serious of the two. This
+# script was written 07-31, before `match_argv` started passing the flag, and
+# `--a-vloss-fix` is `store_true` defaulting to OFF. Without it the anchor would
+# have measured an engine that has not played a rated game since 2026-07-30 --
+# the exact error that invalidated the entire exchange ladder and cost a rerun.
+# B is Stockfish, so B's engine flags are ignored and only A takes one.
+#
+# The "GPU already carries two training jobs" note above is stale as of
+# 2026-08-09: no training is running, only the live bot.
 set -euo pipefail
-cd /home/nomad/dev/active/chess-gpu
+cd /home/nomad/dev/active/sumofish
 
 .venv/bin/python scripts/match.py \
   --value runs/value.pt --policy runs/policy.pt --sims 400 --core rust \
+  --a-vloss-fix \
   --a-label SumoFish --b-stockfish-nodes 40 --b-label "Stockfish@40n" \
-  --games 600 --name stockfish-anchor-40nodes
+  --games 600 --no-sprt --name stockfish-anchor-40nodes
 
 .venv/bin/python scripts/match.py \
   --value runs/value.pt --policy runs/policy.pt --sims 400 --core rust \
+  --a-vloss-fix \
   --a-label SumoFish --b-stockfish-nodes 100 --b-label "Stockfish@100n" \
-  --games 600 --name stockfish-anchor-100nodes
+  --games 600 --no-sprt --name stockfish-anchor-100nodes
