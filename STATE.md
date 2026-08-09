@@ -96,6 +96,46 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   measuring instrument as much as about the nets, and fixing the instrument
 >   (the Stockfish anchor, item 3) now gates every future net decision.
 >
+>
+> - **THE INSTRUMENT PROBLEM IS BEING FIXED, and one bug fell out of it.**
+>   `sumofish-anchor.service` is running the first external anchor: v5 against
+>   Stockfish at pinned nodes, 2000 games per rung. **The old 40/100-node
+>   budgets were retired** -- calibrated 07-30 against a weaker net with the
+>   vloss defect live, today's net went W3 D1 L0 at 40 nodes. Recalibrated:
+>
+>   | Stockfish | 100n | 400n | **700n** | 1600n |
+>   |---|---|---|---|---|
+>   | SumoFish scores | 68.8% | 68.8% | **50.0%** | 28.1% |
+>
+>   700n is dead even (8W 8D 8L over 24 games). Note an n=8 read of that same
+>   point said 31%; do not calibrate off n=8. **Draws are 33-37% here against
+>   the mirror match's 85%**, and games cost ~3.2s against the mirror match's
+>   374s. That is the argument for an external opponent in two numbers.
+>
+> - **`--cpuct` HAS NEVER DONE ANYTHING, and nothing could set the knob that
+>   does.** A five-arm c_puct sweep (1.0 to 4.5) returned byte-identical move
+>   hashes. Under AlphaZero's schedule -- the default, and what ships --
+>   `c_puct_at()` returns `ln((1+N+base)/base) + c_puct_init` and reads
+>   `self.c_puct` only when `c_puct_base is None`, i.e. only under
+>   `--fixed-cpuct`. And `match.py` had **zero references to `c_puct_init`**, so
+>   every match this project has ever run used the hardcoded 1.25: the ladder
+>   rungs, the promotion gates, all of it. `config.json` recorded the requested
+>   c_puct throughout, so the archive shows five sweeps that did not happen.
+>   **Provenance that records the request rather than the effect cannot catch
+>   this.** Fixed: `--cpuct-init` plus per-side overrides threaded to both
+>   engines, guarded by `tests/verify_cpuct_binding.py`, written up in
+>   LAB-NOTES 2026-08-09.
+>
+> - **`sumofish-tune.service` is queued behind the anchor** and self-sequences
+>   (it polls for the anchor to go inactive; `After=` does not wait for a unit
+>   that is already running). Sweeps `c_puct_init` then FPU, 800 games/arm
+>   against the 700n parity point, same seed for every arm so they see identical
+>   openings. It applies NOTHING; it writes `runs/lab/tune-search.json`.
+>
+> - **`/home/nomad/dev/active/chess-gpu` is deleted.** It held three
+>   `.snap.new` files, all byte-identical to the accepted snapshots in this
+>   repo, and was the target of `run_stockfish_anchor.sh`'s stale `cd`.
+
 > - **The rating climb is the OPPONENT POOL, not the engine.** 2538 rapid at
 >   n=507, RD 45. Nothing in the engine has changed since 08-02 (both net hashes
 >   unchanged), yet it went 2484 -> 2538 over 147 games **while scoring 0.432**.
