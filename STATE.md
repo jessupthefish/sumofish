@@ -118,6 +118,42 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   2000 games put it at 56.4% -- both inside the n=24 interval of +-125, which
 >   is a reminder of what a 24-game read is worth.
 >
+> - **THE TUNING SWEEP IS DONE: no value changed, and two real findings.**
+>   Nine arms, 800 games each vs Stockfish@700n, same seed. Nothing separated on
+>   its own pairwise test, and reading only that gate would have discarded both:
+>
+>   | `c_puct_init` | 0.5 | 0.875 | **1.25** | 1.75 | 2.5 |
+>   |---|---|---|---|---|---|
+>   | Elo | +43.2 | +58.3 | **+42.3** | -1.3 | -56.5 |
+>
+>   | `fpu` | -0.5 | -0.35 | **-0.2** | -0.05 |
+>   |---|---|---|---|---|
+>   | Elo | +13.0 | +23.5 | **+42.3** | +55.6 |
+>
+>   All +-19. **`c_puct_init` sits at the top edge of a cliff**: flat below,
+>   then -43.6 at 1.75 and -98.8 at 2.5 against shipped, both far outside the
+>   ~27 difference error. Upward drift in exploration is dangerous; downward is
+>   free. **The FPU optimum is OUTSIDE the swept range**: monotone across all
+>   four points, ~+14 a step, best at the LAST value tested. A monotone
+>   four-point trend beats the pairwise test that rejects each step, and it says
+>   the range was bounded wrong, not that the knob is inert.
+>
+>   `sumofish-tune-confirm.service` is running the two follow-ups at 2000 games
+>   (+-12): `confirm-fpu0.1` pushes FPU past the edge at the shipped
+>   c_puct_init, and `confirm-combined` measures (0.875, -0.05) AS A
+>   CONFIGURATION, because stage 2 swept FPU at 1.25 and not at 0.875, so
+>   "best + best" is an untested product of two marginals and both knobs move
+>   exploration. Baseline is shipped at ~+43, which has two independent
+>   measurements (anchor +44.4 +-12 on default seed, sweep +42.3 +-19 on seed
+>   4242). Difference error ~+-17.
+>
+> - **Two free validations of the match harness.** `c_puct_init=1.25` scored
+>   +42.3 +-19 in the sweep; the anchor put that same configuration at
+>   +44.4 +-12 in a separate 2000-game run on different openings. And stage 2's
+>   `fpu=-0.2` arm is stage 1's `c_puct_init=1.25` arm under another name: it
+>   returned byte-identical 304/289/207. Same seed and config reproduce exactly
+>   at the match level, whatever the training pipeline does.
+>
 > - **THE INSTRUMENT PROBLEM IS BEING FIXED, and one bug fell out of it.**
 >   `sumofish-anchor.service` is running the first external anchor: v5 against
 >   Stockfish at pinned nodes, 2000 games per rung. **The old 40/100-node
