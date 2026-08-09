@@ -976,3 +976,37 @@ pairwise gate would have thrown that away.
   games, because the bot was playing throughout and each arm reloads the nets.
   Budget match-harness sweeps on ~6s/game with the bot up, not the 3.2s an
   uninterrupted anchor gets.
+
+## 2026-08-09: +63.5 Elo from two config values, and why it was not shipped
+
+`confirm-combined` (`c_puct_init=0.875`, `fpu=-0.05`) scored **+107.9 +-13**
+against Stockfish@700n over 2000 games, W980 D642 L378, LOS 100%. The shipped
+config sits at ~+43 on two independent measurements (anchor +44.4 +-12 on the
+default seed, sweep +42.3 +-19 on seed 4242). That is **+63.5 Elo at ~3.6
+sigma**, against a 1h53m training run that bought +3.5 +-26.4.
+
+- **The combination is strongly SUPERADDITIVE, and the marginals would have
+  talked you out of it.** Alone, `c_puct_init=0.875` was +16.0 and `fpu=-0.05`
+  was +13.3, neither separated from shipped against a ~27 difference error. A
+  reader who stopped at the sweep's pairwise gate would have concluded "no
+  change justified" and been right about each knob and wrong about the pair:
+  the sum of the marginals is +29 and the joint effect is +65.6, better than
+  2x. **When two parameters govern the same mechanism, sweeping them one at a
+  time and adding the winners is not a plan, it is a different experiment.**
+- **Sweeping stage 2 at the SHIPPED value of stage 1 is what made this
+  visible.** Had stage 2 been run at stage 1's winner, the interaction would
+  have been folded silently into the FPU column and never named.
+- **It was NOT deployed, because it was measured at 1/150th of the deployment
+  budget.** Everything above is `--sims 400`. The bot plays 15+10 at ~60,000
+  nodes a move, and `MCTS.c_puct_at`'s own docstring says exactly why that
+  matters: "the balance between trying something new and pursuing what already
+  looks good shifts with N, and the c that balances it shifts too." An
+  exploration constant is the single parameter least entitled to be assumed
+  budget-invariant, and AlphaZero's schedule exists because it is not.
+  `sumofish-tune-transfer.service` re-measures combined-vs-shipped head to head
+  at 400 sims (the control, which must reproduce ~+63) and at 3200 sims.
+- **Head-to-head is safe HERE and the mirror-match lesson still stands.** That
+  85%-repetition collapse needed two configurations that play the same moves.
+  These two land 65 Elo apart and demonstrably do not. Draw rate is being
+  watched anyway: near 85% means the arm is blind and the number is discarded
+  rather than interpreted.
