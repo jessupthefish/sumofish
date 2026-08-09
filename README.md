@@ -23,6 +23,7 @@ Everything here was trained on a single RTX 5070 Ti.
 
 | | |
 |---|---|
+| **External Elo (anchor)** | **+44.4 ±12** vs Stockfish@700n and **-150.9 ±13** vs @1600n, 2000 games each at 400 sims (2026-08-09); parity interpolates to ~845 nodes |
 | **Rating on lichess** | **2538 rapid** (15+10, non-provisional, 507 games, RD 45; as of 2026-08-08), against a pool averaging 2592 |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
 | State-value model | 68.7% puzzle accuracy, 300k steps |

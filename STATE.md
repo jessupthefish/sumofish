@@ -97,6 +97,27 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   (the Stockfish anchor, item 3) now gates every future net decision.
 >
 >
+> - **THE ANCHOR LANDED. THIS IS THE FIRST EXTERNAL ELO THIS PROJECT HAS EVER
+>   HAD.** v5 against Stockfish at pinned nodes, 2000 games a rung, 3h44m total:
+>
+>   | opponent | W/D/L | score | **Elo** | draws |
+>   |---|---|---|---|---|
+>   | Stockfish@700n | 770/714/516 | 56.4% | **+44.4 +-12** | 35.7% |
+>   | Stockfish@1600n | 269/644/1087 | 29.5% | **-150.9 +-13** | 32.2% |
+>
+>   **Read the intervals: +-12 and +-13.** The mirror match spent 9h38m to earn
+>   +-26.4. This spent 1h52m a rung to earn +-12. That is the same GPU buying an
+>   order of magnitude more information, and the mechanism is in the last
+>   column: 33-36% draws against the mirror match's 85%.
+>
+>   Interpolating between the two rungs: 195.3 Elo across 1.193 doublings of
+>   Stockfish's budget = **164 Elo per doubling**, putting v5 at parity with
+>   **Stockfish at ~845 nodes** (at our 400 sims). Treat 845 as an
+>   interpolation across a wide gap, not a measurement; the two measured points
+>   are the results. Note the 24-game calibration put 700n at exactly 50.0% and
+>   2000 games put it at 56.4% -- both inside the n=24 interval of +-125, which
+>   is a reminder of what a 24-game read is worth.
+>
 > - **THE INSTRUMENT PROBLEM IS BEING FIXED, and one bug fell out of it.**
 >   `sumofish-anchor.service` is running the first external anchor: v5 against
 >   Stockfish at pinned nodes, 2000 games per rung. **The old 40/100-node
