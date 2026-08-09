@@ -54,33 +54,47 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > converge, the `systemctl --user disable` symlink trap) is preserved below and
 > in the sections further down.
 
-> **CURRENT, 2026-08-08 ~19:30.**
+> **CURRENT, 2026-08-09 ~02:00.**
 >
-> - **The 900k run is DONE and is NOT DEPLOYED.** `train-9m-long` completed
->   900,000 of 900,000 steps on 08-07 at 23:26, exit 0, no truncation. Held-out
->   **2.0674** and puzzles **0.752**, against the live net's 2.112 and 0.700, and
->   the eval curve is flat over the last 70k steps, so it is annealed rather than
->   still moving. Nothing has been promoted on the strength of that, correctly:
->   they are instruments, and `match-9m-long` has not run.
+> - **The 900k net is LIVE, promoted 2026-08-09 01:49, and it was promoted on
+>   held-out loss rather than on the match.** `runs/value.pt` is now
+>   `dd436dd8` = `runs/9M-sv-long/best.pt`, step 900,000, held-out **2.0674**
+>   and puzzles **0.752** against the outgoing 595k net's 2.112 / 0.700.
+>   Rollback is `scripts/promote.py --rollback`; `runs/value.pt.previous` is the
+>   old `102b2f2d`. Cut as **v5**. v4 finished 65W 38D 80L over 183 games.
 >
->   > **Verify what is deployed by CONTENT HASH, not by the rating log.**
->   > `runs/value.pt` is `102b2f2d...`, which is exactly v4's recorded
->   > `checkpoint_sha`, and `runs/9M-sv-long/final.pt` is `42f8d72c...` and
->   > appears nowhere in the deployed path. The `deployed` field in
->   > `logs/rating.jsonl` is a **size+mtime fingerprint** (`fingerprint()` in
->   > `scripts/rating_log.py`), deliberately cheap, so it cannot see an in-place
->   > overwrite that preserved both. It is fine for spotting a promotion; it is
->   > not evidence about identity. Also useless for this: the live engine
->   > processes hold no open fd on the checkpoint, they load it and close it.
+> - **THE MATCH WAS BLIND, AND THIS IS THE IMPORTANT RESULT OF THE SESSION.**
+>   `lab-9m-long-vs-current`, 100 games / 50 pairs at 3.0s/move, both arms with
+>   `vloss_fix` on, took 9h38m and returned **+3.5 +-26.4 Elo, 8W 85D 7L, LOS
+>   60%, LLR -1.24**. Not decisive, and `decide_promote` correctly refused it.
+>   The termination breakdown is why:
 >
-> - **The lab is parked at `match-9m-long`,** 9/17 jobs done, with `promote` and
->   `report` behind it. Nothing is running and the card is idle apart from the
->   bot's own engine processes. The match is 200 games at a fixed **3.0s/move**
->   rather than fixed sims, deliberately: equal sims measures whose judgement is
->   better, equal clock measures who wins a game. At ~4 min/game that is ~13h
->   against a 12h job timeout, so expect it to either conclude early on the SPRT
->   or come back truncated; `decide_promote` demands decisiveness either way, so
->   a short match promotes nothing.
+>   | reason | n |
+>   |---|---|
+>   | threefold_repetition | **80** |
+>   | checkmate | 8 |
+>   | adjudicated-arbiter | 7 |
+>   | insufficient_material | 4 |
+>   | stalemate | 1 |
+>
+>   **Eighty of a hundred games were repetition draws.** Two checkpoints of one
+>   lineage evaluate balanced positions identically and shuffle. This is
+>   PHILOSOPHY point 4's mirror-match blindness in its extreme form, and it is
+>   NOT a property of the bot at large: rated play is 17% draws. The 07-31
+>   pilot had the same signature (4/4 repetition draws) and the 595k net was
+>   promoted on held-out loss for exactly this reason, with `"elo": null` in its
+>   sidecar. **So this protocol has now returned null on both net swaps it has
+>   ever judged.** Treat "candidate vs previous net, fixed time" as an
+>   instrument that can show a net is not WORSE and cannot show that it is
+>   better. Resolving a modest gain would need many hundreds of games at ~5.8
+>   min each.
+>
+> - **Do not read the null as "more training does not pay."** It rules out a
+>   large gain and cannot see a modest one. What IS established, jointly with
+>   the width sweep: neither more parameters nor more steps produced anything
+>   this project can currently measure at 9M. That is a statement about the
+>   measuring instrument as much as about the nets, and fixing the instrument
+>   (the Stockfish anchor, item 3) now gates every future net decision.
 >
 > - **The rating climb is the OPPONENT POOL, not the engine.** 2538 rapid at
 >   n=507, RD 45. Nothing in the engine has changed since 08-02 (both net hashes
@@ -368,9 +382,12 @@ the network was 9%.
 
 ## Next session, in order
 
-**0. Run `match-9m-long`.** It is the only thing standing between a finished
-900k net and a promotion decision, everything downstream of it is gated on the
-verdict, and the card is idle. Nothing else on this list should be started first.
+**0. DONE, and it changed what matters. `match-9m-long`** ran 100 games and
+returned +3.5 +-26.4 with 80 repetition draws; the net was promoted on held-out
+loss and cut as v5. **The instrument, not the net, is now the bottleneck**, so
+item 3 below has been promoted to the top of this list: until there is an
+external anchor, no net decision this project makes can be measured, and the
+next one will fail exactly the same way.
 
 **Done: the Rust core is deployed to rated play, and now the default.**
 Live with `CHESSGPU_CORE=rust` since 2026-07-30 14:32, both speed flags off.
@@ -403,7 +420,7 @@ touches neither, so the next promotion silently re-creates exactly the scoping
 problem v4 was cut to fix. If `match-9m-long` promotes, cut v5 in the same
 sitting, before reading any record scoped to a version.
 
-**3. Stockfish as an absolute anchor**, at pinned nodes. Every match here is
+**3. Stockfish as an absolute anchor (NOW THE TOP ITEM, see 0)**, at pinned nodes. Every match here is
 relative, so the whole ladder floats -- and now that the exchange ladder has
 been re-earned, this is the only remaining thing that would tie the numbers to
 something outside the project. The adjudicator half is done.
