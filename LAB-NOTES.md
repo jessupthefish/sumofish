@@ -902,3 +902,40 @@ and say so, because a note that was believed for a month is itself evidence.
   withdraws derived FACTS (`scale_D`, `scale_bar`), by renaming rather than
   deleting, so a later job that reads one by name fails loudly instead of
   falling back to a default.
+
+## 2026-08-09: a parameter that was never connected, and a test that could not tell
+
+Ran a c_puct sweep against Stockfish, five arms from 1.0 to 4.5. Every arm came
+back **2W 1D 1L, +88.7 +-150, byte-identical move hashes**. The obvious reading
+is "c_puct does not matter at this budget", and it is wrong.
+
+- **`--cpuct` is a silent no-op in the configuration that ships.** AlphaZero's
+  schedule is on by default (`c_puct_base = 19652.0`), and `c_puct_at()` is
+  `match self.c_puct_base { None => self.c_puct, Some(base) => ln((1 + N +
+  base)/base) + self.c_puct_init }`. Under the schedule `self.c_puct` is never
+  read. It binds ONLY under `--fixed-cpuct`. The flag has therefore done nothing
+  in every match this project has run that did not also pass `--fixed-cpuct`.
+- **`config.json` recorded `c_puct: 4.5` for an arm that ran 1.25.** Provenance
+  that records the REQUEST rather than the EFFECT cannot catch this class of
+  bug, and makes it invisible in the archive afterwards. The archive says five
+  different sweeps happened. They did not.
+- **Nothing anywhere could vary `c_puct_init`.** `match.py` had zero references
+  to it, so every match ever run used the hardcoded 1.25 -- including the four
+  exchange-ladder rungs and every promotion gate. Added `--cpuct-init` and the
+  per-side overrides, and threaded it through `Spec` to BOTH engines.
+- **The failure mode is the lesson, not the flag.** "This parameter has no
+  effect" and "this parameter is not connected" produce identical experimental
+  output, and the second is far cheaper to check: vary the input and assert the
+  OUTPUT changed, before spending GPU-hours interpreting a flat result. Five
+  identical rows should have been read as a plumbing alarm, not a finding. It
+  cost 20 minutes here only because the arms were 4 games; at the planned 800
+  games/arm it would have been six hours to conclude something false.
+- Guarded by `tests/verify_cpuct_binding.py`: no GPU, pure arithmetic over
+  `c_puct_at`, asserting that `c_puct` does NOT move the schedule, that
+  `c_puct_init` does and additively, that `--fixed-cpuct` inverts both, and that
+  `MCTS`, `RustMCTS` and `match.Spec` all actually carry the parameter. A flag
+  that parses and is dropped one layer down is the same no-op in a new hat.
+- Sanity check that proves the fix rather than assuming it: `c_puct_init` of
+  0.5 / 1.25 / 3.0 produce three DIFFERENT games (167, 117, 114 plies), and the
+  1.25 arm reproduces the exact move hash `48cd494d410b50e8` that all five
+  broken c_puct arms produced. That is the bug and the fix in one measurement.

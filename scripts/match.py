@@ -117,6 +117,13 @@ class Spec:
     sims: int
     batch: int
     c_puct: float
+    # The exploration constant that ACTUALLY BINDS under AlphaZero's schedule.
+    # `c_puct_at()` reads `c_puct` only when `c_puct_base is None`, i.e. only
+    # under --fixed-cpuct; otherwise it returns
+    # `ln((1 + visits + base)/base) + c_puct_init` and `c_puct` is dead. So
+    # --cpuct is a silent no-op in the SHIPPED configuration, and every match
+    # before 2026-08-09 ran the hardcoded 1.25 because nothing passed this.
+    c_puct_init: float
     fpu: float
     movetime: float | None
     searchless: bool
@@ -161,7 +168,9 @@ class Spec:
         return (
             f"core={self.core}{'+' + flags if flags else ''} "
             f"value={self.value} policy={self.policy} {budget} "
-            f"batch={self.batch} cpuct={self.c_puct} fpu={self.fpu} "
+            f"batch={self.batch} "
+            f"{'cpuct=' + str(self.c_puct) if self.fixed_cpuct else 'cpuct_init=' + str(self.c_puct_init)} "
+            f"fpu={self.fpu} "
             f"reuse={'on' if self.reuse else 'off'}"
         )
 
@@ -254,6 +263,7 @@ class Player:
                 self.value,
                 policy=load_prior(spec.policy, device),
                 c_puct=spec.c_puct,
+                c_puct_init=spec.c_puct_init,
                 fpu=spec.fpu,
                 simulations=10**9 if spec.movetime else spec.sims,
                 batch=spec.batch,
@@ -286,6 +296,7 @@ class Player:
                 self.value,
                 policy=load_prior(spec.policy, device),
                 c_puct=spec.c_puct,
+                c_puct_init=spec.c_puct_init,
                 fpu=spec.fpu,
                 # `--time` means the CLOCK decides, so the simulation count
                 # must not also bind. It did: `simulations=spec.sims` with a
@@ -621,7 +632,18 @@ def main() -> None:
     ap.add_argument("--policy", default=str(ROOT / "runs/policy.pt"))
     ap.add_argument("--sims", type=int, default=400)
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--cpuct", type=float, default=2.0)
+    ap.add_argument("--cpuct", type=float, default=2.0,
+                    help="the CONSTANT exploration term. Read only under "
+                         "--fixed-cpuct; under AlphaZero's schedule (the "
+                         "default, and what ships) it is ignored entirely and "
+                         "--cpuct-init is the knob. Passing it alone changes "
+                         "nothing.")
+    ap.add_argument("--cpuct-init", type=float, default=1.25,
+                    help="the additive term in AlphaZero's schedule, "
+                         "ln((1+N+base)/base) + INIT. This is the exploration "
+                         "constant that binds in the shipped configuration. "
+                         "Added 2026-08-09; before that nothing could vary it "
+                         "and every match ran the hardcoded 1.25.")
     ap.add_argument("--fpu", type=float, default=-0.2)
     ap.add_argument("--time", type=float, default=None,
                     help="seconds per move; overrides --sims when set")
@@ -632,6 +654,7 @@ def main() -> None:
         ap.add_argument(f"--{side}-sims", type=int)
         ap.add_argument(f"--{side}-batch", type=int)
         ap.add_argument(f"--{side}-cpuct", type=float)
+        ap.add_argument(f"--{side}-cpuct-init", type=float)
         ap.add_argument(f"--{side}-fpu", type=float)
         ap.add_argument(f"--{side}-time", type=float)
         ap.add_argument(f"--{side}-searchless", action="store_true")
@@ -760,6 +783,7 @@ def main() -> None:
             sims=pick("sims"),
             batch=pick("batch"),
             c_puct=pick("cpuct"),
+            c_puct_init=pick("cpuct_init"),
             fpu=pick("fpu"),
             # --time is shared and legitimately None, so it cannot use `pick`:
             # None means "use sims", not "fall through to the shared default".
