@@ -939,3 +939,40 @@ is "c_puct does not matter at this budget", and it is wrong.
   0.5 / 1.25 / 3.0 produce three DIFFERENT games (167, 117, 114 plies), and the
   1.25 arm reproduces the exact move hash `48cd494d410b50e8` that all five
   broken c_puct arms produced. That is the bug and the fix in one measurement.
+
+## 2026-08-09: a tuning sweep where the shape beat every pairwise test
+
+Nine arms, 800 games each against Stockfish@700n, same seed so every arm saw
+identical openings. Not one arm separated from the shipped value on its own
+pairwise comparison. The sweep is still informative, and reading only the
+pairwise gate would have thrown that away.
+
+- **`c_puct_init` sits at the top edge of a cliff, not in a plateau.** 0.5 /
+  0.875 / 1.25 scored +43.2 / +58.3 / +42.3, flat within +-19. Then 1.75 is
+  **-1.3** and 2.5 is **-56.5**. Against shipped, 1.75 is -43.6 and 2.5 is
+  -98.8, both far outside the ~27 difference error. So the shipped 1.25 is not
+  wrong, but everything above it falls off fast and nothing warns you. Treat
+  upward drift in exploration as dangerous and downward drift as free.
+- **The FPU optimum is OUTSIDE the swept range.** -0.5 / -0.35 / -0.2 / -0.05
+  gave +13.0 / +23.5 / +42.3 / +55.6: monotone, ~+14 a step, never turning
+  over, with the best value the last one tested. **A monotone trend across four
+  points is much stronger evidence than the pairwise test that rejects each
+  step**, and it says the sweep was bounded in the wrong place. When the winner
+  is at the edge of the range, the finding is "extend the range", not "no
+  effect".
+- **Do not assume the two combine.** Stage 2 swept FPU at the SHIPPED
+  `c_puct_init=1.25`, not at stage 1's 0.875, so "best c_puct_init plus best
+  FPU" is an untested product of two marginals. Both knobs move exploration, so
+  interaction is likely rather than exotic. The combination has to be measured
+  as a configuration, which is what the follow-up arms do.
+- **Two free validations of the harness, worth more than they cost.** The
+  `c_puct_init=1.25` arm scored +42.3 +-19 here; the anchor put that identical
+  configuration at +44.4 +-12 in a separate 2000-game run. Two independent
+  measurements of one config agreeing inside noise. And stage 2's `fpu=-0.2`
+  arm IS stage 1's `c_puct_init=1.25` arm re-run under another name: it
+  returned byte-identical 304/289/207. Same seed and same config reproduce
+  exactly at the match level, whatever the training pipeline does.
+- Cost note: 9 arms x 800 games took 10h19m wall against a 3h44m anchor of 4000
+  games, because the bot was playing throughout and each arm reloads the nets.
+  Budget match-harness sweeps on ~6s/game with the bot up, not the 3.2s an
+  uninterrupted anchor gets.
