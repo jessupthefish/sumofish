@@ -97,6 +97,35 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   (the Stockfish anchor, item 3) now gates every future net decision.
 >
 >
+> - **THE LADDER IS RE-EARNED, ABSOLUTE, AND `scale_D` HAS A VALUE AGAIN:
+>   195 Elo per doubling of SEARCH.** Five rungs on the v6 engine, each an
+>   independent measurement against Stockfish at a pinned budget, priced through
+>   the measured 350-11,200 node ruler:
+>
+>   | sims | vs | W/D/L | rung | ABSOLUTE (vs SF@700) |
+>   |---|---|---|---|---|
+>   | 200 | SF@360 | 311/279/210 | +44.1 +-19 | -105.1 |
+>   | 400 | SF@845 | 313/263/224 | +38.8 +-19 | **+84.2** |
+>   | 800 | SF@1970 | 135/241/224 | -51.9 +-22 | +293.5 |
+>   | 1600 | SF@4600 | 45/191/264 | -163.2 +-25 | +499.2 |
+>   | 3200 | SF@10700 | 17/122/261 | -246.3 +-32 | +673.7 |
+>
+>   Increments 189.3 / 209.3 / 205.7 / 174.5, mean **194.7**, spread 35 against
+>   ~+-30 on each difference: flat, so quote one number and not a curve. This
+>   supersedes the WITHDRAWN `sims-*` chain and is better than it in kind, not
+>   just in error: no rung depends on any other, and the scale has an origin, so
+>   it answers "how strong IS it" and not only "how much did that buy".
+>
+>   **Do not re-run the old `sims-400-200` chain. It is superseded, not
+>   pending.** `scale_D = 195` and the search-cost side (1.61 doublings for a
+>   136M, m=3.06) can now be argued in the same currency.
+>
+> - **A third, independent read on the v6 tuning.** The 400-sim rung puts v6 at
+>   **+84.2** vs SF@700 where the anchor put v5 at +44.4, i.e. **+39.8**. The
+>   other two reads were +63.5 (vs Stockfish) and +51.3 (head to head). All
+>   three positive, all overlapping once the ruler's own +-46 is propagated.
+>   Three designs, one conclusion.
+>
 > - **THE ANCHOR LANDED. THIS IS THE FIRST EXTERNAL ELO THIS PROJECT HAS EVER
 >   HAD.** v5 against Stockfish at pinned nodes, 2000 games a rung, 3h44m total:
 >
