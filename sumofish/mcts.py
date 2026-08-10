@@ -135,12 +135,12 @@ class MCTS:
         c_puct: float = 2.0,
         # AlphaZero's published schedule. None restores the constant `c_puct`.
         c_puct_base: float | None = 19652.0,
-        c_puct_init: float = 1.25,
+        c_puct_init: float = 0.875,
         simulations: int = 400,
         batch: int = 1,               # >1 uses virtual loss to fill GPU batches
         dirichlet_alpha: float = 0.3,
         dirichlet_weight: float = 0.0,
-        fpu: float = -0.2,
+        fpu: float = -0.05,
         reuse: bool = True,
         terminal=terminal_value,
     ) -> None:

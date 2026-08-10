@@ -638,13 +638,13 @@ def main() -> None:
                          "default, and what ships) it is ignored entirely and "
                          "--cpuct-init is the knob. Passing it alone changes "
                          "nothing.")
-    ap.add_argument("--cpuct-init", type=float, default=1.25,
+    ap.add_argument("--cpuct-init", type=float, default=0.875,
                     help="the additive term in AlphaZero's schedule, "
                          "ln((1+N+base)/base) + INIT. This is the exploration "
                          "constant that binds in the shipped configuration. "
                          "Added 2026-08-09; before that nothing could vary it "
                          "and every match ran the hardcoded 1.25.")
-    ap.add_argument("--fpu", type=float, default=-0.2)
+    ap.add_argument("--fpu", type=float, default=-0.05)
     ap.add_argument("--time", type=float, default=None,
                     help="seconds per move; overrides --sims when set")
 
