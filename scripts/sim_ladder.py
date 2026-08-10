@@ -111,27 +111,71 @@ def run_rung(sims: int, nodes: int, games: int, cfg: dict) -> dict:
     return st
 
 
-def ruler_slope() -> tuple[float, str]:
-    """Elo per doubling of Stockfish nodes, from the measured ruler matches."""
+def ruler_curve() -> tuple[dict, str]:
+    """Cumulative Elo as a function of Stockfish node budget, MEASURED.
+
+    A single Elo-per-doubling slope is wrong, and measurably so. The ruler
+    matches (2026-08-09, 200 games each) give per-doubling costs of
+
+        350 -> 700    155.5      1400 -> 2800   284.9
+        700 -> 1400   205.0
+
+    which steepens by about 2x across the range. Pricing a rung at 10,700 nodes
+    with a slope fitted near 700 would be off by hundreds of Elo, and every
+    "is X worth it" argument downstream inherits that error. So build a chain:
+    anchor the smallest measured budget at 0, walk each measured edge, and
+    interpolate log-linearly BETWEEN measured points only.
+
+    Returns {nodes: cumulative_elo} and a provenance string. Extrapolation past
+    the measured ends is refused rather than guessed -- see `ruler_at`.
+    """
     import math
-    pts = []
-    for d in (ROOT / "runs" / "matches").glob("ruler-*-vs-*"):
+    edges = []
+    for d in sorted((ROOT / "runs" / "matches").glob("ruler-*-vs-*")):
         st_p = d / "status.json"
         if not st_p.exists():
             continue
         try:
-            lo, hi = d.name.replace("ruler-", "").split("-vs-")
+            lo, hi = (int(x) for x in d.name.replace("ruler-", "").split("-vs-"))
             st = json.loads(st_p.read_text())
             if st.get("games", 0) < 100:
                 continue
-            doublings = math.log2(int(hi) / int(lo))
-            pts.append((-st["elo"] / doublings, st["games"]))
+            edges.append((lo, hi, -st["elo"]))  # elo is A's, A is the LOW budget
         except Exception:
             continue
-    if not pts:
-        return 190.0, "DEFAULT 190 (no ruler matches found -- treat as assumed)"
-    slope = sum(s * n for s, n in pts) / sum(n for _, n in pts)
-    return slope, f"measured from {len(pts)} ruler rungs"
+    if not edges:
+        return {}, "NO RULER MATCHES -- ladder cannot be put on an absolute scale"
+
+    nodes = {min(min(l, h) for l, h, _ in edges): 0.0}
+    for _ in range(len(edges) + 1):           # relax until the chain resolves
+        for lo, hi, gain in edges:
+            if lo in nodes and hi not in nodes:
+                nodes[hi] = nodes[lo] + gain
+            elif hi in nodes and lo not in nodes:
+                nodes[lo] = nodes[hi] - gain
+    return nodes, (f"{len(edges)} measured ruler rungs spanning "
+                   f"{min(nodes)}-{max(nodes)} nodes")
+
+
+def ruler_at(nodes_map: dict, n: int) -> float | None:
+    """Cumulative Elo at `n` nodes, log-linear between measured points.
+
+    Returns None outside the measured range. A ladder rung priced by
+    extrapolating a curve that is known to bend is not a measurement, and the
+    honest output is a gap in the table rather than a confident wrong number.
+    """
+    import math
+    if not nodes_map:
+        return None
+    xs = sorted(nodes_map)
+    if n < xs[0] or n > xs[-1]:
+        return None
+    if n in nodes_map:
+        return nodes_map[n]
+    lo = max(x for x in xs if x <= n)
+    hi = min(x for x in xs if x >= n)
+    f = (math.log2(n) - math.log2(lo)) / (math.log2(hi) - math.log2(lo))
+    return nodes_map[lo] + f * (nodes_map[hi] - nodes_map[lo])
 
 
 def main() -> int:
@@ -152,27 +196,38 @@ def main() -> int:
             st = run_rung(sims, nodes, games, cfg)
         rows.append((sims, nodes, st))
 
-    slope, provenance = ruler_slope()
+    nodes_map, provenance = ruler_curve()
     import math
-    print(f"\nruler: {slope:.0f} Elo per doubling of Stockfish nodes ({provenance})")
+    base = ruler_at(nodes_map, 700) or 0.0
+    print(f"\nruler: {provenance}")
+    for x in sorted(nodes_map):
+        print(f"    SF@{x:<6} {nodes_map[x] - base:+8.1f}  (vs SF@700)")
     print(f"\n{'sims':>6}  {'vs':>10}  {'W/D/L':>14}  {'rung elo':>14}  {'ABSOLUTE (vs SF@700)':>22}")
-    out = {"shipped": cfg, "ruler_elo_per_doubling": slope,
+    out = {"shipped": cfg, "ruler_nodes_elo": nodes_map,
            "ruler_provenance": provenance, "rungs": {}}
     for sims, nodes, st in rows:
         if not st:
             print(f"{sims:>6}  {('SF@' + str(nodes)):>10}  {'FAILED':>14}")
             continue
         # Absolute strength on one scale: where SF@nodes sits relative to
-        # SF@700, plus how far this rung beat (or lost to) it.
-        absolute = slope * math.log2(nodes / 700) + st["elo"]
+        # SF@700 on the MEASURED curve, plus how far this rung beat it.
+        anchor = ruler_at(nodes_map, nodes)
         wdl = f"{st['w']}/{st['d']}/{st['l']}"
+        if anchor is None:
+            print(f"{sims:>6}  {('SF@' + str(nodes)):>10}  {wdl:>14}  "
+                  f"{st['elo']:+8.1f} +-{st['err']:<4.0f}  "
+                  f"{'OUTSIDE RULER':>15}")
+            out["rungs"][str(sims)] = {"nodes": nodes, "elo": st["elo"],
+                                       "err": st["err"], "absolute_vs_sf700": None}
+            continue
+        absolute = (anchor - base) + st["elo"]
         print(f"{sims:>6}  {('SF@' + str(nodes)):>10}  {wdl:>14}  "
               f"{st['elo']:+8.1f} +-{st['err']:<4.0f}  {absolute:+15.1f}")
         out["rungs"][str(sims)] = {"nodes": nodes, "elo": st["elo"], "err": st["err"],
                                    "w": st["w"], "d": st["d"], "l": st["l"],
                                    "absolute_vs_sf700": round(absolute, 1)}
-    done = [(s, r["absolute_vs_sf700"]) for s, r in
-            ((s, out["rungs"][s]) for s in out["rungs"])]
+    done = [(s, r["absolute_vs_sf700"]) for s, r in out["rungs"].items()
+            if r.get("absolute_vs_sf700") is not None]
     if len(done) >= 2:
         done.sort(key=lambda x: int(x[0]))
         lo, hi = done[0], done[-1]
