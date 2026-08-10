@@ -243,6 +243,9 @@ class Player:
     ) -> None:
         self.spec = spec
         self.engine = None
+        # Identifies the current game to python-chess; a new object per game
+        # triggers `ucinewgame`. See new_game().
+        self._game_token = object()
         if spec.stockfish_nodes is not None:
             import chess.engine
 
@@ -316,13 +319,34 @@ class Player:
 
     def new_game(self) -> None:
         if self.engine is not None:
-            # Stateless per call from this harness's point of view: each
-            # `move()` sends the full position (root FEN + move list) rather
-            # than an incremental one, so a fresh game does not need an
-            # explicit "ucinewgame" for correctness. It only affects hash-
-            # table reuse between games, which at these node budgets is noise
-            # next to the game-to-game variance a few hundred games already
-            # has to average out.
+            # CORRECTED 2026-08-10. This used to return here without telling
+            # Stockfish a new game had started, on the reasoning that each
+            # move() sends the full position so ucinewgame is not needed for
+            # CORRECTNESS, and that hash reuse between games is "noise next to
+            # the game-to-game variance". The first half is true and the second
+            # is not, in a way that is not noise but bias.
+            #
+            # Stockfish plays at a fixed NODE budget here. A warm transposition
+            # table finds better moves inside the same budget, so its strength
+            # depends on how many games it has already played in this process.
+            # Consequences, all of them measured or provable rather than
+            # theoretical:
+            #
+            #   * a game's result depended on which games came BEFORE it, so a
+            #     match was not reproducible from its seed alone. Splitting a
+            #     20-game match across two shards changed 18 of the 20 games
+            #     while partitioning them perfectly (2026-08-10);
+            #   * that makes sharding BIASED, not merely different: a shard
+            #     plays 1/N as many games, so its Stockfish runs colder and
+            #     therefore weaker throughout, inflating our score;
+            #   * and a resumed match differed from an uninterrupted one, since
+            #     the resumed half starts cold.
+            #
+            # python-chess sends `ucinewgame` when the `game` object handed to
+            # play() changes, so a fresh token per game clears the hash and
+            # makes every game start identically.
+            self._game_token = object()
+            return
             return
         # Tree reuse, once it exists, must not carry a subtree from the
         # previous game into this one.
@@ -338,6 +362,9 @@ class Player:
                 board,
                 chess.engine.Limit(nodes=self.spec.stockfish_nodes),
                 info=chess.engine.INFO_SCORE,
+                # Changing this token is what makes python-chess emit
+                # `ucinewgame`. See new_game().
+                game=self._game_token,
             )
             score = (result.info or {}).get("score")
             # Side-to-move's perspective, matching the neural players' `root.q`
@@ -767,9 +794,33 @@ def main() -> None:
                          "correct verdict nobody is allowed to use. Default 0 "
                          "keeps standalone behaviour unchanged; the lab passes "
                          "its own floor.")
+    ap.add_argument("--shard-index", type=int, default=0,
+                    help="this process plays only pairs where "
+                         "pair %% SHARD_COUNT == SHARD_INDEX. With "
+                         "--shard-count it splits one match across processes.")
+    ap.add_argument("--shard-count", type=int, default=1,
+                    help="how many processes are splitting this match. Pairs "
+                         "are the unit, never games, so a pair's two "
+                         "colour-swapped halves always land in one process and "
+                         "the pair statistics stay intact. Openings are chosen "
+                         "from the same --seed in every shard, so pair N is the "
+                         "SAME opening in every shard and the union is exactly "
+                         "the match a single process would have played. "
+                         "Merge with scripts/merge_matches.py.")
     ap.add_argument("--name", default=None, help="output directory under runs/matches")
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
+    if args.shard_count < 1 or not (0 <= args.shard_index < args.shard_count):
+        raise SystemExit(
+            f"bad shard {args.shard_index}/{args.shard_count}: need "
+            f"shard_count >= 1 and 0 <= shard_index < shard_count"
+        )
+    if args.shard_count > 1 and not args.no_sprt:
+        # A shard sees a biased subset (every Nth pair) and cannot run the
+        # sequential test on it: stopping on a shard's own LLR would stop the
+        # whole match on a fraction of the evidence.
+        raise SystemExit("--shard-count > 1 requires --no-sprt; "
+                         "run the SPRT over the merged result instead")
 
     def spec(side: str) -> Spec:
         def pick(field: str, shared: str | None = None):
@@ -934,6 +985,11 @@ def main() -> None:
 
     try:
         for pair in range(pairs):
+            # Sharding. The unit is the PAIR: splitting a pair across processes
+            # would put its two colour-swapped halves in different logs, and
+            # every statistic here is computed over pairs.
+            if args.shard_count > 1 and pair % args.shard_count != args.shard_index:
+                continue
             for game_in_pair in range(2):
                 index = pair * 2 + game_in_pair
                 if index in done:
