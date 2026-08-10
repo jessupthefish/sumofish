@@ -114,17 +114,24 @@ def run_rung(sims: int, nodes: int, games: int, cfg: dict) -> dict:
 def ruler_curve() -> tuple[dict, str]:
     """Cumulative Elo as a function of Stockfish node budget, MEASURED.
 
-    A single Elo-per-doubling slope is wrong, and measurably so. The ruler
-    matches (2026-08-09, 200 games each) give per-doubling costs of
+    The five ruler rungs (2026-08-09, 200 games each, Stockfish vs Stockfish):
 
-        350 -> 700    155.5      1400 -> 2800   284.9
-        700 -> 1400   205.0
+        350 -> 700    155.5 +-58      2800 -> 5600   240.8 +-55
+        700 -> 1400   205.0 +-57      5600 -> 11200  202.6 +-45
+        1400 -> 2800  284.9 +-66
 
-    which steepens by about 2x across the range. Pricing a rung at 10,700 nodes
-    with a slope fitted near 700 would be off by hundreds of Elo, and every
-    "is X worth it" argument downstream inherits that error. So build a chain:
-    anchor the smallest measured budget at 0, walk each measured edge, and
-    interpolate log-linearly BETWEEN measured points only.
+    **CORRECTION, same day.** On the first three of these I claimed the slope
+    "steepens by about 2x across the range" and justified this function with it.
+    That was reading noise: the weighted mean is 213.5 Elo/doubling and
+    chi2 = 2.47 on 4 dof, so the data is entirely consistent with a CONSTANT
+    slope and no point is more than 1.1 sigma out. A constant would have priced
+    these rungs about as well.
+
+    The chain is kept anyway, for the one reason that survives: it uses the
+    measured points themselves and `ruler_at` REFUSES to extrapolate past them,
+    where a fitted constant would happily price a rung at 50,000 nodes off five
+    measurements that stop at 11,200. Interpolating between measurements is
+    discipline; extrapolating from a fit is a guess wearing a number.
 
     Returns {nodes: cumulative_elo} and a provenance string. Extrapolation past
     the measured ends is refused rather than guessed -- see `ruler_at`.

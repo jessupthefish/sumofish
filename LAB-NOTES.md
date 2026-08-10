@@ -1010,3 +1010,36 @@ sigma**, against a 1h53m training run that bought +3.5 +-26.4.
   These two land 65 Elo apart and demonstrably do not. Draw rate is being
   watched anyway: near 85% means the arm is blind and the number is discarded
   rather than interpreted.
+
+## 2026-08-09: three small-sample over-reads in one night
+
+Same error three times, in three different disguises, all within a few hours.
+
+- **A Stockfish doubling looked like a total wipeout at n=6** (SF@700 vs
+  SF@1400, 0/6, pairing r=1.000) and I read it as contradicting the anchor's
+  ruler. At n=200 it is -205.0 +-57, entirely consistent. Fixed-node Stockfish
+  is deterministic, so paired openings give r=1.000 and the variance lives
+  almost entirely in WHICH openings got sampled: six games is three openings.
+- **The FPU sweep looked monotone across four points** (-0.5/-0.35/-0.2/-0.05
+  giving +13.0/+23.5/+42.3/+55.6) and I concluded the optimum was off the edge
+  of the range. Testing past the edge found +0.1 at +8.7: it turns over. The
+  trend was real, the extrapolation was not.
+- **The ruler slope looked like it steepened 2x** across the first three rungs
+  (155.5, 205.0, 284.9) and I rewrote `sim_ladder.py` around a piecewise curve
+  because of it. With all five rungs the weighted mean is 213.5 and chi2 = 2.47
+  on 4 dof: consistent with a CONSTANT slope, nothing beyond 1.1 sigma.
+
+The common shape: **a monotone-looking sequence of three or four points, each
+with an interval wide enough to swallow the trend, read as structure.** Every
+one of these had its error bars printed right next to it.
+
+The cheap defence, which costs one line: before describing a sequence as a
+trend, check whether a flat line fits. `chi2 = sum((x-mean)**2/err**2)` against
+its dof is enough. Two of the three above would have died instantly.
+
+What saved all three was that testing the claim was cheap (a few CPU-minutes or
+one extra arm) and I tested rather than shipped. Note that the piecewise ruler
+was KEPT despite its justification being wrong, for a different and better
+reason: it refuses to extrapolate past the measured range, where a fitted
+constant would cheerfully price a rung at 50,000 nodes off data stopping at
+11,200.
