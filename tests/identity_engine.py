@@ -29,6 +29,23 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sumofish.engines.neural_engine import load_policy      # noqa: E402
+
+
+def _shipped() -> dict:
+    """The search constants the LIVE engine uses, read at runtime.
+
+    `search_engine.py` builds its MCTS with only value/policy/simulations/batch,
+    so the library defaults ARE the deployment. Reading them here means this
+    test follows a tuning change instead of pinning yesterday's values, and
+    means the two arms can never drift apart independently.
+    """
+    import inspect
+    from sumofish.mcts import MCTS as _M
+    p = inspect.signature(_M.__init__).parameters
+    return {k: p[k].default for k in ("c_puct", "c_puct_base", "c_puct_init", "fpu")}
+
+
+SHIPPED = _shipped()
 from sumofish.hlgauss import HLGauss                        # noqa: E402
 from sumofish.mcts import MCTS                              # noqa: E402
 from sumofish.model import ChessTransformer, ModelConfig    # noqa: E402
@@ -84,9 +101,20 @@ def main() -> int:
         for u in moves:
             board.push(chess.Move.from_uci(u))
 
-        py = MCTS(value, policy=policy, c_puct=2.0, c_puct_base=19652.0,
-                  c_puct_init=1.25, simulations=args.sims, batch=args.batch,
-                  fpu=-0.2, reuse=False)
+        # BOTH arms take their search constants from SHIPPED, never one
+        # hardcoded and one defaulted. Until 2026-08-09 the Python arm pinned
+        # c_puct_init=1.25 / fpu=-0.2 while the Rust arm passed nothing and
+        # inherited rust_mcts.py's defaults. That passed only because the two
+        # numbers happened to agree, so the test did not compare Rust against
+        # Python at the shipped config, it compared Rust-at-defaults against
+        # Python-at-1.25. The first tuning change moved one arm and not the
+        # other, and it reported a divergence IT HAD CREATED as an identity
+        # failure -- which correctly blocked a deploy, for the wrong reason.
+        py = MCTS(value, policy=policy, c_puct=SHIPPED["c_puct"],
+                  c_puct_base=SHIPPED["c_puct_base"],
+                  c_puct_init=SHIPPED["c_puct_init"],
+                  simulations=args.sims, batch=args.batch,
+                  fpu=SHIPPED["fpu"], reuse=False)
         t0 = time.perf_counter()
         _r, pv = py.search(board.copy())
         py_t += time.perf_counter() - t0
@@ -94,7 +122,9 @@ def main() -> int:
 
         rs = RustMCTS(value, policy=policy, simulations=args.sims,
                       batch=args.batch, reuse=False, dedup=False,
-                      mate_distance=False)
+                      mate_distance=False, c_puct=SHIPPED["c_puct"],
+                      c_puct_base=SHIPPED["c_puct_base"],
+                      c_puct_init=SHIPPED["c_puct_init"], fpu=SHIPPED["fpu"])
         t0 = time.perf_counter()
         _rr, rvis = rs.search(board.copy())
         rs_t += time.perf_counter() - t0
