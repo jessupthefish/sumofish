@@ -1167,3 +1167,56 @@ in this codebase is always a 95% half-width. So:
 plausible number in the right ballpark, in a sentence that reads like careful
 work, and nothing downstream consumes it. It was found by recomputation from
 the raw `status.json` files, not by review.
+
+## 2026-08-11: the arbiter had the same hash bug, and its blast radius was zero
+
+The 08-10 fix gave `Player` a per-game token so python-chess would emit
+`ucinewgame`. `Arbiter.agrees()` was the other Stockfish process in the same
+file and did not get one: it called `analyse()` with `game=None` every time, and
+python-chess fires `ucinewgame` only when the token CHANGES
+(`first_game or self.game != game`), so `None != None` is False and it fired
+once per PROCESS. The adjudicator accumulated a transposition table across every
+probe of every game in a match, at 200,000 nodes a probe.
+
+This looked worse than the player-side bug, for three reasons:
+
+- **the arbiter decides the result.** 35.0% of the 700-node anchor and 29.8% of
+  the 1600-node anchor ended `adjudicated-arbiter`;
+- it breaks the same three things (a match not reproducible from its seed, a
+  resumed match differing from an uninterrupted one, sharding biased rather than
+  merely different);
+- and it is **not common-mode across rungs**, so the argument that `scale_D`
+  survives because "a bias roughly constant across rungs cancels in a
+  DIFFERENCE" never covered it. Each rung is a separate process warming over a
+  different game count and a different position distribution.
+
+**Measured, and it moved nothing.** `scripts/arbiter_bias.py` recomputes every
+adjudicated verdict both ways from the stored `final_fen`, cold (a token per
+position) against warm (one token, original order), with `Arbiter.agrees()`'s
+own threshold and WDL model:
+
+| match | adjudicated | cold upholds | warm upholds | **disagree** |
+|---|---|---|---|---|
+| `stockfish-anchor-700nodes` | 700 | 700 | 700 | **0** |
+| `stockfish-anchor-1600nodes` | 609 | 609 | 609 | **0** |
+
+**1,309 positions, zero flips.** So no rung needs re-running and both anchors
+stand as measured.
+
+- **Why zero is the expected answer in hindsight.** Adjudication fires at
+  `wp >= 0.97`, and a 200,000-node probe of a position already past 0.97 is
+  nowhere near the margin where a warm table changes a verdict. A warm table
+  changes what a search FINDS inside a budget; it does not change a position
+  that is already resolved by two orders of magnitude more nodes than the
+  players got. Contrast the player side, where the same defect was worth about
+  -39 to -77 Elo: there Stockfish played at 700-1600 nodes, a search small
+  enough that stale entries at the wrong depths genuinely change the move.
+  **The same bug is large where the search is small and nil where it is large.**
+- **The fix ships anyway, and the justification is reproducibility, not Elo.**
+  A match has to be a function of its seed. It was not, and the cost of proving
+  the consequence was nil was ~20 minutes of CPU against a stored column that
+  was already on disk.
+- **Worth copying: the cheap measurement existed because the harness logged
+  `final_fen`.** Nothing had to be replayed and no GPU was touched. When adding
+  a decision point to the harness, log the input it decided on. It converts a
+  future "is this bias real" argument into a script.
