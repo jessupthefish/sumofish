@@ -39,8 +39,8 @@ Ordered, most trustworthy first:
 3. **Elo against the previous SumoFish**, pair-scored with intervals. Fast,
    sensitive, and the daily driver, but it floats.
 
-Everything else — puzzle accuracy, held-out loss, bits-per-move, nodes per
-second — is an *instrument*, not the target. Instruments are for deciding what
+Everything else (puzzle accuracy, held-out loss, bits-per-move, nodes per
+second) is an *instrument*, not the target. Instruments are for deciding what
 to try next and for catching a broken run early. They are never the reason to
 ship. A change that improves held-out loss and loses the match did not work.
 
@@ -53,13 +53,13 @@ its role has changed. It is no longer a veto over strength. It is a *method*.
   modified and broken. Explain the mechanism, not just the result: the actual
   tensor shapes, the actual bytes, the actual profile.
 - Hand-written CUDA, custom kernels and from-scratch implementations are goals,
-  not premature optimisation — but they get built **when the profile says they
+  not premature optimisation, but they get built **when the profile says they
   are the bottleneck**, not before. This project already burned most of a
   session planning kernels for a network that was 5% of its own search. Chasing
   strength is what makes that mistake visible; that is the point of a
   scoreboard.
 - Chores stay chores. Deploy plumbing, download scripts, systemd units, config
-  files: automate them and move on. The domain — chess, ML, search, GPU — gets
+  files: automate them and move on. The domain (chess, ML, search, GPU) gets
   built by hand.
 - When a library would do in one line what forty readable lines would teach,
   take the forty lines *the first time*, then keep whichever one actually wins
@@ -75,20 +75,34 @@ loses. Understanding why it lost is the learning.
 The engine is the product of four multipliers and they do not trade off against
 one another. Neglecting one caps the others.
 
-1. **Evaluation quality** — how good the network's judgement of a position is.
+1. **Evaluation quality**: how good the network's judgement of a position is.
    Bought with parameters, data, training compute, and target design.
-2. **Search** — how much lookahead that judgement gets multiplied by.
-   **The exchange rate is currently UNKNOWN.** It was believed to be ~+50 Elo
-   per doubling from "two independent estimates agreeing". Both are retracted
-   (2026-07-29): all four rungs of the measured ladder were produced by
-   *replayed* match logs rather than by the jobs credited with running them, and
-   the second estimate was fitted so the first would agree with it. Until the
-   ladder is re-earned under a fingerprinted harness, no proposal may be
-   justified by an Elo-per-doubling figure.
-3. **Speed** — search per second, which converts directly into (2) on a clock.
+2. **Search**: how much lookahead that judgement gets multiplied by.
+   **The exchange rate is MEASURED as of 2026-08-11: `scale_D` = 199 +-33 Elo
+   per doubling of search.** Quote it with the interval, always. Five absolute
+   rungs from 200 to 3200 simulations against Stockfish at pinned node budgets,
+   on the ucinewgame-fixed harness, differenced end to end
+   (`runs/lab/sim-ladder.json`).
+
+   The ban this paragraph used to carry is LIFTED, and the history is worth
+   keeping because it is why the number is trusted now. The old ~+50 Elo per
+   doubling came from "two independent estimates agreeing"; both were retracted
+   on 2026-07-29 when all four rungs of that ladder turned out to be *replayed*
+   match logs rather than games the jobs credited with them had played, and the
+   second estimate had been fitted so the first would agree with it. The
+   replacement shares no machinery with it: every rung is an independent
+   measurement against an external opponent rather than a link in a chain of
+   relative comparisons.
+
+   **The +-33 is not a formality.** +-32 of it is the Stockfish node ruler the
+   absolutes are priced through, and only +-9 is the rungs themselves, so a
+   proposal resting on a difference of less than ~50 Elo per doubling is not
+   supported by this number. That is also the fix: the ruler is Stockfish
+   against itself and costs no GPU at all.
+3. **Speed**: search per second, which converts directly into (2) on a clock.
    Currently CPU-bound in `python-chess`, not GPU-bound. Speed *is* strength
    here in a way it never was for a searchless engine.
-4. **The measurement loop** — how fast a wrong idea can be killed. This is the
+4. **The measurement loop**: how fast a wrong idea can be killed. This is the
    multiplier on all learning and it is the one most often skipped. `match.py`
    and `lab.py` exist for this reason and they are load-bearing.
 
@@ -145,8 +159,8 @@ This is the part of the file that most changes what you are allowed to claim.
   *replaying* existing match logs: `match.py` keys resume on the game index
   alone, so a job with different code and config lands on an existing directory
   and reports it as its own work, and `match.py:458` then rewrites `config.json`
-  over it. The replay is invisible in `games.jsonl` — the per-game timings are
-  organic — and showed up only as an impossible wall clock (three rungs credited
+  over it. The replay is invisible in `games.jsonl` (the per-game timings are
+  organic) and showed up only as an impossible wall clock (three rungs credited
   5 seconds for 0.7-2.6 hours of play; the fourth 1,070s for 5.8 hours).
   Consequences that are now rules:
   - The cheap, total check is the inequality `sum(game.seconds) <= job.seconds`.
@@ -205,13 +219,13 @@ defended. The lab's job is to falsify it.
    thirty-iteration loop it replaces. It only wins if selections are batched
    across many nodes at once, which is a different and larger change. The
    honest ladder is: eliminate redundant move generation, then escape
-   `python-chess` for the hot path, then kernels — and only as far as the
+   `python-chess` for the hot path, then kernels, and only as far as the
    profile justifies at each rung.
 2. **Search quality per simulation.** Leaf deduplication (the batch is up to
    98.6% duplicated work at large batch), `c_puct` and FPU tuning, which have
    never been measured, policy-prior temperature, and a proper handling of
    transpositions.
-3. **Evaluation capacity — and the 9M is NOT capacity-bound.** It is
+3. **Evaluation capacity, and the 9M is NOT capacity-bound.** It is
    *underfitting*: held-out loss 2.1438 sits **below** train loss 2.2106, so
    there is no generalisation gap and nothing has been memorised. The evidence
    once cited for "capacity-bound" (train loss falling while puzzle accuracy
@@ -219,16 +233,16 @@ defended. The lab's job is to falsify it.
    model has its *train* loss flatten. The puzzle plateau was 0.679 -> 0.675
    against a sigma of 1.5, so the ruler ran out, not the curve. `lab.py` has
    said this in-tree all along. **Nothing in `runs/` measures d(loss)/d(params)
-   at all** — no smaller model was ever trained, so the scaling curve has zero
+   at all**: no smaller model was ever trained, so the scaling curve has zero
    points, not two. A 3-point width sweep costs ~6 GPU-hours and should precede
    any further scaling.
-4. **Better targets and better data — and action-value is NOT the free win it
+4. **Better targets and better data, and action-value is NOT the free win it
    was recorded as.** The "65.7% BC vs 88.9% action-value" pairing is
    apples-to-oranges: 65.7% is a small ablation, 88.9% is a full-data run.
    DeepMind's own *data-matched* comparison has state-value and action-value
    statistically tied (+264+-22 vs +252+-22) with BC the only genuinely weaker
    target. Worse, the action-value bag is shuffled per (position, move), so an
-   AV net needs ~35 rows per node instead of 2 — roughly 17x the GPU rows,
+   AV net needs ~35 rows per node instead of 2, roughly 17x the GPU rows,
    which on this profile is plausibly Elo-NEGATIVE. Do not port it on the
    strength of the old comparison.
 5. **Self-play RL** on top of the supervised net, once search and speed make it
