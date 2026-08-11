@@ -181,9 +181,37 @@ def main() -> int:
     ap.add_argument("--games", type=int, default=800,
                     help="games per arm. 800 is ~43min and ~+-25 Elo at this "
                          "draw rate; the error on a DIFFERENCE is ~1.4x that.")
+    ap.add_argument("--stage2-only", action="store_true",
+                    help="skip the c_puct_init sweep and map FPU at the SHIPPED "
+                         "c_puct_init. Stage 1 has already been run and shipped; "
+                         "what has never been mapped is the FPU line at the value "
+                         "that won it.")
+    ap.add_argument("--fpu-grid", default="",
+                    help="comma-separated FPU arms, overriding FPU_ARMS. The "
+                         "default grid stops at the shipped -0.05, i.e. at an "
+                         "EDGE, which is exactly the shape that made the 08-09 "
+                         "sweep read as 'the optimum is outside the range'.")
     ap.add_argument("--report", action="store_true",
                     help="re-read completed arms and reprint, running nothing")
     args = ap.parse_args()
+
+    fpu_arms = ([float(x) for x in args.fpu_grid.split(",")]
+                if args.fpu_grid else list(FPU_ARMS))
+    # Same rule as the module-level assert, re-checked because --fpu-grid can
+    # replace the list it guarded: without the shipped value as an arm there is
+    # no baseline and every number below is a comparison to nothing.
+    if CURRENT_FPU not in fpu_arms:
+        raise SystemExit(
+            f"shipped fpu={CURRENT_FPU} is not in the grid {fpu_arms}; add it, "
+            "or the sweep has no baseline arm to compare against")
+    if args.stage2_only:
+        lo, hi = min(fpu_arms), max(fpu_arms)
+        if not (lo < CURRENT_FPU < hi):
+            print(f"WARNING: the shipped fpu={CURRENT_FPU} is at an EDGE of "
+                  f"[{lo}, {hi}]. A monotone result on a grid that stops at the "
+                  f"shipped value cannot distinguish 'the optimum is further out' "
+                  f"from 'the curve turns just past the edge'. That ambiguity is "
+                  f"what cost the 08-09 sweep a follow-up run.", flush=True)
     LAB.mkdir(parents=True, exist_ok=True)
 
     results: dict = {"anchor_nodes": ANCHOR_NODES, "sims": SIMS, "seed": SEED,
@@ -191,8 +219,58 @@ def main() -> int:
                      "current": {"c_puct_init": CURRENT_CPUCT_INIT,
                                  "fpu": CURRENT_FPU}}
 
-    print(f"stage 1: c_puct_init at fpu={CURRENT_FPU}, "
-          f"{args.games} games/arm vs Stockfish@{ANCHOR_NODES}n", flush=True)
+    if args.stage2_only:
+        # Stage 1 ran on 2026-08-09, won at 0.875, and that value SHIPPED as v6.
+        # Re-running it would spend five arms re-deriving a decision already
+        # deployed. What has never been mapped is the FPU line AT 0.875: stage 2
+        # swept FPU at 1.25, and the two knobs are measurably superadditive
+        # (+36.3 +-35.0 excess), so the corner of two 1-D scans is not the
+        # optimum of the 2-D surface.
+        best_c = CURRENT_CPUCT_INIT
+        results["stage1"] = {"skipped": "--stage2-only; c_puct_init is the "
+                                        "shipped value, won 2026-08-09"}
+        print(f"stage 1: SKIPPED, using the shipped c_puct_init={best_c}",
+              flush=True)
+    else:
+        print(f"stage 1: c_puct_init at fpu={CURRENT_FPU}, "
+              f"{args.games} games/arm vs Stockfish@{ANCHOR_NODES}n", flush=True)
+        stage1 = _run_stage1(args, results)
+        ranked = [(n, s) for n, s in stage1 if s]
+        if not ranked:
+            print("\nevery stage-1 arm failed; not starting stage 2")
+            OUT.write_text(json.dumps(results, indent=2))
+            return 1
+        best_c = _pick_best_c(ranked, results, args)
+
+    print(f"\nstage 2: fpu at c_puct_init={best_c}", flush=True)
+    stage2 = []
+    for f in fpu_arms:
+        name = f"tune-fpu{f}-ci{best_c}"
+        st = {} if args.report and not (ROOT / "runs/matches" / name / "status.json").exists() \
+            else (json.loads((ROOT / "runs/matches" / name / "status.json").read_text())
+                  if args.report else run_arm(name, args.games, best_c, f))
+        stage2.append((f"fpu={f}", st))
+        results.setdefault("stage2", {})[str(f)] = st
+    print(table(stage2, "stage 2 -- fpu"), flush=True)
+
+    # --report READS. It used to end by writing OUT like a real run, so a
+    # partial report overwrote a complete record with FAILED rows: running
+    # `--report --stage2-only` on unrun arms replaced the 2026-08-09 sweep
+    # summary with five empty entries. The per-arm directories survived and it
+    # was reconstructible, which is luck, not design. A flag whose name promises
+    # a read must not write.
+    if args.report:
+        print("\n--report: nothing written.")
+        return 0
+
+    OUT.write_text(json.dumps(results, indent=2))
+    print(f"\nwrote {OUT}")
+    print("NOTHING WAS APPLIED. Change sumofish/mcts.py deliberately, and only "
+          "if an arm clears the shipped value by more than the difference error.")
+    return 0
+
+
+def _run_stage1(args, results):
     stage1 = []
     for c in CPUCT_INIT_ARMS:
         name = f"tune-ci{c}"
@@ -202,12 +280,12 @@ def main() -> int:
         stage1.append((f"c_puct_init={c}", st))
         results.setdefault("stage1", {})[str(c)] = st
     print(table(stage1, "stage 1 -- c_puct_init"), flush=True)
+    return stage1
 
-    ranked = [(n, s) for n, s in stage1 if s]
-    if not ranked:
-        print("\nevery stage-1 arm failed; not starting stage 2")
-        OUT.write_text(json.dumps(results, indent=2))
-        return 1
+
+
+def _pick_best_c(ranked, results, args):
+    """The stage-1 winner, demoted to the shipped value if it is not separated."""
     best_name, best_st = max(ranked, key=lambda r: score(r[1]))
     best_c = float(best_name.split("=")[1])
     results["stage1_winner"] = {"c_puct_init": best_c, "score": score(best_st),
@@ -228,23 +306,7 @@ def main() -> int:
               flush=True)
         if abs(gap) <= differr:
             best_c = CURRENT_CPUCT_INIT
-
-    print(f"\nstage 2: fpu at c_puct_init={best_c}", flush=True)
-    stage2 = []
-    for f in FPU_ARMS:
-        name = f"tune-fpu{f}-ci{best_c}"
-        st = {} if args.report and not (ROOT / "runs/matches" / name / "status.json").exists() \
-            else (json.loads((ROOT / "runs/matches" / name / "status.json").read_text())
-                  if args.report else run_arm(name, args.games, best_c, f))
-        stage2.append((f"fpu={f}", st))
-        results.setdefault("stage2", {})[str(f)] = st
-    print(table(stage2, "stage 2 -- fpu"), flush=True)
-
-    OUT.write_text(json.dumps(results, indent=2))
-    print(f"\nwrote {OUT}")
-    print("NOTHING WAS APPLIED. Change sumofish/mcts.py deliberately, and only "
-          "if an arm clears the shipped value by more than the difference error.")
-    return 0
+    return best_c
 
 
 if __name__ == "__main__":
