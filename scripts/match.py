@@ -316,6 +316,35 @@ class Player:
                 # None restores the pre-schedule constant c_puct.
                 c_puct_base=None if spec.fixed_cpuct else 19652.0,
             )
+            # The Python core implements none of these four. They were dropped
+            # SILENTLY until 2026-08-11, and worse than silently: `Spec.describe()`
+            # builds its flag string from the same fields regardless of core, and
+            # `config.json` records `"vloss_fix": true`. So
+            # `--core python --a-vloss-fix` printed `core=python+V`, wrote
+            # provenance asserting the flag was on, and ran without it. That is
+            # exactly the "records the REQUEST rather than the EFFECT" failure
+            # LAB-NOTES 2026-08-09 names, in the file that fixed it elsewhere.
+            #
+            # Refuse, on the pattern the rust branch already uses for
+            # --legacy-draws directly above: a match that quietly did not test
+            # what was asked is worse than one that refused. No archived result
+            # is affected, because every in-repo caller passes --core rust, but
+            # --core python is a supported path for the oracle comparison.
+            unsupported = [
+                name for name, on in (
+                    ("--dedup", spec.dedup),
+                    ("--compile", spec.compile_nets),
+                    ("--mate-distance", spec.mate_distance),
+                    ("--vloss-fix", spec.vloss_fix),
+                ) if on
+            ]
+            if unsupported:
+                raise SystemExit(
+                    f"{', '.join(unsupported)} {'is' if len(unsupported) == 1 else 'are'} "
+                    "implemented only in the rust core, but --core python was "
+                    "requested. Re-run with --core rust, or drop the flag: "
+                    "running without it would record a config that did not play."
+                )
 
     def new_game(self) -> None:
         if self.engine is not None:
@@ -346,7 +375,6 @@ class Player:
             # play() changes, so a fresh token per game clears the hash and
             # makes every game start identically.
             self._game_token = object()
-            return
             return
         # Tree reuse, once it exists, must not carry a subtree from the
         # previous game into this one.
@@ -492,6 +520,7 @@ class Arbiter:
         self.nodes = nodes
         self.engine = None
         self.path = path
+        self._game_token = object()
         if path:
             try:
                 import chess.engine
@@ -501,6 +530,33 @@ class Arbiter:
                 print(f"arbiter unavailable ({exc}); adjudication disabled",
                       file=sys.stderr)
                 self.engine = None
+
+    def new_game(self) -> None:
+        """Clear the arbiter's hash between games. See `Player.new_game`.
+
+        ADDED 2026-08-11. The `Player` side of this was fixed on 08-10 and the
+        arbiter, which is a second Stockfish process, was missed. It called
+        `analyse()` with no `game=` token, and python-chess emits `ucinewgame`
+        only when the token CHANGES (`first_game or self.game != game`), so
+        `None` on every call fired it once at process start and never again.
+        The adjudicator therefore accumulated a transposition table across every
+        probe of every game in a match, at 200,000 nodes a probe.
+
+        This is not the harmless half of the bug. The arbiter DECIDES THE
+        RESULT, and it ended 35.0% of the 700-node anchor and 29.8% of the
+        1600-node one. Same three consequences as the player side: a match was
+        not reproducible from its seed, a resumed match differed from an
+        uninterrupted one, and sharding was biased rather than merely different.
+
+        And one the player side does not have. LAB-NOTES argues `scale_D`
+        survives the harness fix because "a bias roughly constant across rungs
+        cancels in a DIFFERENCE". This term is not constant across rungs: each
+        rung is a separate process warming over a different game count and a
+        different position distribution, so the differencing argument never
+        covered it. `scripts/arbiter_bias.py` sizes it from the stored
+        `final_fen` of every adjudicated game.
+        """
+        self._game_token = object()
 
     def agrees(self, board: chess.Board, white_winning: bool) -> bool:
         """Does the arbiter agree the game is decided in that direction?
@@ -516,7 +572,10 @@ class Arbiter:
             import chess.engine
 
             info = self.engine.analyse(
-                board, chess.engine.Limit(nodes=self.nodes)
+                board, chess.engine.Limit(nodes=self.nodes),
+                # Changing this token is what makes python-chess emit
+                # `ucinewgame`. See new_game().
+                game=self._game_token,
             )
         except Exception:
             return False
@@ -560,6 +619,8 @@ def play_game(
 
     white.new_game()
     black.new_game()
+    if arbiter is not None:
+        arbiter.new_game()
 
     # Win probability of each ply, in WHITE's frame. Converting once here is
     # the same discipline as `panels.ours()`: convert at one place or a sign
