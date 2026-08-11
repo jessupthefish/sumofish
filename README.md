@@ -25,7 +25,7 @@ Everything here was trained on a single RTX 5070 Ti.
 |---|---|
 | **External Elo (anchor)** | **+30.5 ±12** vs Stockfish@700n, 2000 games at 400 sims (2026-08-11, ucinewgame-fixed harness; the earlier +44.4 was measured against a Stockfish carrying its hash between games). @1600n re-measuring. |
 | **Elo per doubling of search** | **199** (`scale_D`), five absolute rungs 200-3200 sims |
-| **Rating on lichess** | **2538 rapid** (15+10, non-provisional, 507 games, RD 45; as of 2026-08-08), against a pool averaging 2592 |
+| **Rating on lichess** | **2538 rapid** (15+10, non-provisional, 640 games, RD 45; as of 2026-08-11), against a pool averaging 2592 |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
 | State-value model | 68.7% puzzle accuracy, 300k steps |
 | Search vs no search | 7 wins, 17 draws, 0 losses (24 games, so +-200 Elo; indicative only) |
