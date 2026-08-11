@@ -115,10 +115,33 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   the shape held while every absolute moved. Quote the absolutes only from the
 >   fixed harness; `ladderWARM-*` and `anchorWARM-*` are kept for audit.
 >
->   **Anchor, re-run:** SF@700 rung is **+30.5 +-12** (was +44.4 +-12). The
->   1600-node rung is running. Two independent routes to "v6 at 400 sims vs
->   SF@700" agree: **+10.1 +-50** via the ladder rung plus the ruler edge, and
->   **+30.5 +-12** direct from the anchor, a 0.40-sigma difference.
+>   **Anchor, re-run:** SF@700 rung is **+30.5 +-12**. The 1600-node rung is
+>   running.
+>
+>   **It is NOT "+30.5, was +44.4", and that framing stood here until
+>   2026-08-11.** The two runs differ in two things, not one: `anchorWARM-700nodes`
+>   is v5 (`c_puct_init: null`, i.e. the hardcoded 1.25, and `fpu -0.2`) on the
+>   warm harness, `stockfish-anchor-700nodes` is v6 (0.875/-0.05) on the fixed
+>   one. Same 2000 games, same seed 7, which is precisely why it read like a
+>   controlled re-run. The -13.9 is two effects of opposite sign, and they
+>   decompose exactly against the one same-config pair that exists
+>   (`confirm-combined`, v6 warm, +107.9 +-12.6):
+>
+>   | term | value |
+>   |---|---|
+>   | harness fix on v6 at 700n | **-77.4 +-17.4** |
+>   | v6 tuning gain | **+63.5** |
+>   | net | -13.9 |
+>
+>   **The harness fix cost ~-77 Elo here, not -14**, and the tuning gain hid it.
+>   Compare LAB-NOTES' -39 from the paired 845-node analysis: the two differ by
+>   38 +-39. Not conclusive, but do not quote -39 as settled.
+>
+>   Two independent routes to "v6 at 400 sims vs SF@700" agree: **+10.1 +-50**
+>   via the ladder rung plus the ruler edge, and **+30.5 +-12** direct from the
+>   anchor. That is a **z = 0.78** difference. It was recorded here as
+>   "0.40-sigma", which divided by a 95% half-width and not a sigma; see the
+>   2026-08-11 LAB-NOTES entry on that convention.
 >
 > - **The old warm-harness ladder block, superseded:** Five rungs on the v6 engine, each an
 >   independent measurement against Stockfish at a pinned budget, priced through

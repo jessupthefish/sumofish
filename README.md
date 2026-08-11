@@ -23,13 +23,34 @@ Everything here was trained on a single RTX 5070 Ti.
 
 | | |
 |---|---|
-| **External Elo (anchor)** | **+30.5 ±12** vs Stockfish@700n, 2000 games at 400 sims (2026-08-11, ucinewgame-fixed harness; the earlier +44.4 was measured against a Stockfish carrying its hash between games). @1600n re-measuring. |
+| **External Elo (anchor)** | **+30.5 ±12** vs Stockfish@700n, 2000 games at 400 sims (2026-08-11, ucinewgame-fixed harness). @1600n re-measuring. **Not comparable to the earlier +44.4**, which was a different engine on a different harness: see below. |
 | **Elo per doubling of search** | **199** (`scale_D`), five absolute rungs 200-3200 sims |
-| **Rating on lichess** | **2538 rapid** (15+10, non-provisional, 640 games, RD 45; as of 2026-08-11), against a pool averaging 2592 |
+| **Rating on lichess** | **2542 rapid** (15+10, non-provisional, 643 games, RD 45; as of 2026-08-11 18:40 UTC), against a pool averaging 2592. Peaked 2565 at 580 games; RD 45 covers the drift, so read the pool mean beside it. |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
 | State-value model | 68.7% puzzle accuracy, 300k steps |
 | Search vs no search | 7 wins, 17 draws, 0 losses (24 games, so +-200 Elo; indicative only) |
 | Move latency | ~10 ms searchless, clock-bound with search |
+
+**Why +30.5 and +44.4 cannot be subtracted.** The two anchor runs differ in
+*two* things, not one. `anchorWARM-700nodes` is v5 with `c_puct_init` unset
+(so the hardcoded 1.25) and `fpu=-0.2`, on the warm harness.
+`stockfish-anchor-700nodes` is v6 at 0.875/-0.05 on the fixed one. Both are
+2000 games at seed 7, which is exactly why it reads like a controlled re-run
+and is not one. The -13.9 between them is two effects of opposite sign, and
+they decompose exactly against the one same-config pair available
+(`confirm-combined`, v6 on the warm harness, +107.9 ±12.6):
+
+| term | value |
+|---|---|
+| harness fix, on v6 at 700n | **-77.4 ±17.4** |
+| v6 tuning gain | **+63.5** |
+| net, v5-warm to v6-fixed | -13.9 |
+
+So the harness fix cost about **-77 Elo** at this point and the tuning gain
+absorbed most of it. Quoting -13.9 as the harness effect understates it by 5.6x.
+Note this also sits against the -39 Elo quoted from the paired 845-node
+comparison in `LAB-NOTES.md`; the two estimates differ by 38 ±39, which is not
+conclusive but is not agreement either.
 
 **Retracted 2026-07-29.** This table used to publish an exchange rate for search
 ("+237 Elo per doubling"). All four rungs of the ladder it came from were found to
