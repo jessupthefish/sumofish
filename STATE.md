@@ -97,23 +97,47 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   (the Stockfish anchor, item 3) now gates every future net decision.
 >
 >
-> - **RECALIBRATED 2026-08-11 on the ucinewgame-fixed harness. `scale_D`
->   SURVIVED; the absolutes did not.** Stockfish was carrying its hash between
->   games, so at a fixed node budget it was a different opponent each game and
->   the warm harness flattered us (paired, z=-2.16, ~-39 Elo). Ladder re-run:
+> - **RECALIBRATED 2026-08-11 on the ucinewgame-fixed harness. The absolutes
+>   moved; `scale_D` is unchanged but is far too WIDE to have detected a move.**
+>   Stockfish was carrying its hash between games, so at a fixed node budget it
+>   was a different opponent each game and the warm harness flattered us
+>   (paired, z=-2.16, ~-39 Elo, though see the anchor decomposition below, which
+>   says ~-77). Ladder re-run:
 >
 >   | sims | rung (vs SF) | ABSOLUTE, fixed | was, warm |
 >   |---|---|---|---|
->   | 200 | -7.4 +-19 | -152.6 | -105.1 |
->   | 400 | -24.8 +-19 | **+10.1** | +84.2 |
->   | 800 | -104.4 +-22 | +278.6 | +293.5 |
->   | 1600 | -225.0 +-28 | +477.4 | +499.2 |
->   | 3200 | -293.0 +-32 | +642.4 | +673.7 |
+>   | 200 | -7.4 +-19 | -152.6 **+-57** | -105.1 |
+>   | 400 | -24.8 +-19 | **+10.1 +-50** | +84.2 |
+>   | 800 | -104.4 +-22 | +278.6 **+-77** | +293.5 |
+>   | 1600 | -225.0 +-28 | +477.4 **+-108** | +499.2 |
+>   | 3200 | -293.0 +-32 | +642.4 **+-121** | +673.7 |
 >
->   **`scale_D` = 199 Elo per doubling of SEARCH, against 195 before.** That is
->   the point: a bias roughly constant across rungs cancels in a DIFFERENCE, so
->   the shape held while every absolute moved. Quote the absolutes only from the
->   fixed harness; `ladderWARM-*` and `anchorWARM-*` are kept for audit.
+>   **THOSE INTERVALS DID NOT EXIST UNTIL 2026-08-11 and they change what this
+>   table can be used for.** Each absolute is a rung plus a walk along a chain of
+>   six Stockfish-vs-Stockfish ruler rungs, each +-41 to +-74, and `sim_ladder.py`
+>   propagated none of it: it published five numbers to 0.1 Elo with no interval
+>   at all. The file's own docstring opens by indicting the withdrawn design
+>   because "error accumulates down a chain". The chain was moved from the
+>   SumoFish axis to the Stockfish axis, not removed. Now propagated properly,
+>   in an edge basis, so shared chain segments cancel in a difference rather
+>   than being double-counted.
+>
+>   **`scale_D` = 199 +-33 Elo per doubling of SEARCH** (was 195, itself +-33).
+>   Of that +-33.5, the ruler contributes **+-32.1** and the two rungs only
+>   +-9.4. **So "scale_D survived the harness fix" was never a testable claim:**
+>   the difference of two +-33 numbers carries +-47, and the test could not have
+>   seen a change smaller than about a quarter of the value. The CONCLUSION is
+>   still right (quote absolutes only from the fixed harness) but that particular
+>   argument for it is not evidence. Same correction one level down: the four
+>   increments are +-77 / +-85 / +-61 / +-61, not the "~+-30 on each difference"
+>   claimed further down this file.
+>
+>   **The cheapest measurement available to this project is the ruler, and it
+>   needs no GPU.** It is Stockfish against itself: all six rungs total 550
+>   seconds of logged game time. Taking them from 200 to ~2,400 games each is
+>   ~1.8 h of CPU and drops the ruler term from +-32.1 to +-9.4, i.e. `scale_D`
+>   to **+-13.6**. Nothing was scheduled to do this before 08-11.
+>   `ladderWARM-*` and `anchorWARM-*` are kept for audit.
 >
 >   **Anchor, re-run:** SF@700 rung is **+30.5 +-12**. The 1600-node rung is
 >   running.

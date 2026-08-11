@@ -147,29 +147,48 @@ def ruler_curve() -> tuple[dict, str]:
             st = json.loads(st_p.read_text())
             if st.get("games", 0) < 100:
                 continue
-            edges.append((lo, hi, -st["elo"]))  # elo is A's, A is the LOW budget
+            # elo is A's, A is the LOW budget. `err` is a 95% HALF-WIDTH
+            # (elo.py returns 1.96*sigma), and half-widths combine in
+            # quadrature exactly as sigmas do, because the 1.96 factors out.
+            # Everything below stays in half-widths for that reason.
+            edges.append((lo, hi, -st["elo"], st.get("err", 0.0)))
         except Exception:
             continue
     if not edges:
         return {}, "NO RULER MATCHES -- ladder cannot be put on an absolute scale"
 
-    nodes = {min(min(l, h) for l, h, _ in edges): 0.0}
+    origin = min(min(l, h) for l, h, _, _ in edges)
+    nodes = {origin: 0.0}
+    # Every node's cumulative Elo is a LINEAR COMBINATION of independent edge
+    # measurements, so carry the coefficients alongside the value. That is what
+    # makes an interval possible at all: the error on a DIFFERENCE of two nodes
+    # is not the sum of their errors, because the shared chain segments cancel
+    # exactly. Summing them would double-count; ignoring them (what this file
+    # did until 2026-08-11) reports no interval whatsoever.
+    coefs = {origin: {}}
     for _ in range(len(edges) + 1):           # relax until the chain resolves
-        for lo, hi, gain in edges:
+        for i, (lo, hi, gain, _err) in enumerate(edges):
             if lo in nodes and hi not in nodes:
                 nodes[hi] = nodes[lo] + gain
+                coefs[hi] = dict(coefs[lo]); coefs[hi][i] = coefs[hi].get(i, 0) + 1
             elif hi in nodes and lo not in nodes:
                 nodes[lo] = nodes[hi] - gain
-    return nodes, (f"{len(edges)} measured ruler rungs spanning "
-                   f"{min(nodes)}-{max(nodes)} nodes")
+                coefs[lo] = dict(coefs[hi]); coefs[lo][i] = coefs[lo].get(i, 0) - 1
+    errs = [e for _, _, _, e in edges]
+    return nodes, coefs, errs, (f"{len(edges)} measured ruler rungs spanning "
+                                f"{min(nodes)}-{max(nodes)} nodes")
 
 
-def ruler_at(nodes_map: dict, n: int) -> float | None:
+def ruler_at(nodes_map: dict, n: int, coefs: dict | None = None):
     """Cumulative Elo at `n` nodes, log-linear between measured points.
 
     Returns None outside the measured range. A ladder rung priced by
     extrapolating a curve that is known to bend is not a measurement, and the
     honest output is a gap in the table rather than a confident wrong number.
+
+    With `coefs`, returns `(value, coefficient_vector)` so the caller can
+    propagate the ruler's own error. Without it, returns the bare value, which
+    is the old signature.
     """
     import math
     if not nodes_map:
@@ -178,11 +197,34 @@ def ruler_at(nodes_map: dict, n: int) -> float | None:
     if n < xs[0] or n > xs[-1]:
         return None
     if n in nodes_map:
-        return nodes_map[n]
+        return nodes_map[n] if coefs is None else (nodes_map[n], dict(coefs[n]))
     lo = max(x for x in xs if x <= n)
     hi = min(x for x in xs if x >= n)
     f = (math.log2(n) - math.log2(lo)) / (math.log2(hi) - math.log2(lo))
-    return nodes_map[lo] + f * (nodes_map[hi] - nodes_map[lo])
+    val = nodes_map[lo] + f * (nodes_map[hi] - nodes_map[lo])
+    if coefs is None:
+        return val
+    # The interpolated point is (1-f)*lo + f*hi in the same edge basis.
+    c = {}
+    for k, v in coefs[lo].items():
+        c[k] = c.get(k, 0.0) + (1 - f) * v
+    for k, v in coefs[hi].items():
+        c[k] = c.get(k, 0.0) + f * v
+    return val, c
+
+
+def _combine(coef: dict, errs: list) -> float:
+    """95% half-width of a linear combination of independent edge measurements."""
+    import math
+    return math.sqrt(sum((c * errs[i]) ** 2 for i, c in coef.items()))
+
+
+def _sub(a: dict, b: dict) -> dict:
+    """Coefficient vector for (a - b), so shared chain segments cancel."""
+    out = dict(a)
+    for k, v in b.items():
+        out[k] = out.get(k, 0.0) - v
+    return out
 
 
 def main() -> int:
@@ -203,9 +245,10 @@ def main() -> int:
             st = run_rung(sims, nodes, games, cfg)
         rows.append((sims, nodes, st))
 
-    nodes_map, provenance = ruler_curve()
+    nodes_map, coefs, ruler_errs, provenance = ruler_curve()
     import math
-    base = ruler_at(nodes_map, 700) or 0.0
+    _b = ruler_at(nodes_map, 700, coefs)
+    base, base_c = _b if _b else (0.0, {})
     print(f"\nruler: {provenance}")
     for x in sorted(nodes_map):
         print(f"    SF@{x:<6} {nodes_map[x] - base:+8.1f}  (vs SF@700)")
@@ -218,7 +261,8 @@ def main() -> int:
             continue
         # Absolute strength on one scale: where SF@nodes sits relative to
         # SF@700 on the MEASURED curve, plus how far this rung beat it.
-        anchor = ruler_at(nodes_map, nodes)
+        _a = ruler_at(nodes_map, nodes, coefs)
+        anchor, anchor_c = _a if _a else (None, {})
         wdl = f"{st['w']}/{st['d']}/{st['l']}"
         if anchor is None:
             print(f"{sims:>6}  {('SF@' + str(nodes)):>10}  {wdl:>14}  "
@@ -228,22 +272,52 @@ def main() -> int:
                                        "err": st["err"], "absolute_vs_sf700": None}
             continue
         absolute = (anchor - base) + st["elo"]
+        # The ruler term DOMINATES and was silently dropped until 2026-08-11.
+        # `_sub` is load-bearing: the shared chain segments between `nodes` and
+        # 700 cancel, so this is smaller than adding the two nodes' errors, and
+        # far larger than the rung's own error, which is all that used to be
+        # quoted.
+        ruler_err = _combine(_sub(anchor_c, base_c), ruler_errs)
+        abs_err = math.hypot(ruler_err, st["err"])
         print(f"{sims:>6}  {('SF@' + str(nodes)):>10}  {wdl:>14}  "
-              f"{st['elo']:+8.1f} +-{st['err']:<4.0f}  {absolute:+15.1f}")
+              f"{st['elo']:+8.1f} +-{st['err']:<4.0f}  "
+              f"{absolute:+10.1f} +-{abs_err:<4.0f}")
         out["rungs"][str(sims)] = {"nodes": nodes, "elo": st["elo"], "err": st["err"],
                                    "w": st["w"], "d": st["d"], "l": st["l"],
-                                   "absolute_vs_sf700": round(absolute, 1)}
-    done = [(s, r["absolute_vs_sf700"]) for s, r in out["rungs"].items()
+                                   "absolute_vs_sf700": round(absolute, 1),
+                                   "absolute_err": round(abs_err, 1),
+                                   "absolute_err_ruler_term": round(ruler_err, 1),
+                                   "_coef": {str(k): round(v, 4)
+                                             for k, v in _sub(anchor_c, base_c).items()}}
+    done = [(s, r) for s, r in out["rungs"].items()
             if r.get("absolute_vs_sf700") is not None]
     if len(done) >= 2:
         done.sort(key=lambda x: int(x[0]))
-        lo, hi = done[0], done[-1]
-        per = (hi[1] - lo[1]) / math.log2(int(hi[0]) / int(lo[0]))
+        (slo, rlo), (shi, rhi) = done[0], done[-1]
+        span = math.log2(int(shi) / int(slo))
+        per = (rhi["absolute_vs_sf700"] - rlo["absolute_vs_sf700"]) / span
+        # Same basis arithmetic as the absolutes. The two rung errors are
+        # independent of each other and of the ruler; the ruler coefficients
+        # do NOT cancel between the top and bottom rung (they price opposite
+        # ends of the chain), which is why this term dominates.
+        dc = _sub({int(k): v for k, v in rhi["_coef"].items()},
+                  {int(k): v for k, v in rlo["_coef"].items()})
+        ruler_term = _combine(dc, ruler_errs)
+        per_err = math.sqrt(ruler_term ** 2 + rhi["err"] ** 2 + rlo["err"] ** 2) / span
         out["elo_per_sim_doubling"] = round(per, 1)
-        print(f"\nEND TO END: {per:.0f} Elo per doubling of SEARCH, "
-              f"{lo[0]} -> {hi[0]} sims. This is the number `scale_D` wanted, "
+        out["elo_per_sim_doubling_err"] = round(per_err, 1)
+        out["elo_per_sim_doubling_err_ruler_term"] = round(ruler_term / span, 1)
+        print(f"\nEND TO END: {per:.0f} +-{per_err:.0f} Elo per doubling of SEARCH, "
+              f"{slo} -> {shi} sims. This is the number `scale_D` wanted, "
               f"and unlike the withdrawn chain it is two absolute measurements "
               f"differenced, not four relative rungs summed.")
+        print(f"  Of that +-{per_err:.1f}, the RULER contributes "
+              f"+-{ruler_term / span:.1f} and the two rungs "
+              f"+-{math.hypot(rhi['err'], rlo['err']) / span:.1f}. The ruler is "
+              f"Stockfish vs Stockfish and therefore CPU-only: more games there "
+              f"is the cheapest error reduction available to this project.")
+    for r in out["rungs"].values():
+        r.pop("_coef", None)
     OUT.write_text(json.dumps(out, indent=2))
     print(f"\nwrote {OUT}")
     return 0
