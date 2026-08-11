@@ -55,17 +55,40 @@ ROOT = Path(__file__).resolve().parent.parent
 LAB = ROOT / "runs" / "lab"
 OUT = LAB / "tune-search.json"
 
-# The engine's current values, from sumofish/mcts.py. Both sweeps bracket these
-# rather than starting from a guess, so "the value we already ship" is always an
-# arm and always measured under identical conditions to its challengers.
+# The engine's current values, READ FROM THE LIBRARY rather than copied here.
+# Both sweeps bracket these rather than starting from a guess, so "the value we
+# already ship" is always an arm and always measured under identical conditions
+# to its challengers.
+#
 # NOT `c_puct`. Under AlphaZero's schedule -- the default, and what ships --
 # `c_puct_at()` returns `ln((1+N+base)/base) + c_puct_init` and never reads
 # `c_puct` at all. A c_puct sweep on 2026-08-09 returned five identical arms
 # for values 1.0 through 4.5, with identical move hashes, because every one of
 # them was silently running the hardcoded 1.25. `--cpuct-init` was added to
 # match.py the same day; `tests/verify_cpuct_binding.py` guards both facts.
-CURRENT_CPUCT_INIT = 1.25
-CURRENT_FPU = -0.2
+#
+# These were HARDCODED at 1.25/-0.2 until 2026-08-11, and v6 shipped 0.875/-0.05
+# on 08-09 without updating them. A sweep run in that window would have measured
+# every arm against a baseline the engine had stopped using two days earlier,
+# and the honesty gate below would have "fallen back to shipped" onto a value
+# that was not shipped. `sumofish/engines/search_engine.py` passes no search
+# constants, so the library defaults ARE the deployment; reading them here is
+# the same repair `tests/identity_engine.py` already applies for the same
+# reason. A constant that has to be kept in sync by hand will eventually not be.
+def _shipped() -> dict:
+    """The deployed search constants, from `MCTS.__init__`'s own defaults."""
+    import inspect
+
+    sys.path.insert(0, str(ROOT))
+    from sumofish.mcts import MCTS
+
+    p = inspect.signature(MCTS.__init__).parameters
+    return {k: p[k].default for k in ("c_puct_init", "fpu")}
+
+
+SHIPPED = _shipped()
+CURRENT_CPUCT_INIT = SHIPPED["c_puct_init"]
+CURRENT_FPU = SHIPPED["fpu"]
 
 # The parity point, recalibrated 2026-08-09 (8W 8D 8L over 24 games). Parity is
 # where a match carries the most information about the SIZE of a difference: a
@@ -79,6 +102,17 @@ SEED = 4242
 # schedule itself moves. Wider than that is not a tune, it is a different engine.
 CPUCT_INIT_ARMS = [0.5, 0.875, 1.25, 1.75, 2.5]
 FPU_ARMS = [-0.5, -0.35, -0.2, -0.05]
+
+# The shipped value has to BE an arm, or the honesty gate below silently loses
+# its baseline: `results["stage1"].get(str(CURRENT_CPUCT_INIT))` returns {} and
+# the comparison it gates on is skipped rather than failed. Assert it here
+# rather than discovering it after the GPU hours are spent.
+assert CURRENT_CPUCT_INIT in CPUCT_INIT_ARMS, (
+    f"shipped c_puct_init={CURRENT_CPUCT_INIT} is not in CPUCT_INIT_ARMS "
+    f"{CPUCT_INIT_ARMS}; the sweep would have no baseline arm")
+assert CURRENT_FPU in FPU_ARMS, (
+    f"shipped fpu={CURRENT_FPU} is not in FPU_ARMS {FPU_ARMS}; "
+    f"the sweep would have no baseline arm")
 
 
 def run_arm(name: str, games: int, cpuct_init: float, fpu: float) -> dict:
