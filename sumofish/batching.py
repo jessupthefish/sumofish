@@ -18,12 +18,38 @@ single game asks for or the order it asks in**. Each game still runs its own
 `core.Mcts.search()` and still sees its own evaluations, in its own sequence,
 with the same values. Grouping the passes is invisible to the tree.
 
-So a batched match must produce **games identical to a serial one** for the
-same seed. That is a testable claim rather than a hope, and it is the whole
-licence for using this in the lab: a speedup that changed the games would make
-every measurement incomparable with the archive. `tests/verify_batching.py`
-asserts it on real evaluations. If that test ever fails, the batcher is wrong
-and the throughput is worthless, in that order.
+So a batched match *should* produce games identical to a serial one for the
+same seed, and that is the whole licence for using this in the lab: a speedup
+that changed the games would make every measurement incomparable with the
+archive.
+
+**THAT CLAIM IS NOT PROVEN, and this docstring asserted it was until
+2026-08-11.** It said `tests/verify_batching.py` "asserts it on real
+evaluations". It does not. That test uses `fake_raw`, whose own docstring says
+it is a "deterministic pure function of each row, **independent of batching**",
+so batch-shape invariance is true there by construction. The test can detect
+slice misattribution, which is real and worth having, and it cannot detect the
+property claimed here.
+
+The repository's own evidence says the property is FALSE with the real net:
+
+  * `scripts/match.py`: "the network is not batch-shape invariant, so with real
+    weights they change what gets played in about one position in eight."
+  * `sumofish/rust_mcts.py`: dedup "sends fewer rows ... a smaller batch can
+    change float reductions inside the forward pass, so with the real net the
+    values can differ in the last bits."
+
+Cross-game batching changes the row count of every forward pass, and the
+grouping is decided by thread scheduling (`_flush_loop`'s 20 ms timer racing
+`evaluate`'s fast path), so it is not even stable run to run at a fixed seed.
+Different grouping, different last-bit values, different PUCT tie-breaks,
+different games.
+
+**Nothing imports this module yet** (`grep -rn BatchedEvaluator` finds only this
+file and its test), so no archived result is affected. Before it is wired into
+`match.py`, the identity claim has to be earned against the REAL nets, or the
+lab has to accept that batched runs are not comparable to unbatched ones and
+label them accordingly. Do not wire it in on the strength of this paragraph.
 
 # What this deliberately does NOT do
 
@@ -139,10 +165,19 @@ class BatchedEvaluator:
 
     def evaluate(self, fens: list[str], actions: list[list[int]]):
         """Submit and block until this caller's slice comes back."""
-        if self._stopped:
-            raise RuntimeError("evaluate() after stop()")
         holder: dict = {"event": threading.Event()}
         with self._lock:
+            # The stopped check belongs INSIDE the lock. Outside it, this
+            # interleaving strands the caller forever: it passes the check,
+            # stop() then sets _stopped and drains an empty _pending, this
+            # thread appends to the drained list, and with _active >= 2 the
+            # fast path below does not fire. _flush_loop has already exited on
+            # _stopped, so nothing will ever set the event and the wait() at
+            # the bottom blocks for good. That reads as "the harness got slow
+            # at hour six", which is the exact failure this class was written
+            # to remove.
+            if self._stopped:
+                raise RuntimeError("evaluate() after stop()")
             self._pending.append((fens, actions, holder))
             # Fast path: everyone still playing has asked, so waiting on the
             # timer would only add latency.

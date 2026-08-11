@@ -233,7 +233,16 @@ pub struct PyMcts {
 #[pymethods]
 impl PyMcts {
     #[new]
-    #[pyo3(signature = (c_puct = 2.0, c_puct_base = Some(19652.0), c_puct_init = 1.25, fpu = -0.2, batch = 1, reuse = false, dedup = false, mate_distance = false, vloss_fix = false))]
+    // These defaults MUST track `sumofish/mcts.py` and `sumofish/rust_mcts.py`.
+    // They were left at the pre-v6 1.25 / -0.2 when 32c138f moved the Python
+    // side to 0.875 / -0.05 on 2026-08-09, which is harmless on the live path
+    // (rust_mcts.py always passes both explicitly) and NOT harmless in tests:
+    // `verify_progress_slicing.py` and `verify_mate.py` construct `core.Mcts`
+    // directly and silently inherited the stale pair, so two oracles in
+    // run_all.sh were exercising a configuration that does not ship. This is
+    // LAB-NOTES 2026-07-31's "a port has to sweep the DEFAULTS of everything
+    // downstream", recurring one layer lower.
+    #[pyo3(signature = (c_puct = 2.0, c_puct_base = Some(19652.0), c_puct_init = 0.875, fpu = -0.05, batch = 1, reuse = true, dedup = false, mate_distance = false, vloss_fix = false))]
     #[allow(clippy::too_many_arguments)] // it mirrors mcts.py's constructor
     fn new(
         c_puct: f64,
