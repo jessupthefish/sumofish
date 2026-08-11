@@ -1076,8 +1076,34 @@ to the game-to-game variance". First half true, second half false.
 - **Old results kept as `rulerWARM-*` rather than overwritten.** The ladder's
   `ruler-*-vs-*` glob excludes them, so the corrected ruler is what gets used
   while the superseded numbers stay auditable.
+- **RESOLVED, and the direction was the opposite of what I predicted.** Fixing
+  it makes Stockfish **STRONGER**, not weaker. Paired over the 400 openings both
+  runs share (same seed), our score went 0.5475 -> 0.4913, **z = -2.16**, mean
+  paired shift -0.0563 +-0.0510, only 39% of results identical. About **-39
+  Elo**. So the warm harness FLATTERED us and every SumoFish-vs-Stockfish number
+  taken on it is biased in our favour.
+
+  The mechanism that fits: at 845 nodes the search is tiny, and a table carrying
+  entries from other games and other openings pollutes it, so stale entries at
+  the wrong depths cause bad cutoffs. Clearing per game helps a low-node search
+  rather than hurting it. I had assumed "warm table = more information =
+  stronger", which is the intuition from long searches and is wrong here.
+
+  **Use the PAIRED comparison when two runs share a seed.** Independently the
+  two intervals were +38.8 +-19 and -6.1 +-26, a 1.40-sigma difference I was
+  about to call undecided. The same data compared game-for-game on shared
+  openings is 2.16 sigma and conclusive. Throwing away the pairing nearly cost a
+  correct call.
 - Process guilt, worth recording: my first cold-vs-warm comparison was
   confounded because I passed the PRE-v6 search constants to the cold arm while
   comparing against a v6 warm rung, and read the resulting -88 Elo as a hash
   effect. It was mostly the tuning difference. When a re-measurement disagrees
   with an old one, diff the full config before believing the delta.
+- What needs redoing, and what does not. **Ladder and anchor: redone**, on the
+  fixed harness. **Ruler: not**, both sides are Stockfish so it cancels
+  (measured: +5.1 +-30.6). **`scale_D`: probably survives**, because it is a
+  DIFFERENCE between rungs and a bias roughly constant across rungs cancels --
+  which the re-run tests rather than assumes. **The v6 tuning decision: stands**,
+  its head-to-head arms contained no Stockfish and its vs-Stockfish arms
+  compared two SumoFish configs against the SAME opponent, so the bias is
+  common-mode.
