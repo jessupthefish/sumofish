@@ -597,15 +597,30 @@ absent env var silently falls back to. Verified with a new
 is unaffected (it exercises `ignored_rust_flags` on an explicit dict, not
 `select_mcts_class`'s default).
 
-**1. Re-earn the exchange ladder, with the virtual-loss fix ON. STILL OPEN, and
-partially done.** The first rung was re-screened with the fix on and landed
-**+214.8 +-69.8** (W60 D35 L5, 100 games, LOS 100%) against +29.0 +-25.1 with it
-off, which settled the flat-first-rung anomaly. But **100 games is a screen, not
-a rung** -- the ladder's are 300 -- and the other three rungs have NOT been
-re-earned; all four `sims-*` jobs are WITHDRAWN in the lab, not done. So
-`scale_D` and `scale_bar` remain withdrawn and no proposal can be argued in Elo
-until this is finished. `match_argv` already passes the flags, so it is
-`sumofish-lab reset --job sims-400-200` (and the other three) then a run.
+**1. CLOSED 2026-08-11, and NOT by doing it. The relative ladder is
+SUPERSEDED, not pending.** This item said to re-earn four `sims-*` rungs with
+the virtual-loss fix on, and gave the command to reset them. That contradicted
+the recalibration block at the top of this file, which says in as many words
+"Do not re-run the old `sims-400-200` chain. It is superseded, not pending."
+Both statements stood in this file at once for two days, one of them naming the
+exact command to burn ~10 GPU-hours on work the other calls unnecessary.
+
+The resolution: the **absolute** ladder (five rungs, 200-3200 sims, each an
+independent measurement against Stockfish at a pinned budget) answers the same
+question and does not depend on those four rungs at all. `scale_D` is now
+**199 +-33** from it, and `scale_bar` is **321 +-54** for the 136M break-even,
+replacing the withdrawn 377.
+
+**`scale_D` and `scale_bar` are therefore REINSTATED at the point of use**, in
+`runs/lab/state.json` `facts`, with the old values kept as
+`scale_D_superseded` / `scale_bar_superseded` on the same pattern as
+`scale_m_superseded`. `runs/lab/withdrawn.json` no longer withdraws them, so
+the lab board and this file finally agree. The four `sims-*` JOBS stay
+withdrawn, because what was wrong with them (measured on an engine that has not
+been deployed since 07-30) is still true.
+
+**Quote `scale_D` only with its interval.** +-33 is wide, the ruler chain is
++-32 of it, and the fix for that is CPU-only: see the recalibration block.
 
 **2. DONE, and it recurs. Cut v4** was done 2026-08-06 (`VERSIONS.jsonl`, both
 nets plus the harder opponent pool). The standing item this leaves behind:
