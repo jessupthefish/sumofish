@@ -1043,3 +1043,41 @@ was KEPT despite its justification being wrong, for a different and better
 reason: it refuses to extrapolate past the measured range, where a fitted
 constant would cheerfully price a rung at 50,000 nodes off data stopping at
 11,200.
+
+## 2026-08-10: the opponent was not the same opponent from game to game
+
+`Player.new_game()` returned early for a Stockfish side and never sent
+`ucinewgame`, with a comment saying each `move()` posts the full position so it
+is not needed for correctness, and that hash reuse between games is "noise next
+to the game-to-game variance". First half true, second half false.
+
+- **A fixed-NODE opponent whose hash persists is a DIFFERENT opponent each
+  game.** A warm transposition table changes what it finds inside the same node
+  budget, so its strength depended on how many games it had already played in
+  that process. Three consequences, none of them noise: a match was not
+  reproducible from its seed; a RESUMED match differed from an uninterrupted
+  one; and sharding was biased rather than merely different, since a shard
+  plays 1/N of the games, stays colder, and would have flattered us.
+- **The tell was a coverage test that passed while the content failed.**
+  Splitting a 20-game match in two shards partitioned the pairs perfectly (10 +
+  10, no overlap, every index present) and still changed **18 of the 20 games**.
+  A partition test alone would have shipped this. Assert on the RECORDS, not on
+  the bookkeeping.
+- Fix is one argument: python-chess emits `ucinewgame` when the `game` token
+  passed to `play()` changes. After it, a two-shard match is byte-identical to
+  the same match run by one process.
+- **The ruler did not move**: six Stockfish-vs-Stockfish rungs re-measured cold,
+  weighted shift **+5.1 +-30.6**, chi2 0.34 on 6 dof. Expected in hindsight,
+  because both sides carry the same hash behaviour and it cancels; the
+  measurement that can move is SumoFish vs Stockfish, where only one side is
+  affected. Note the two runs share `--seed 99` and therefore the same
+  openings, so that comparison is PAIRED and more sensitive than independent
+  sampling, not less.
+- **Old results kept as `rulerWARM-*` rather than overwritten.** The ladder's
+  `ruler-*-vs-*` glob excludes them, so the corrected ruler is what gets used
+  while the superseded numbers stay auditable.
+- Process guilt, worth recording: my first cold-vs-warm comparison was
+  confounded because I passed the PRE-v6 search constants to the cold arm while
+  comparing against a v6 warm rung, and read the resulting -88 Elo as a hash
+  effect. It was mostly the tuning difference. When a re-measurement disagrees
+  with an old one, diff the full config before believing the delta.
