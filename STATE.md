@@ -97,8 +97,30 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   (the Stockfish anchor, item 3) now gates every future net decision.
 >
 >
-> - **THE LADDER IS RE-EARNED, ABSOLUTE, AND `scale_D` HAS A VALUE AGAIN:
->   195 Elo per doubling of SEARCH.** Five rungs on the v6 engine, each an
+> - **RECALIBRATED 2026-08-11 on the ucinewgame-fixed harness. `scale_D`
+>   SURVIVED; the absolutes did not.** Stockfish was carrying its hash between
+>   games, so at a fixed node budget it was a different opponent each game and
+>   the warm harness flattered us (paired, z=-2.16, ~-39 Elo). Ladder re-run:
+>
+>   | sims | rung (vs SF) | ABSOLUTE, fixed | was, warm |
+>   |---|---|---|---|
+>   | 200 | -7.4 +-19 | -152.6 | -105.1 |
+>   | 400 | -24.8 +-19 | **+10.1** | +84.2 |
+>   | 800 | -104.4 +-22 | +278.6 | +293.5 |
+>   | 1600 | -225.0 +-28 | +477.4 | +499.2 |
+>   | 3200 | -293.0 +-32 | +642.4 | +673.7 |
+>
+>   **`scale_D` = 199 Elo per doubling of SEARCH, against 195 before.** That is
+>   the point: a bias roughly constant across rungs cancels in a DIFFERENCE, so
+>   the shape held while every absolute moved. Quote the absolutes only from the
+>   fixed harness; `ladderWARM-*` and `anchorWARM-*` are kept for audit.
+>
+>   **Anchor, re-run:** SF@700 rung is **+30.5 +-12** (was +44.4 +-12). The
+>   1600-node rung is running. Two independent routes to "v6 at 400 sims vs
+>   SF@700" agree: **+10.1 +-50** via the ladder rung plus the ruler edge, and
+>   **+30.5 +-12** direct from the anchor, a 0.40-sigma difference.
+>
+> - **The old warm-harness ladder block, superseded:** Five rungs on the v6 engine, each an
 >   independent measurement against Stockfish at a pinned budget, priced through
 >   the measured 350-11,200 node ruler:
 >
