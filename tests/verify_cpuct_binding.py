@@ -84,25 +84,98 @@ def main() -> int:
     check(c_puct_at(3.3, None, 9.9, 100) == 3.3,
           "c_puct_init must be ignored under --fixed-cpuct")
 
-    # 4. Both engines must ACCEPT the parameter. A flag that parses and is then
-    #    dropped one layer down is the same silent no-op wearing a new hat.
-    for mod, cls in (("sumofish.mcts", "MCTS"), ("sumofish.rust_mcts", "RustMCTS")):
-        try:
-            m = __import__(mod, fromlist=[cls])
-            sig = inspect.signature(getattr(m, cls).__init__)
-            check("c_puct_init" in sig.parameters,
-                  f"{mod}.{cls}.__init__ does not accept c_puct_init")
-        except Exception as exc:  # import of the rust binding can fail w/o build
-            print(f"  (skipped {mod}.{cls}: {exc})")
+    # 4. BEHAVIOURAL, not structural. Checks 4 and 5 used to be
+    #    `inspect.signature(...).parameters` and `__dataclass_fields__`
+    #    membership, i.e. name checks. Both would still have passed with the
+    #    forwarding line in `match.py` deleted, or with `rust_mcts.py` no longer
+    #    handing `c_puct_init` to `core.Mcts` -- and that second one is the exact
+    #    layer the original bug lived at, one level BELOW what a signature check
+    #    can see. Worse, the CLI default equals the shipped constructor default,
+    #    so a broken forward is invisible until someone passes --a-cpuct-init.
+    #
+    #    So: drive the Rust core with two different values and require the
+    #    search to actually come out different. Priors are deliberately
+    #    NON-UNIFORM -- with a flat prior and a constant value the PUCT term is
+    #    symmetric across children and the visit vector can come out identical
+    #    for any exploration constant, which would make this test pass while
+    #    proving nothing.
+    def _asym_evaluator(fens, actions):
+        priors, values = [], []
+        for fen, acts in zip(fens, actions):
+            n = max(1, len(acts))
+            w = [1.0 / (i + 1) ** 2 for i in range(n)]   # sharp, rank-ordered
+            s = sum(w)
+            priors.append([x / s for x in w])
+            values.append(((hash(fen) % 1000) / 1000.0) * 0.6 + 0.2)
+        return priors, values
 
-    # 5. match.py must carry it on the Spec, or no CLI flag can reach an engine.
+    class _StubNet:
+        """Enough for `make_evaluator` to BUILD. It is never called: the
+        evaluator it returns is replaced immediately after construction.
+
+        Going through the REAL `RustMCTS.__init__` is the whole point: an
+        earlier draft of this check built `core.Mcts(...)` directly and
+        therefore passed with `rust_mcts.py`'s forwarding line deleted, which
+        is precisely the bug it is supposed to catch. Verified by inducing that
+        deletion; see `docs/induced-failures.md`.
+        """
+        device = "cpu"
+        dtype = None
+        model = None
+
+    def _visits(c_init: float):
+        import chess
+        import torch
+        from sumofish.rust_mcts import RustMCTS
+        net = _StubNet()
+        net.dtype = torch.float32
+        m = RustMCTS(net, policy=net, c_puct_init=c_init, fpu=-0.05,
+                     simulations=300, batch=8, reuse=False)
+        m._evaluate = _asym_evaluator   # swap AFTER __init__ built the core
+        board = chess.Board(
+            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+        # `search()` returns (root, visits) and `root` is a fresh object every
+        # call, so comparing the RETURN VALUES compares object identity and is
+        # unequal no matter what the search did. An earlier draft did exactly
+        # that and could not have failed. Compare the visit vector only.
+        _root, visits = m.search(board)
+        return {mv.uci(): n for mv, n in visits.items()}
+
     try:
+        lo, hi = _visits(0.25), _visits(4.0)
+        check(lo != hi,
+              "c_puct_init=0.25 and c_puct_init=4.0 produced IDENTICAL root "
+              "visits, so the value is not reaching the Rust tree. This is the "
+              "2026-08-09 bug: five sweep arms came back byte-identical.")
+    except Exception as exc:
+        failures.append(f"could not drive the Rust core to check binding: {exc}")
+
+    # 5. `match.py` must PASS it at every construction site, not merely have a
+    #    field for it. Checked on the AST, because the failure being guarded
+    #    against is a deleted keyword argument at a call site.
+    try:
+        import ast
         import match  # scripts/match.py
         check("c_puct_init" in match.Spec.__dataclass_fields__,
               "match.Spec has no c_puct_init field, so --cpuct-init cannot "
               "reach either engine no matter what the parser accepts")
+        tree = ast.parse((ROOT / "scripts" / "match.py").read_text())
+        sites = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id in ("MCTS", "RustMCTS")]
+        check(len(sites) >= 2,
+              f"expected both engines to be constructed in match.py, found "
+              f"{len(sites)} construction site(s)")
+        for site in sites:
+            kw = {k.arg for k in site.keywords}
+            for param in ("c_puct_init", "fpu"):
+                check(param in kw,
+                      f"match.py constructs {site.func.id}() without passing "
+                      f"{param}=, so a --{param.replace('_', '-')} on the CLI "
+                      f"is silently replaced by the constructor default")
     except Exception as exc:
-        failures.append(f"could not import scripts/match.py to check Spec: {exc}")
+        failures.append(f"could not check match.py construction sites: {exc}")
 
     if failures:
         print("FAIL")
@@ -110,8 +183,9 @@ def main() -> int:
             print(f"  - {f}")
         return 1
     print("verify_cpuct_binding: OK "
-          "(--cpuct inert under the schedule, --cpuct-init binds, both engines "
-          "and match.Spec carry it)")
+          "(--cpuct inert under the schedule; --cpuct-init measurably changes "
+          "the Rust search; match.py passes c_puct_init and fpu at every "
+          "engine construction site)")
     return 0
 
 

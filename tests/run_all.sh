@@ -31,6 +31,21 @@
 #                                       loss, value_sum untouched by it, and
 #                                       the flag is proven to change search
 #                                       (not silently wired to a no-op)
+#  12. c_puct_init binding           -- that the value REACHES the Rust tree,
+#                                       behaviourally. Added 2026-08-11: the
+#                                       guard existed since 08-09 and was never
+#                                       in this file, so nothing ran it.
+#  13. cross-game batching           -- slice attribution and error propagation
+#  14. identity at SHIPPED constants -- oracle 5 pins 1.25/-0.2 on both arms,
+#                                       which stopped being the shipped config
+#                                       on 08-09. identity_engine.py reads the
+#                                       constants from the library instead, so
+#                                       the byte-identity claim is established
+#                                       at the configuration that actually plays.
+#
+# A guard nobody runs is the same no-op in a new hat. Four tests sat outside
+# this file until 2026-08-11, including the guard written for the bug where a
+# parameter was never connected to anything.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -130,6 +145,26 @@ $PY tests/verify_rust_flag_guard.py | tail -12
 echo
 echo "=== RustMCTS.search() reports live progress via continue_search slicing ==="
 $PY tests/verify_progress_slicing.py | tail -12
+
+echo
+echo "=== --cpuct-init measurably reaches the Rust tree (2026-08-09 bug) ==="
+$PY tests/verify_cpuct_binding.py | tail -12
+
+echo
+echo "=== an unset CHESSGPU_CORE selects Rust, not Python ==="
+$PY tests/verify_core_default.py | tail -12
+
+echo
+echo "=== cross-game batching: slice attribution and error propagation ==="
+$PY tests/verify_batching.py | tail -12
+
+echo
+echo "=== oracle 5b: identity at the SHIPPED constants, with the real nets ==="
+if [ -f runs/value.pt ] && [ -f runs/policy.pt ]; then
+    $PY tests/identity_engine.py --positions 6 --sims 200 | tail -4
+else
+    echo "  (skipped: runs/value.pt or runs/policy.pt not present)"
+fi
 
 echo
 echo "=== speed: move generation ==="
