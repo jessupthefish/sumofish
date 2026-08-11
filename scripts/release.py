@@ -26,7 +26,7 @@ was playing.
 
   VERSIONS.jsonl           the registry, tracked in git
   a git tag                v1, v2, ... on the released commit
-  an Obsidian note         Steven/Projects/SumoFish Releases/
+  an Obsidian note         Steven/22 Efforts/Software/SumoFish Releases/
 
 The Obsidian note is written twice over in the same file: a technical section
 listing what actually changed, and a plain-English one that does not assume you
@@ -47,12 +47,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "VERSIONS.jsonl"
-VAULT = Path.home() / "Documents" / "Uno" / "Steven" / "Projects" / "SumoFish Releases"
+VAULT = Path.home() / "Documents" / "Uno" / "Steven" / "22 Efforts" / "Software" / "SumoFish Releases"
 
 
-def git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
-                          text=True, check=False).stdout.strip()
+def git(*args: str, check: bool = True) -> str:
+    """Run git and RAISE on failure.
+
+    This used to be `check=False` with stderr discarded, so a tag collision, a
+    detached HEAD or a missing git binary all reported success: `main()` prints
+    "tagged vN" unconditionally. Worse, a failed `rev-parse` returned "", which
+    renders an empty backtick pair in the note and then breaks the NEXT
+    release's `commits_since()`, because it builds "<sha>..HEAD".
+    """
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed ({r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()}")
+    return r.stdout.strip()
 
 
 def load() -> list[dict]:
@@ -161,14 +173,26 @@ def note_body(entry: dict, previous: dict | None, subjects: list[str]) -> str:
 
     technical = "\n".join(f"- {s}" for s in subjects) or "- no commits recorded"
 
+    # Vault schema, per 90 Meta/94 Docs/conventions.md:
+    #   * `type` is a PROPERTY and never also a tag. `tags: [project, ...]` was
+    #     a hard linter error and made the v6 note one of only two in the whole
+    #     vault that tripped it, and the only one a script kept regenerating.
+    #   * tags are block style, because Obsidian rewrites flow style on first
+    #     touch and that guarantees a spurious diff on a synced file.
+    #   * `status` comes from a closed set of six; a shipped release is `done`.
+    #   * `created` is expected on every note.
     return f"""---
 type: project
+status: done
 version: {entry['version']}
 released: {when}
-tags: [project, chess/engines, source/claude]
+created: {when}
+tags:
+  - chess/engines
+  - source/claude
 ---
 
-# SumoFish {entry['version']} — {entry['title']}
+# SumoFish {entry['version']}, {entry['title']}
 
 Released {when}. Part of [[SumoFish]].
 
@@ -201,14 +225,56 @@ game archive, not from lichess's lifetime totals. `sumofish-games` shows it;
 """
 
 
-def write_note(entry: dict, previous: dict | None, subjects: list[str]) -> Path | None:
+def obsidian_running() -> bool:
+    """Is the app holding this vault in memory right now?
+
+    Bracketed so the pattern cannot match this process's own command line,
+    which is a documented trap on this machine. Also note `pgrep obsidian`
+    is a FALSE NEGATIVE here: the Arch package runs as
+    `electron /usr/lib/obsidian/app.asar`, so the process name never contains
+    "obsidian".
+    """
+    r = subprocess.run(["pgrep", "-f", "obsidian/app[.]asar"],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def write_note(entry: dict, previous: dict | None, subjects: list[str],
+               force: bool = False) -> Path | None:
     if not VAULT.parent.exists():
         print(f"  vault not found at {VAULT.parent}; skipping the note")
         return None
     VAULT.mkdir(parents=True, exist_ok=True)
     safe = "".join(c for c in entry["title"] if c.isalnum() or c in " -_").strip()
-    path = VAULT / f"{entry['version']} — {safe}.md"
-    path.write_text(note_body(entry, previous, subjects))
+    # Comma, not an em dash: matches v1-v5, and em dashes are out house-wide.
+    path = VAULT / f"{entry['version']}, {safe}.md"
+
+    # A release note is written ONCE. Re-running for an existing version used to
+    # silently overwrite whatever was there, including anything added by hand.
+    if path.exists() and not force:
+        print(f"  note already exists, not overwriting: {path}")
+        print("  (pass --force-note if you really mean to replace it)")
+        return None
+
+    body = note_body(entry, previous, subjects)
+
+    # THE VAULT CONTRACT, rule 1. Obsidian keeps an in-memory copy of any open
+    # file and flushes it over an external write when the tab loses focus, so a
+    # plain write_text() into a running vault can vanish with no error. Go
+    # through the CLI, which uses Obsidian's own Vault API.
+    if obsidian_running():
+        rel = path.relative_to(Path.home() / "Documents" / "Uno")
+        cmd = ["obsidian", "create", f"path={rel}", f"content={body}"]
+        if force:
+            cmd.append("overwrite")
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0 or not path.exists():
+            raise RuntimeError(
+                "obsidian create failed and a raw write is not safe while the "
+                f"app is running: {(r.stderr or r.stdout).strip()}")
+        return path
+
+    path.write_text(body)
     return path
 
 
@@ -222,6 +288,10 @@ def main() -> None:
                     help="the plain-English paragraph. Prompted for if omitted")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--no-tag", action="store_true")
+    ap.add_argument("--force-note", action="store_true",
+                    help="replace an existing vault note for this version")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="show what would be recorded, touch nothing")
     args = ap.parse_args()
 
     history = load()
@@ -266,6 +336,28 @@ def main() -> None:
         **checkpoint_facts(),
     }
 
+    # PRE-FLIGHT, before anything is written. The old order appended to the
+    # registry and created the tag first, so a note that could not be written
+    # left a tagged, registered version behind with one line of output that
+    # scrolls past. Check the conflicting cases while both are still undone.
+    safe = "".join(c for c in entry["title"] if c.isalnum() or c in " -_").strip()
+    planned = VAULT / f"{entry['version']}, {safe}.md"
+    if planned.exists() and not args.force_note:
+        print(f"a note for {entry['version']} already exists:\n  {planned}")
+        print("nothing written. Pass --force-note to replace it.")
+        return 1
+    existing_tags = git("tag", "--list", entry["version"])
+    if existing_tags and not args.no_tag:
+        print(f"tag {entry['version']} already exists; nothing written.")
+        return 1
+
+    if args.dry_run:
+        print(f"\n--dry-run, nothing written. Would record:\n")
+        print(json.dumps(entry, indent=2))
+        print(f"\n  tag:  {entry['version']}")
+        print(f"  note: {planned}")
+        return 0
+
     with REGISTRY.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
     print(f"  {entry['version']} recorded in VERSIONS.jsonl")
@@ -274,7 +366,7 @@ def main() -> None:
         git("tag", "-a", entry["version"], "-m", f"{entry['version']}: {args.title}")
         print(f"  tagged {entry['version']} (git push --tags to publish it)")
 
-    note = write_note(entry, previous, subjects)
+    note = write_note(entry, previous, subjects, force=args.force_note)
     if note:
         print(f"  wrote {note}")
 
