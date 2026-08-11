@@ -14,7 +14,7 @@ DeepMind's *Grandmaster-Level Chess Without Search*
 Stockfish-annotated positions plays strong chess with zero lookahead.
 
 It now searches too. A policy network proposes candidate moves, a value network
-scores the positions they lead to, and MCTS explores between them — AlphaZero's
+scores the positions they lead to, and MCTS explores between them. AlphaZero's
 arrangement, as two separate networks rather than one with two heads.
 
 Everything here was trained on a single RTX 5070 Ti.
@@ -59,7 +59,7 @@ FEN ──► 77 tokens ──► 8-layer transformer ──► 1968 move logits
 A position becomes exactly 77 tokens over a 31-character vocabulary: 64 board
 squares, side to move, castling rights, en passant, and the move counters.
 Castling and en passant are in there because chess is *not* a pure function of
-piece placement — whether you may castle depends on history the board does not
+piece placement: whether you may castle depends on history the board does not
 show.
 
 The model is a LLaMA-shaped decoder: pre-norm, SwiGLU MLPs, no biases except
@@ -67,24 +67,24 @@ the output projection. 8.9M parameters, of which 71% are the MLPs.
 
 ## Things worth reading the code for
 
-**`sumofish/mcts.py`** — MCTS with virtual loss. The naive version evaluates one
+**`sumofish/mcts.py`**: MCTS with virtual loss. The naive version evaluates one
 position per GPU call, which wastes almost all of the card. Batching leaf
 evaluations made it **19x faster with no CUDA involved**, and the trick that
 makes it possible (back up a pretend loss so the next walk explores elsewhere,
 then subtract it when the real answer arrives) is more interesting than any
 kernel.
 
-**`sumofish/hlgauss.py`** — the value head predicts a *distribution* over win
+**`sumofish/hlgauss.py`**: the value head predicts a *distribution* over win
 probability, not a number. Cross-entropy against a Gaussian smeared across bins
 beats regression measurably (Farebrother et al.,
 [arXiv:2403.03950](https://arxiv.org/abs/2403.03950)), and it means the engine
 knows how uncertain it is.
 
-**`sumofish/bagz.py`** — the training data format is Apache Beam `TupleCoder`
+**`sumofish/bagz.py`**: the training data format is Apache Beam `TupleCoder`
 output with no public spec. This was reverse-engineered from raw bytes and
 verified by decoding 12,000 records and checking every move was legal.
 
-**`research/`** — a port of [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+**`research/`**: a port of [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
 for chess: fixed 5-minute experiments, held-out bits-per-move as the metric, and
 a harness that reverts anything failing to beat the measured noise floor. Which
 matters, because the first thing it proved was that my best hypothesis
@@ -108,11 +108,23 @@ Training data is [ChessBench](https://github.com/google-deepmind/searchless_ches
 ## Design notes
 
 `PHILOSOPHY.md` covers why the project is shaped the way it is. The short
-version: it is built to be understood by the person building it, to be enjoyable
-to play against rather than merely strong, and to still be interesting in a
-year. Difficulty will never come from a strong engine told to play badly —
-handicapped engines play twelve perfect moves and then hang a queen for no
-reason, and nobody enjoys that.
+version: **one goal, and it is strength.** Specifically, the strongest engine
+one person can build on one consumer GPU, measured as Elo against fixed external
+opposition, with every mechanism that makes it strong understood rather than
+inherited. Understanding every layer is the method, not a second objective, and
+not a veto: components get built by hand, measured, and kept only if they win.
+
+"Fun to play against" was goal two of the original charter and was **CANCELLED
+on 2026-08-06**, not deferred. It had already been deferred once, on 07-29, and
+came back every session; nothing here measures enjoyment and nothing is gated on
+it. This paragraph is the reason the cancellation names README explicitly: it
+survived four sessions of rewrites elsewhere and went on advertising the old
+objective to anyone who read the repo.
+
+One narrow constraint outlived it, on a feature that does not exist: if
+difficulty levels are ever built, they come from genuinely weaker models, never
+from a strong engine told to play badly. Handicapped engines play twelve perfect
+moves and then hang a queen for no reason.
 
 ## Credits
 
