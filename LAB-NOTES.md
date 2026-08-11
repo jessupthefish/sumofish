@@ -1107,3 +1107,63 @@ to the game-to-game variance". First half true, second half false.
   its head-to-head arms contained no Stockfish and its vs-Stockfish arms
   compared two SumoFish configs against the SAME opponent, so the bias is
   common-mode.
+
+## 2026-08-11: every "N sigma" in this repository was N half-widths, and one of them reverses its own lesson
+
+`scripts/elo.py` returns **95% half-widths**, not standard deviations:
+`score_stats` and `pair_stats` both build their interval as `1.96 * sigma`
+(`elo.py:81`, `:219`). Four places then divided a difference by one of those
+`err` values and called the quotient a sigma. Every such figure understates
+significance by exactly 1.96x.
+
+| written | where | actual |
+|---|---|---|
+| "a **1.40-sigma** difference" | `LAB-NOTES.md:1093` | **z = 2.73** |
+| "+63.5 Elo at **~3.6 sigma**" | `LAB-NOTES.md:986` | **z = 7.24** |
+| "a **0.40-sigma** difference" | `STATE.md`, anchor routes | **z = 0.78** |
+| "chi2 **0.34** on 6 dof" | `LAB-NOTES.md:1070` | **chi2 = 1.29 on 5 dof** |
+
+- **The 1.40 one inverts the lesson it was written to support.** The 08-10 entry
+  says the unpaired comparison of the warm and cold harnesses was "a 1.40-sigma
+  difference I was about to call undecided", that pairing rescued it at 2.16,
+  and concludes "throwing away the pairing nearly cost a correct call."
+  **Backwards.** 1.40 half-widths is z = 2.73, which is MORE significant than
+  the paired 2.16, and the two intervals had already separated. Recomputed at
+  matched n (the warm run's first 400 games against the cold run's 400):
+  unpaired **z = -2.08**, paired **z = -2.16**. Pairing bought 4%.
+- **And the mechanism explains why it had to be small.** `pairing_efficiency`
+  on these matches is **0.89 to 1.01**. Pairing pays when the two arms' results
+  on the same opening are correlated, which is what colour-swapping against a
+  MIRROR buys (r = 0.44 on the one mirror match, hence PHILOSOPHY's "~2.4x in
+  games"). Against a FIXED external opponent that correlation is nearly absent,
+  and every match this project now runs is that kind. **The 2.4x does not
+  transfer, and PHILOSOPHY still quotes it unqualified.**
+- **What survives from the 08-10 entry:** the direction and the conclusion. The
+  warm harness did flatter us, the paired analysis is correctly computed
+  (z = -2.16 reproduces exactly: n = 400, 0 opening mismatches, 0 colour
+  mismatches, mean -0.0563, SE 0.0260), and pairing is still the right default
+  because it cannot hurt. What does not survive is "pairing rescued this call".
+- **The chi2 is the same error and the conclusion also survives.** Recomputed
+  over the six `ruler-*` / `rulerWARM-*` pairs: weighted mean shift
+  **+5.1 +-30.6**, exactly as recorded, and chi2 = **1.29 on 5 dof** (p = 0.94)
+  rather than 0.34 on 6. Still entirely consistent with "the ruler did not
+  move". Note the dof: six rungs compared against one weighted mean is 5, not 6.
+
+**The rule, and it is a convention rule rather than a statistics one.** `err`
+in this codebase is always a 95% half-width. So:
+
+- To combine independent errors, add them **in quadrature as half-widths**. The
+  1.96 factors out, so this is exact and needs no conversion. `sim_ladder.py`
+  now does this and says so at the point it does it.
+- To quote a z, **divide by `err/1.96`**, never by `err`.
+- Better, quote neither: say "the intervals do not overlap" or give the
+  difference with its own interval. Both are unambiguous and neither invites
+  this mistake. Every conclusion in the table above is unchanged; what changed
+  is that two of the four figures made a real result look marginal and one made
+  a marginal one look settled, so the error is not conservative in either
+  direction.
+
+**Why it survived this long:** a wrong sigma never fails. It produces a
+plausible number in the right ballpark, in a sentence that reads like careful
+work, and nothing downstream consumes it. It was found by recomputation from
+the raw `status.json` files, not by review.

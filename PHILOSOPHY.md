@@ -104,7 +104,16 @@ This is the part of the file that most changes what you are allowed to claim.
   historical claims in this repo cannot see a 20-Elo change and that is a fact
   about the instrument, not about the change.
 - **Pair-score matches** from book openings; colour-swapping cancels the
-  opening's bias and is worth ~2.4x in games.
+  opening's bias. **What it is WORTH depends on the opponent, and the ~2.4x
+  once quoted here does not apply to any match this project now runs.** That
+  figure came from a MIRROR match (`elo.py`, r = 0.44): pairing pays in
+  proportion to how correlated the two arms' results are on the same opening,
+  and two builds of one lineage are highly correlated. Against a FIXED external
+  opponent that correlation nearly vanishes: measured `pairing_efficiency` is
+  0.89 to 1.01 across every vs-Stockfish match now carrying a published number,
+  i.e. **1.0x to 1.1x, not 2.4x**. Pair anyway, because it cannot hurt and it
+  removes a real bias, but never budget games on the old multiplier. See
+  LAB-NOTES 2026-08-11.
 - **A mirror match is structurally blind to anything both sides share.** It can
   answer "did this change help". It cannot answer "how does SumoFish play" or
   "what is its draw rate". Those come from real games only.
