@@ -36,6 +36,11 @@
 #                                       guard existed since 08-09 and was never
 #                                       in this file, so nothing ran it.
 #  13. cross-game batching           -- slice attribution and error propagation
+#  15. tuning-record merge           -- that a PARTIAL tune_search.py run adds
+#                                       to runs/lab/tune-search.json instead of
+#                                       replacing it. That file was destroyed
+#                                       twice on 2026-08-11 by two different
+#                                       write paths in the same script.
 #  14. identity at SHIPPED constants -- oracle 5 pins 1.25/-0.2 on both arms,
 #                                       which stopped being the shipped config
 #                                       on 08-09. identity_engine.py reads the
@@ -157,6 +162,10 @@ $PY tests/verify_core_default.py | tail -12
 echo
 echo "=== cross-game batching: slice attribution and error propagation ==="
 $PY tests/verify_batching.py | tail -12
+
+echo
+echo "=== a partial tuning run cannot erase the groups it did not measure ==="
+$PY tests/verify_tune_merge.py | tail -12
 
 echo
 echo "=== oracle 5b: identity at the SHIPPED constants, with the real nets ==="

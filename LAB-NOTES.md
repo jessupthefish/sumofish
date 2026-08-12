@@ -1220,3 +1220,98 @@ stand as measured.
   `final_fen`.** Nothing had to be replayed and no GPU was touched. When adding
   a decision point to the harness, log the input it decided on. It converts a
   future "is this bias real" argument into a script.
+
+## 2026-08-11, evening: I narrowed the error on a number whose bias I had never checked
+
+The morning's job was the ruler: six Stockfish-vs-Stockfish rungs at 200 games
+each, contributing +-32.1 of `scale_D`'s +-33.5 while the two SumoFish rungs
+contributed +-9.4. Re-earning them at 2400 games is CPU-only, costs 1.8 hours
+and no GPU, and takes `scale_D` to +-12.2. That reasoning is correct and the run
+did exactly what it promised. Every one of the six edges came back inside its
+old interval, largest move -37.1 against +-74.1, so the old ruler was wide and
+not wrong.
+
+Then the second anchor landed and the whole quantity went out.
+
+`sim_ladder.py` makes a rung absolute by adding a walk along that ruler:
+`absolute = rung + (ruler(N) - ruler(700))`. The ruler is Stockfish against
+Stockfish. The walk is only meaningful if a node budget worth X Elo to
+Stockfish is worth X Elo to SumoFish, and **nothing in this repository had ever
+tested that.** Two anchors of the same configuration test it in one subtraction:
+
+    SF@700n -> SF@1600n, Stockfish vs Stockfish   280.8 +-16.4
+    the same span, measured through SumoFish      192.8 +-18.0
+    difference 88.0 +-24.4, z = 7.1, factor 0.69
+
+`scale_D` = 185.2 is +1026 of ruler walk against -286 of rungs, so a 31%
+overstatement of the walk is a bias several times the interval it was published
+with. The ladder predicts the 1600-node anchor at -248.5; the anchor measured
+-162.4 +-13.4.
+
+**The lesson is not "the ruler was wrong".** It is that I spent the cheapest
+measurement available on the largest VARIANCE term without once asking whether
+the term it multiplies is on the right scale. Error bars are a claim about
+repeatability, and repeatability is silent about a systematic error in the same
+direction every time. The tell was on the screen for a week and I read past it:
+the ruler matches draw 7-13% of their games and adjudicate 74-87%, the anchor
+matches draw 28-38% and adjudicate 30-35%. Elo inferred from a score is
+draw-rate dependent. Two match populations that different are not on one scale,
+and no amount of games fixes it.
+
+Practical rules this leaves:
+
+- **Before narrowing an interval, ask what would falsify the point estimate.**
+  If the answer is "nothing on the schedule", the interval is not the bottleneck.
+- **A chain through a DIFFERENT population is a modelling assumption, not
+  arithmetic.** `sim_ladder.py`'s own docstring indicts the withdrawn design
+  because "error accumulates down a chain", and the redesign moved the chain
+  from the SumoFish axis to the Stockfish axis rather than removing it. Moving
+  a chain onto an axis where you cannot see it is worse than leaving it where
+  the error propagation catches it.
+- **Two measurements of the same span by different routes is the cheapest
+  possible audit, and it needs no new games** when both already exist. The
+  700-node anchor and the ladder's 400-sim rung agreed (+30.5 vs +32.3) and I
+  quoted that agreement as corroboration for two days. It only spans 0.27
+  doublings. The disagreement lives at long range, so agreement at short range
+  is not evidence of transitivity, and I treated it as if it were.
+- `scripts/ruler_transfer.py` runs the check and refuses to answer when fewer
+  than two anchors share a configuration, which is the state this project was in
+  from the day the ladder was designed until this evening.
+
+**What NOT to do next: publish `scale_D` x 0.69.** The factor is measured at one
+place on the scale. Assuming it is constant across 360-11200 nodes is the same
+species of assumption as the one that just failed, and it would look like a
+correction while being another guess.
+
+## 2026-08-11: the same file, destroyed twice in one day, by two write paths
+
+`runs/lab/tune-search.json` holds every tuning arm this project has run. It was
+rebuilt from the per-arm match directories twice on 2026-08-11:
+
+1. Morning. `--report --stage2-only` ended by writing the file like a real run,
+   so a read replaced five completed arms with five FAILED rows. Fixed by
+   returning before the write, and the commit message says the rebuilt record
+   "is committed as the new tune-search.json". **It was not.** `runs/` is in
+   `.gitignore`, so nothing was committed and the sentence describes a thing
+   that could not have happened.
+2. Afternoon. The real `--stage2-only` run then destroyed it again through the
+   ordinary write path, which had been left alone: it wrote a freshly-built
+   dict, so stage 1 became `{"skipped": ...}` and the FPU line measured at
+   `c_puct_init=1.25` vanished entirely.
+
+Both times the recovery was "the per-arm directories survived". That is luck
+presented as a design, twice, and the second time by someone who had just
+written the sentence calling it luck.
+
+- **A partial run must MERGE.** `_merge()` now folds a run's groups into what is
+  on disk: it may add or replace what it measured, and a stage that was SKIPPED
+  never overwrites arms that were really played.
+- **Key a result by the configuration it was measured at.** Stage 2 now writes
+  `stage2_at_ci0.875`, not `stage2`, so a sweep at one `c_puct_init` cannot
+  occupy the slot of a sweep at another. The bare key is what made the 08-09
+  and 08-11 FPU lines collide in the first place.
+- **`git status` clean does not mean a result is safe.** Every number this
+  project earns lands under `runs/`, which is ignored. If it matters, it has to
+  be reconstructible from the per-arm directories BY A SCRIPT, or committed
+  somewhere that is not ignored.
+- Guard: `tests/verify_tune_merge.py`, registered in `tests/run_all.sh`.

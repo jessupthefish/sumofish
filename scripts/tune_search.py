@@ -101,7 +101,11 @@ SEED = 4242
 # (N=0 to N~60,000), so these bracket the shipped value by roughly the width the
 # schedule itself moves. Wider than that is not a tune, it is a different engine.
 CPUCT_INIT_ARMS = [0.5, 0.875, 1.25, 1.75, 2.5]
-FPU_ARMS = [-0.5, -0.35, -0.2, -0.05]
+# Re-centred 2026-08-11 on the shipped -0.05. The old grid, [-0.5, -0.35,
+# -0.2, -0.05], stopped AT the shipped value, so its monotone result could
+# not distinguish 'the optimum is further out' from 'the curve turns just
+# past the edge' -- and it was the second, which cost a follow-up run.
+FPU_ARMS = [-0.2, -0.125, -0.05, 0.0, 0.05]
 
 # The shipped value has to BE an arm, or the honesty gate below silently loses
 # its baseline: `results["stage1"].get(str(CURRENT_CPUCT_INIT))` returns {} and
@@ -176,6 +180,33 @@ def table(rows: list[tuple[str, dict]], label: str) -> str:
     return "\n".join(out)
 
 
+def _merge(fresh: dict) -> dict:
+    """Fold this run's groups into whatever is already on disk.
+
+    A run may add or replace the groups it actually measured, and nothing else.
+    Until 2026-08-11 the writer replaced the whole file, so a PARTIAL run erased
+    the groups it never ran: `--stage2-only` on 08-11 overwrote the 08-09 c_puct
+    sweep with `{"skipped": ...}` and dropped the FPU line measured at
+    c_puct_init=1.25 outright. That is the second time this file has had to be
+    rebuilt from the per-arm directories, and both times it was reconstructible
+    by luck rather than by design. The 08-11 fix stopped `--report` from
+    writing; it left this path, which is the one that did the damage.
+
+    A stage that was SKIPPED never overwrites arms that were really played.
+    """
+    if not OUT.exists():
+        return fresh
+    merged = json.loads(OUT.read_text())
+    for key, value in fresh.items():
+        if (isinstance(value, dict) and value.get("skipped")
+                and isinstance(merged.get(key), dict)
+                and not merged[key].get("skipped")):
+            print(f"  keeping the {key} already on disk; this run skipped it")
+            continue
+        merged[key] = value
+    return merged
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--games", type=int, default=800,
@@ -238,7 +269,7 @@ def main() -> int:
         ranked = [(n, s) for n, s in stage1 if s]
         if not ranked:
             print("\nevery stage-1 arm failed; not starting stage 2")
-            OUT.write_text(json.dumps(results, indent=2))
+            OUT.write_text(json.dumps(_merge(results), indent=2))
             return 1
         best_c = _pick_best_c(ranked, results, args)
 
@@ -250,7 +281,7 @@ def main() -> int:
             else (json.loads((ROOT / "runs/matches" / name / "status.json").read_text())
                   if args.report else run_arm(name, args.games, best_c, f))
         stage2.append((f"fpu={f}", st))
-        results.setdefault("stage2", {})[str(f)] = st
+        results.setdefault(f"stage2_at_ci{best_c}", {})[str(f)] = st
     print(table(stage2, "stage 2 -- fpu"), flush=True)
 
     # --report READS. It used to end by writing OUT like a real run, so a
@@ -263,7 +294,7 @@ def main() -> int:
         print("\n--report: nothing written.")
         return 0
 
-    OUT.write_text(json.dumps(results, indent=2))
+    OUT.write_text(json.dumps(_merge(results), indent=2))
     print(f"\nwrote {OUT}")
     print("NOTHING WAS APPLIED. Change sumofish/mcts.py deliberately, and only "
           "if an arm clears the shipped value by more than the difference error.")

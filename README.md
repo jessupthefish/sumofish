@@ -23,8 +23,8 @@ Everything here was trained on a single RTX 5070 Ti.
 
 | | |
 |---|---|
-| **External Elo (anchor)** | **+30.5 ±12** vs Stockfish@700n, 2000 games at 400 sims (2026-08-11, ucinewgame-fixed harness). @1600n re-measuring. **Not comparable to the earlier +44.4**, which was a different engine on a different harness: see below. |
-| **Elo per doubling of search** | **199 ±33** (`scale_D`), five absolute rungs 200-3200 sims. The ruler chain contributes ±32 of that and the rungs only ±9, so this is wide for a reason that more GPU time cannot fix. |
+| **External Elo (anchor)** | **+30.5 ±12** vs Stockfish@700n and **-162.4 ±13.4** vs Stockfish@1600n, 2000 games each at 400 sims (2026-08-11, ucinewgame-fixed harness). Direct measurements against a pinned external opponent, no chain. **Not comparable to the earlier +44.4**, which was a different engine on a different harness: see below. |
+| **Elo per doubling of search** | **WITHDRAWN 2026-08-11**, hours after it was published as 199 ±33. The five rungs are real; making them absolute walks a Stockfish-vs-Stockfish ruler that does not transfer to SumoFish (the same span is 280.8 ±16.4 between two Stockfish and 192.8 ±18.0 through us, z = 7.1). `scripts/ruler_transfer.py`. |
 | **Rating on lichess** | **2542 rapid** (15+10, non-provisional, 643 games, RD 45; as of 2026-08-11 18:40 UTC), against a pool averaging 2592. Peaked 2565 at 580 games; RD 45 covers the drift, so read the pool mean beside it. |
 | Behavioural-cloning model | 40.9% lichess puzzle accuracy, 8.5 h, 307M positions |
 | State-value model | 68.7% puzzle accuracy, 300k steps |

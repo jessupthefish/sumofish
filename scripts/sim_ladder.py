@@ -227,6 +227,31 @@ def _sub(a: dict, b: dict) -> dict:
     return out
 
 
+def transfer_verdict() -> dict | None:
+    """Does the ruler this ladder chains onto transfer to SumoFish?
+
+    Returns the worst-disagreeing anchor pair, or None when the check cannot
+    run. Measured 2026-08-11: it does NOT transfer. The ruler prices
+    SF@700 -> SF@1600 at 280.8 +-16.4 and SumoFish measures the same span at
+    192.8 +-18.0, z = 7.1, factor 0.69. Every absolute below is a rung plus a
+    walk along that ruler, so every absolute below inherits it.
+
+    Imported lazily: `ruler_transfer` imports this module.
+    """
+    try:
+        import ruler_transfer
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            import json as _json
+            sys.argv = ["ruler_transfer", "--json"]
+            ruler_transfer.main()
+        pairs = _json.loads(buf.getvalue()).get("pairs", [])
+        return max(pairs, key=lambda p: abs(p["z"])) if pairs else None
+    except Exception:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true")
@@ -307,17 +332,60 @@ def main() -> int:
         out["elo_per_sim_doubling"] = round(per, 1)
         out["elo_per_sim_doubling_err"] = round(per_err, 1)
         out["elo_per_sim_doubling_err_ruler_term"] = round(ruler_term / span, 1)
-        print(f"\nEND TO END: {per:.0f} +-{per_err:.0f} Elo per doubling of SEARCH, "
-              f"{slo} -> {shi} sims. This is the number `scale_D` wanted, "
-              f"and unlike the withdrawn chain it is two absolute measurements "
-              f"differenced, not four relative rungs summed.")
+        v = transfer_verdict()
+        if v is None:
+            out["absolutes_status"] = "UNTESTED: fewer than two anchors share a configuration"
+            print(f"\nEND TO END: {per:.0f} +-{per_err:.0f} Elo per doubling of "
+                  f"SEARCH, {slo} -> {shi} sims -- BUT THE RULER'S TRANSFER TO "
+                  f"SUMOFISH IS UNTESTED. Every absolute above is a rung plus a "
+                  f"walk along a Stockfish-vs-Stockfish ruler, which assumes a "
+                  f"node budget worth X Elo to Stockfish is worth X to us. Run a "
+                  f"second anchor at another node budget and check it with "
+                  f"scripts/ruler_transfer.py before quoting any of this.")
+        elif abs(v["z"]) >= 2:
+            out["absolutes_status"] = (
+                f"WITHDRAWN: the ruler does not transfer. SF@{v['lo_nodes']}n -> "
+                f"SF@{v['hi_nodes']}n is {v['gap_ruler']} +-{v['gap_ruler_err']} "
+                f"Stockfish-vs-Stockfish and {v['gap_through_sumofish']} "
+                f"+-{v['gap_through_sumofish_err']} through SumoFish, z = {v['z']}, "
+                f"factor {v['transfer_factor']}. See scripts/ruler_transfer.py")
+            out["elo_per_sim_doubling_WITHDRAWN"] = out.pop("elo_per_sim_doubling")
+            out["elo_per_sim_doubling_err_WITHDRAWN"] = out.pop("elo_per_sim_doubling_err")
+            print(f"\nEND TO END: {per:.0f} +-{per_err:.0f} Elo per doubling of "
+                  f"SEARCH, {slo} -> {shi} sims. **WITHDRAWN, and so is every "
+                  f"ABSOLUTE above.** The ruler does not transfer: "
+                  f"SF@{v['lo_nodes']}n -> SF@{v['hi_nodes']}n is "
+                  f"{v['gap_ruler']:.1f} +-{v['gap_ruler_err']:.1f} measured "
+                  f"Stockfish vs Stockfish and {v['gap_through_sumofish']:.1f} "
+                  f"+-{v['gap_through_sumofish_err']:.1f} measured through "
+                  f"SumoFish, z = {v['z']}, factor {v['transfer_factor']}. The "
+                  f"walk contributes far more of this number than the rungs do, "
+                  f"so the bias is several times the interval. Do NOT multiply "
+                  f"by the factor and quote the result: it is measured at one "
+                  f"place on the scale.")
+        else:
+            print(f"\nEND TO END: {per:.0f} +-{per_err:.0f} Elo per doubling of SEARCH, "
+                  f"{slo} -> {shi} sims. The ruler's transfer to SumoFish is "
+                  f"CHECKED and consistent (z = {v['z']}).")
         print(f"  Of that +-{per_err:.1f}, the RULER contributes "
               f"+-{ruler_term / span:.1f} and the two rungs "
-              f"+-{math.hypot(rhi['err'], rlo['err']) / span:.1f}. The ruler is "
-              f"Stockfish vs Stockfish and therefore CPU-only: more games there "
-              f"is the cheapest error reduction available to this project.")
+              f"+-{math.hypot(rhi['err'], rlo['err']) / span:.1f}. That split is "
+              f"a statement about REPEATABILITY only. The ruler went from 200 to "
+              f"2400 games a rung on 2026-08-11 on the strength of it, which "
+              f"narrowed this interval and left the bias above untouched: an "
+              f"error bar cannot see a systematic error that points the same way "
+              f"every time.")
     for r in out["rungs"].values():
         r.pop("_coef", None)
+    # A flag whose name promises a READ must not write. `tune_search.py` had to
+    # learn this twice on 2026-08-11 -- once for --report and once for the
+    # ordinary write path -- and this file had the identical --report defect
+    # sitting next to it the whole time: `--report` on a rung whose directory is
+    # missing produces a FAILED row, and writing that replaces a completed
+    # record with it.
+    if args.report:
+        print("\n--report: nothing written.")
+        return 0
     OUT.write_text(json.dumps(out, indent=2))
     print(f"\nwrote {OUT}")
     return 0

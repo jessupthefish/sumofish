@@ -78,11 +78,26 @@ one another. Neglecting one caps the others.
 1. **Evaluation quality**: how good the network's judgement of a position is.
    Bought with parameters, data, training compute, and target design.
 2. **Search**: how much lookahead that judgement gets multiplied by.
-   **The exchange rate is MEASURED as of 2026-08-11: `scale_D` = 199 +-33 Elo
-   per doubling of search.** Quote it with the interval, always. Five absolute
-   rungs from 200 to 3200 simulations against Stockfish at pinned node budgets,
-   on the ucinewgame-fixed harness, differenced end to end
-   (`runs/lab/sim-ladder.json`).
+   **THE EXCHANGE RATE IS WITHDRAWN AGAIN, on the evening of 2026-08-11, the
+   same day this paragraph announced it.** `scale_D` was 199 +-33, then 185.2
+   +-12.2 on a better ruler, and it is now no number at all. Five absolute
+   rungs against Stockfish at pinned node budgets are real measurements, but
+   each is made absolute by walking a Stockfish-vs-Stockfish ruler, and that
+   ruler does NOT transfer: the span SF@700n -> SF@1600n is 280.8 +-16.4
+   measured Stockfish against Stockfish and 192.8 +-18.0 measured through
+   SumoFish, z = 7.1. The walk contributes more of `scale_D` than the rungs do,
+   so the bias is several times the interval. `scripts/ruler_transfer.py` runs
+   the check; LAB-NOTES 2026-08-11 has the full argument.
+
+   **Do not quote 185.2 x 0.69 either.** The factor is measured at one place on
+   the scale, and assuming it is constant is the same assumption that just
+   failed. What restores a number: a ladder whose rungs are each played near
+   parity and quoted as an equivalent Stockfish NODE BUDGET rather than an Elo,
+   so the cross-population conversion is never made at long range.
+
+   **What stands, and it is the strongest external claim this project has:**
+   SumoFish@400 sims is **+30.5 +-12 Elo on Stockfish@700 nodes** and
+   **-162.4 +-13.4 on Stockfish@1600 nodes**, 2000 games each, no chain.
 
    The ban this paragraph used to carry is LIFTED, and the history is worth
    keeping because it is why the number is trusted now. The old ~+50 Elo per
@@ -94,11 +109,13 @@ one another. Neglecting one caps the others.
    measurement against an external opponent rather than a link in a chain of
    relative comparisons.
 
-   **The +-33 is not a formality.** +-32 of it is the Stockfish node ruler the
-   absolutes are priced through, and only +-9 is the rungs themselves, so a
-   proposal resting on a difference of less than ~50 Elo per doubling is not
-   supported by this number. That is also the fix: the ruler is Stockfish
-   against itself and costs no GPU at all.
+   **The interval was never the problem, and chasing it is what hid the
+   problem.** +-32 of the old +-33 was the ruler, so re-earning the ruler at
+   2400 games a rung looked like the cheapest possible improvement and was
+   duly done. It worked: +-12.2. It also could not have detected the bias,
+   because an interval describes repeatability and says nothing about an error
+   that points the same way every time. Before narrowing an interval, ask what
+   would falsify the point estimate.
 3. **Speed**: search per second, which converts directly into (2) on a clock.
    Currently CPU-bound in `python-chess`, not GPU-bound. Speed *is* strength
    here in a way it never was for a searchless engine.

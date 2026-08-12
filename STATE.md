@@ -34,7 +34,7 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
-## Where things stand (2026-08-08, session 9)
+## Where things stand (2026-08-11, session 10)
 
 > **The 2026-08-01 session-7 block that stood here is deleted, not demoted, per
 > this file's own rule.** Two of its claims had gone false in the direction that
@@ -54,7 +54,96 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 > converge, the `systemctl --user disable` symlink trap) is preserved below and
 > in the sections further down.
 
-> **CURRENT, 2026-08-09 ~02:00.**
+> **CURRENT, 2026-08-11 ~18:00, session 10.**
+>
+> - **THE STOCKFISH RULER DOES NOT TRANSFER TO SUMOFISH, and that withdraws
+>   `scale_D`, `scale_bar` and four of the five ladder absolutes.** This is the
+>   result of the session and it was found by cross-checking two numbers that
+>   both landed today, not by running anything new.
+>
+>   `sim_ladder.py` makes a rung absolute by adding a walk along the
+>   Stockfish-vs-Stockfish ruler: `absolute = rung + (ruler(N) - ruler(700))`.
+>   That step assumes a node budget worth X Elo to Stockfish is worth X Elo to
+>   SumoFish. Two anchors of the same v6 configuration now test it directly:
+>
+>   | SF@700n -> SF@1600n, 1.193 doublings | Elo |
+>   |---|---|
+>   | measured Stockfish vs Stockfish (the ruler) | **280.8 +-16.4** |
+>   | the same span measured through SumoFish | **192.8 +-18.0** |
+>   | difference | **88.0 +-24.4**, z = **7.1** |
+>
+>   A transfer factor of **0.69**. `scale_D` was 185.2 because the ruler walk
+>   contributes +1026 of it against the rungs' -286, so a ~31% overstatement of
+>   the walk is a bias several times the +-12.2 it was published with. Put
+>   differently: the ladder predicts the 1600-node anchor at **-248.5** and the
+>   anchor measured **-162.4 +-13.4**. An 86-Elo miss on a number the ladder
+>   claims to know to +-23.
+>
+>   **Do not quote a corrected `scale_D`.** Applying 0.69 across the whole
+>   360-10700 range gives ~105, but that factor is measured at exactly one place
+>   on the scale and assuming it is constant is the same species of mistake as
+>   the chain itself. What is established is the direction and that 185.2 is an
+>   upper bound. Reproduce with **`scripts/ruler_transfer.py`**, which refuses
+>   to answer at all when fewer than two anchors share a configuration.
+>
+>   **The mechanism is not settled, but the two populations are not the same
+>   kind of match.** SF-vs-SF ruler rungs draw **7-13%** of games and end
+>   **74-87%** by arbiter adjudication; the SumoFish anchors draw **28-38%** and
+>   adjudicate **30-35%**. Elo inferred from a score is draw-rate dependent, so
+>   a decisive population and a drawish one are not on the same scale even when
+>   both are right about who is stronger. Adjudication is proposed by the
+>   PLAYERS' own eval curve and only confirmed by the arbiter, which is why two
+>   Stockfish instances trip it far more readily than a SumoFish game does.
+>
+>   **What survives, untouched:** the anchors themselves. **SumoFish@400 sims is
+>   +30.5 +-12 Elo on Stockfish@700 nodes and -162.4 +-13.4 on Stockfish@1600
+>   nodes**, 2000 games each, no chain in either. That is the external Elo this
+>   project has. Also untouched: every rung's own number, which is a direct
+>   measurement against a pinned opponent, and the whole width-sweep and
+>   held-out-loss line of argument, which never touched the ladder.
+>
+> - **The FPU line at the SHIPPED `c_puct_init` is mapped, and nothing changes.**
+>   Five arms, 800 games each vs Stockfish@700n, seed 4242, at
+>   `c_puct_init=0.875`:
+>
+>   | fpu | -0.2 | -0.125 | **-0.05** | 0.0 | 0.05 |
+>   |---|---|---|---|---|---|
+>   | Elo | +16.5 | +26.1 | **+44.1** | +32.2 | +18.7 |
+>
+>   All +-19 to +-21. **No arm separates from the shipped value** (every
+>   difference is inside ~+-29), and reading only that gate would end the
+>   session with nothing. The five points fit an interior maximum at
+>   **fpu = -0.065, 95% [-0.117, +0.040]**, with P(the curve turns) = **0.966**.
+>   The shipped -0.05 is inside that interval, so **NOTHING WAS APPLIED.**
+>
+>   This closes the 08-09 reading that "the FPU optimum is OUTSIDE the swept
+>   range". That grid stopped AT the shipped value, and the edge was the
+>   artefact: given a grid that brackets it on both sides, the optimum is
+>   interior and lands on the value already deployed. `FPU_ARMS` is re-centred
+>   on the bracketing grid so the default reproduces the run that settled it.
+>
+> - **`runs/lab/tune-search.json` was destroyed and rebuilt from the per-arm
+>   directories for the SECOND time in one day, by the second write path in the
+>   same script.** The morning fixed `--report`, which used to end by writing.
+>   The afternoon's real `--stage2-only` run then did the same damage through
+>   the normal write: it replaced the 08-09 `c_puct_init` sweep with
+>   `{"skipped": ...}` and dropped the FPU line measured at `c_puct_init=1.25`
+>   outright. Both times "the per-arm directories survived" was the recovery,
+>   which is luck twice over. `tune_search.py` now MERGES: a run may add or
+>   replace the groups it measured and nothing else, a skipped stage never
+>   overwrites arms that were played, and stage 2 is keyed by the
+>   `c_puct_init` it was measured at (`stage2_at_ci0.875`) so two runs cannot
+>   share a slot. Guarded by `tests/verify_tune_merge.py`, which is IN
+>   `tests/run_all.sh`.
+>
+> - **The power failed at ~17:16 and nothing was lost.** Everything queued had
+>   finished: six ruler rungs by 14:11, five FPU arms by 16:29. The box was idle
+>   for the 45 minutes before it went down. The only casualties are two rated
+>   lichess games abandoned mid-move (`WkE21HvP`, `RS4ideHj`); the bot came back
+>   with the machine and is playing. There is no resume path for a `match.py`
+>   run, so a longer queue would have lost an arm.
+>
+> **2026-08-09 ~02:00, session 9. Still current except where the block above supersedes it.**
 >
 > - **The 900k net is LIVE, promoted 2026-08-09 01:49, and it was promoted on
 >   held-out loss rather than on the match.** `runs/value.pt` is now
@@ -104,13 +193,24 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   (paired, z=-2.16, ~-39 Elo, though see the anchor decomposition below, which
 >   says ~-77). Ladder re-run:
 >
->   | sims | rung (vs SF) | ABSOLUTE, fixed | was, warm |
->   |---|---|---|---|
->   | 200 | -7.4 +-19 | -152.6 **+-57** | -105.1 |
->   | 400 | -24.8 +-19 | **+10.1 +-50** | +84.2 |
->   | 800 | -104.4 +-22 | +278.6 **+-77** | +293.5 |
->   | 1600 | -225.0 +-28 | +477.4 **+-108** | +499.2 |
->   | 3200 | -293.0 +-32 | +642.4 **+-121** | +673.7 |
+>   | sims | rung (vs SF), MEASURED | ABSOLUTE, **WITHDRAWN** |
+>   |---|---|---|
+>   | 200 | -7.4 +-19 vs SF@360 | -159.3 +-23.5 |
+>   | 400 | -24.8 +-19 vs SF@845 | +32.3 +-22.8 |
+>   | 800 | -104.4 +-22 vs SF@1970 | +256.8 +-28.1 |
+>   | 1600 | -225.0 +-28 vs SF@4600 | +431.5 +-37.4 |
+>   | 3200 | -293.0 +-32 vs SF@10700 | +581.4 +-42.9 |
+>
+>   **The absolute column was withdrawn on the evening of 2026-08-11, hours
+>   after those intervals were earned.** It chains onto a ruler that does not
+>   transfer to SumoFish; see the CURRENT block at the top of this file. The
+>   rung column is a set of direct measurements against a pinned external
+>   opponent and is unaffected. The absolutes shown are the 2400-game-ruler
+>   versions, which is what they were when they were withdrawn; the numbers
+>   this table carried before that (-152.6 +-57, +10.1 +-50, +278.6 +-77,
+>   +477.4 +-108, +642.4 +-121, off a 200-game ruler) are deleted rather than
+>   kept beside them, because two withdrawn columns are not more informative
+>   than one.
 >
 >   **THOSE INTERVALS DID NOT EXIST UNTIL 2026-08-11 and they change what this
 >   table can be used for.** Each absolute is a rung plus a walk along a chain of
@@ -122,7 +222,10 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   in an edge basis, so shared chain segments cancel in a difference rather
 >   than being double-counted.
 >
->   **`scale_D` = 199 +-33 Elo per doubling of SEARCH** (was 195, itself +-33).
+>   **`scale_D` = 199 +-33 Elo per doubling of SEARCH** (was 195, itself +-33),
+>   **and this is WITHDRAWN as of the same evening** -- it went to 185.2 +-12.2
+>   on the 2400-game ruler and then out entirely, because the +-12.2 is an
+>   interval on a number carrying a bias several times its size.
 >   Of that +-33.5, the ruler contributes **+-32.1** and the two rungs only
 >   +-9.4. **So "scale_D survived the harness fix" was never a testable claim:**
 >   the difference of two +-33 numbers carries +-47, and the test could not have
@@ -136,11 +239,21 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   needs no GPU.** It is Stockfish against itself: all six rungs total 550
 >   seconds of logged game time. Taking them from 200 to ~2,400 games each is
 >   ~1.8 h of CPU and drops the ruler term from +-32.1 to +-9.4, i.e. `scale_D`
->   to **+-13.6**. Nothing was scheduled to do this before 08-11.
->   `ladderWARM-*` and `anchorWARM-*` are kept for audit.
+>   to **+-13.6**. **DONE the same afternoon, 12:36-14:11, and it landed at
+>   +-12.2.** Every one of the six edges came back inside its old interval
+>   (largest move -37.1 against +-74.1), so this was a narrowing and not a
+>   correction. The 200-game originals are kept as `rulerN200-*`, and
+>   `ladderWARM-*` / `anchorWARM-*` are kept for audit.
 >
->   **Anchor, re-run:** SF@700 rung is **+30.5 +-12**. The 1600-node rung is
->   running.
+>   **And it narrowed the wrong term.** The ruler's error was the biggest
+>   number in the interval, so shrinking it was the right move on the evidence
+>   available; what it could not do is test whether the ruler MEANS anything to
+>   SumoFish, which is what the second anchor then showed it does not. A tighter
+>   interval on a biased number is a more confident wrong answer.
+>
+>   **Anchor, re-run:** SF@700 rung is **+30.5 +-12**, SF@1600 rung is
+>   **-162.4 +-13.4** (landed 12:22). Those two are the load-bearing
+>   measurements in this project now.
 >
 >   **It is NOT "+30.5, was +44.4", and that framing stood here until
 >   2026-08-11.** The two runs differ in two things, not one: `anchorWARM-700nodes`
@@ -576,6 +689,38 @@ is now the single largest speed item, which is a reversal: it was item 4 when
 the network was 9%.
 
 ## Next session, in order
+
+**NOW, and it blocks every Elo claim: rebuild the ladder without the chain.**
+The absolutes are withdrawn because they walk a ruler SumoFish does not
+experience (see the CURRENT block). Two designs, and the second is cheaper:
+
+  a. **Anchor every rung against ONE Stockfish budget.** Chain-free by
+     construction, and impossible: SumoFish@3200 sims against SF@700n scores
+     ~99%, which measures nothing. An absolute scale over a 16x range needs a
+     chain somewhere. That is the actual problem, not a bug in the ruler.
+
+  b. **Re-aim each rung at its own parity, and quote node budgets instead of
+     Elo.** A rung played near parity needs only a tiny local correction, and
+     the local corrections are exactly where the two routes already AGREE
+     (+30.5 vs +32.3 over 0.27 doublings). The ladder then reports "800 sims is
+     worth Stockfish at N nodes", which is a measured equivalence with no
+     cross-population Elo in it, and the exchange rate becomes node-doublings
+     per sims-doubling: dimensionless, and the thing `scale_D` was for.
+     Present budgets miss parity badly (the 1600-sim rung is -225 Elo against
+     SF@4600); the implied parity points are ~1250, ~1750 and ~3050 nodes for
+     800, 1600 and 3200 sims. Re-running those three rungs at ~800 games is
+     roughly 12 GPU-hours and produces the first ladder this project has that
+     does not assume transitivity.
+
+Do (b). Do NOT publish `scale_D` x 0.69 in the meantime; see LAB-NOTES.
+
+**Also queued and NOT started: `sumofish-tune-transfer.service`.** Does the
++63.5 Elo combined-config gain survive a bigger search budget? It was measured
+entirely at 400 sims and the bot plays at ~60,000 nodes, which is the mistake
+`MCTS.c_puct_at`'s own docstring warns about. The unit exists, self-contained,
+two arms. It is second because a config gain measured head-to-head does not
+depend on the ladder, so nothing about it is blocked by the withdrawal.
+
 
 **0. DONE, and it changed what matters. `match-9m-long`** ran 100 games and
 returned +3.5 +-26.4 with 80 repetition draws; the net was promoted on held-out
