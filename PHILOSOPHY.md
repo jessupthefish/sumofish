@@ -89,6 +89,15 @@ one another. Neglecting one caps the others.
    so the bias is several times the interval. `scripts/ruler_transfer.py` runs
    the check; LAB-NOTES 2026-08-11 has the full argument.
 
+   **REPLACED 2026-08-12, in a currency the failure cannot reach.** Five rungs
+   played near parity, each reported as the Stockfish node budget it is
+   equivalent to, gives the exchange rate as **node-doublings bought per
+   doubling of simulations: 1.15 +-0.13 at 200->400 sims, 0.86, 0.50, and
+   0.49 +-0.13 at 1600->3200.** Both axes are budgets, so nothing converts
+   between populations. **The rate is not constant and a mean of it is not a
+   result**: it falls 0.66 +-0.18 across the ladder, which is diminishing
+   returns to search stated without a rating anywhere in it.
+
    **Do not quote 185.2 x 0.69 either.** The factor is measured at one place on
    the scale, and assuming it is constant is the same assumption that just
    failed. What restores a number: a ladder whose rungs are each played near

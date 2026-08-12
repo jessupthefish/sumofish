@@ -1325,3 +1325,53 @@ written the sentence calling it luck.
   be reconstructible from the per-arm directories BY A SCRIPT, or committed
   somewhere that is not ignored.
 - Guard: `tests/verify_tune_merge.py`, registered in `tests/run_all.sh`.
+
+## 2026-08-12: the ladder in budgets, and a transfer factor that goes away at parity
+
+The parity ladder ran overnight, four arms, 11h14m, and all three re-aimed rungs
+landed where they were aimed (+33.1, +37.1, -25.9 Elo). The result:
+
+    sims doubling    node-doublings of Stockfish bought
+      200 -> 400     1.15 +-0.13
+      400 -> 800     0.86 +-0.13
+      800 -> 1600    0.50 +-0.12
+     1600 -> 3200    0.49 +-0.13
+
+**The rate is not constant, and that is the finding.** It falls 0.66 +-0.18 from
+bottom to top. The old relative ladder read its four increments (189/209/206/175
+Elo) as "flat, so quote one number"; in a currency that does not depend on a
+cross-population conversion, the same engine shows plain diminishing returns.
+`parity_ladder.py` refuses to print a mean for that reason.
+
+Two things worth keeping from how this went:
+
+- **The design was justified by an assumption, and the run tested the
+  assumption for free.** The parity ladder was queued on the argument that
+  near-parity rungs need only a short slope correction, in the range where the
+  two routes already agreed. The probe arm plus every other same-config pair now
+  says the transfer factor is 0.61-0.82 on every span reaching far from parity
+  and 0.97 on the one span where both arms are near it. That was a belief when
+  the unit was written and it is evidence now. Add the arm that tests your own
+  premise; it cost 2.5 hours of a 13-hour run.
+- **The slope is wide (+-82) and the conclusion does not care.** Swapping it for
+  the far-from-parity value moves the decay from 0.66 to 0.70. Report that
+  sensitivity in the script rather than in a commit message, because the script
+  is what gets re-read.
+
+**And I reproduced the repository's own headline mistake six commits after
+documenting it.** The first pass at the transfer table grouped runs by engine
+configuration and differenced whatever shared it, which paired a `ladderWARM-*`
+arm with a fixed-harness one and printed a transfer factor of **0.09**. That is
+"+30.5, was +44.4" exactly: two runs differing in two things, read as differing
+in one. It was obvious only because 0.09 is absurd; at 0.6 it would have gone
+straight into STATE.md.
+
+- **Two runs may be differenced only if they share the engine AND the harness.**
+  `_spans()` now requires each run's `code` to descend from the ucinewgame fix
+  (`git merge-base --is-ancestor`), which is a mechanical check rather than a
+  remembered one.
+- **A config fingerprint is not a harness fingerprint.** `config.json` records
+  both, and only one of them was being read.
+- Keeping the superseded runs on disk under a distinguishing prefix (`*WARM-*`,
+  `rulerN200-*`) is right, and it also means any scan that globs broadly will
+  eventually pick one up. Filter in, do not glob and hope.

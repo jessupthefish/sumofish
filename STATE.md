@@ -122,7 +122,72 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   are ended, and there is no CPU-only repair. Kept as
 >   `runs/matches/ruler-noadj-700-vs-1400`.
 >
-> - **RUNNING as of 18:40: `sumofish-parity.service`**, the ladder re-aimed so
+> - **THE PARITY LADDER LANDED, 05:00 on 2026-08-12, and it replaces `scale_D`
+>   with a number that has no Elo in it.** All four arms ran, 11h14m, and all
+>   three re-aimed rungs landed near parity (+33.1, +37.1, -25.9), so the aim
+>   points were right and nothing needs replaying.
+>
+>   | sims | vs | rung | PARITY budget |
+>   |---|---|---|---|
+>   | 200 | SF@360 | -7.4 +-19 | 351 nodes |
+>   | 400 | SF@845 | -24.8 +-19 | 777 |
+>   | 800 | SF@1259 | **+33.1 +-18** | 1409 |
+>   | 1600 | SF@1754 | **+37.1 +-17** | 1990 |
+>   | 3200 | SF@3046 | **-25.9 +-19** | 2789 |
+>
+>   **The exchange rate, in node-doublings bought per doubling of SIMULATIONS:**
+>
+>   | 200->400 | 400->800 | 800->1600 | 1600->3200 |
+>   |---|---|---|---|
+>   | 1.15 +-0.13 | 0.86 +-0.13 | 0.50 +-0.12 | 0.49 +-0.13 |
+>
+>   **THE RATE IS NOT CONSTANT: it falls 0.66 +-0.18 from bottom to top.** Do
+>   not quote a mean of these; a mean would hide the only thing the ladder
+>   found. At the bottom a doubling of our search outruns a doubling of
+>   Stockfish's nodes; by 1600 sims it buys half of one. That is diminishing
+>   returns to search, measured without a chain, and it is the first version of
+>   this number that the transfer failure cannot reach: both axes are BUDGETS,
+>   so no cross-population Elo conversion appears anywhere in it.
+>
+>   The one conversion that remains is each rung's own Elo into its budget, and
+>   it is small by construction (every rung inside +-40 Elo, so under 0.25
+>   doublings). Swapping the near-parity slope (203.5) for the far-from-parity
+>   one (173) moves the decay from 0.66 to 0.70. The conclusion does not rest on
+>   the slope.
+>
+>   **`scale_bar` restated in the same currency: the 136M net must be worth 0.79
+>   node-doublings at equal simulations** to break even on a clock (1.61 sims
+>   doublings forgone at the top rate of 0.49). The Elo-denominated 321 +-54 stays
+>   withdrawn.
+>
+> - **The transfer factor is NOT a constant, and near parity it goes away.**
+>   The probe arm (`transfer-sims800-vs-sf2518`) plus every other same-config
+>   pair on the fixed harness, rebuilt with a harness filter:
+>
+>   | sims | span | perceived/dbl | ruler/dbl | factor | worst arm |
+>   |---|---|---|---|---|---|
+>   | 400 | 700->845 | 203.5 +-82 | 210.3 | **0.97** | 30 Elo from parity |
+>   | 800 | 1259->1970 | 212.8 +-44 | 260.2 | 0.82 | 104 |
+>   | 800 | 1259->2518 | 204.2 +-27 | 262.8 | 0.78 | 171 |
+>   | 1600 | 1754->4600 | 188.4 +-24 | 244.6 | 0.77 | 225 |
+>   | 400 | 700->1600 | 161.7 +-15 | 235.5 | 0.69 | 162 |
+>   | 3200 | 3046->10700 | 147.4 +-21 | 193.3 | 0.76 | 293 |
+>   | 400 | 845->1600 | 149.3 +-25 | 242.9 | 0.61 | 162 |
+>
+>   Every span that reaches far from parity sits at 0.61-0.82. The one span
+>   where both arms are within 30 Elo of parity is 0.97, though at +-82 on the
+>   slope that single point cannot carry much. **This is why the parity design
+>   works**, and it is now evidence rather than the assumption it was when the
+>   run was queued.
+>
+>   **First pass at this table produced a 0.09 and it was my own bug**: the scan
+>   grouped runs by engine config and not by HARNESS, so it differenced a
+>   `ladderWARM-*` arm against a fixed-harness one. That is the "+30.5, was
+>   +44.4" mistake in a new hat, six commits after the file that names it.
+>   `parity_ladder._spans()` now requires each run's `code` to descend from the
+>   ucinewgame fix.
+>
+> - **DONE, was RUNNING as of 18:40: `sumofish-parity.service`**, the ladder re-aimed so
 >   every rung is played near parity and reported as an equivalent Stockfish
 >   NODE BUDGET rather than a rating. Four arms, ~13 GPU-hours:
 >   `parity-sims800-vs-sf1259`, `parity-sims1600-vs-sf1754`,
