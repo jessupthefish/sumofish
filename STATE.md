@@ -102,6 +102,38 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   measurement against a pinned opponent, and the whole width-sweep and
 >   held-out-loss line of argument, which never touched the ladder.
 >
+> - **Adjudication is NOT the mechanism, and that closes the cheap repair.**
+>   The obvious suspect was the arbiter: ruler games end 74-87% by adjudication
+>   against the anchors' 30-35%, and adjudication is PROPOSED by the players'
+>   own eval curve, which two Stockfish instances trip far more readily than a
+>   SumoFish game does. If that were inflating the ruler, the fix would be a
+>   CPU-only re-run and the ladder would survive. Re-ran the 700-vs-1400 edge
+>   with `--no-adjudicate`, 2400 games, same seed 99, ~11 minutes of CPU:
+>
+>   | 700 -> 1400, Stockfish vs Stockfish | edge | draws |
+>   |---|---|---|
+>   | adjudicated (the ruler) | 229.3 +-16.1 | 8.8% |
+>   | played out, `--no-adjudicate` | **245.4 +-14.8** | 18.8% |
+>
+>   Difference **+16.1 +-21.9**, and the wrong sign: without the arbiter the
+>   ruler edge is if anything LARGER. Draws double and the edge does not move.
+>   So the mismatch is intrinsic to comparing a Stockfish-vs-Stockfish
+>   population with a SumoFish-vs-Stockfish one, not an artefact of how games
+>   are ended, and there is no CPU-only repair. Kept as
+>   `runs/matches/ruler-noadj-700-vs-1400`.
+>
+> - **RUNNING as of 18:40: `sumofish-parity.service`**, the ladder re-aimed so
+>   every rung is played near parity and reported as an equivalent Stockfish
+>   NODE BUDGET rather than a rating. Four arms, ~13 GPU-hours:
+>   `parity-sims800-vs-sf1259`, `parity-sims1600-vs-sf1754`,
+>   `parity-sims3200-vs-sf3046`, then `transfer-sims800-vs-sf2518`, which is not
+>   a rung but a second measurement of the transfer factor one doubling above the
+>   800-sim parity point. `scripts/parity_ladder.py --report` prints the table;
+>   200 and 400 sims are not re-run because -7.4 and -24.8 already are parity.
+>   The exchange rate it produces is **node-doublings per sims-doubling**, which
+>   has no cross-population Elo in it. A rung landing outside +-60 Elo gets
+>   re-aimed and replayed rather than corrected on paper.
+>
 > - **The FPU line at the SHIPPED `c_puct_init` is mapped, and nothing changes.**
 >   Five arms, 800 games each vs Stockfish@700n, seed 4242, at
 >   `c_puct_init=0.875`:

@@ -1278,6 +1278,16 @@ Practical rules this leaves:
   than two anchors share a configuration, which is the state this project was in
   from the day the ladder was designed until this evening.
 
+**The cheap repair was tested and does not exist.** Adjudication looked like the
+mechanism: ruler games end 74-87% by arbiter against the anchors' 30-35%, and
+the arbiter is only asked once the PLAYERS' own eval curve proposes, which two
+Stockfish instances trip far sooner than a SumoFish game does. If that were the
+inflation, re-running the ruler with `--no-adjudicate` would fix it on CPU.
+2400 games, 11 minutes: the edge went from 229.3 +-16.1 to **245.4 +-14.8**,
+difference +16.1 +-21.9 and the wrong sign, while draws doubled from 8.8% to
+18.8%. Test the cheap explanation before designing around the expensive one,
+and accept the answer when it comes back negative.
+
 **What NOT to do next: publish `scale_D` x 0.69.** The factor is measured at one
 place on the scale. Assuming it is constant across 360-11200 nodes is the same
 species of assumption as the one that just failed, and it would look like a
