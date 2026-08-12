@@ -122,6 +122,32 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   are ended, and there is no CPU-only repair. Kept as
 >   `runs/matches/ruler-noadj-700-vs-1400`.
 >
+> - **THE v6 SEARCH CONSTANTS GET BETTER WITH A BIGGER BUDGET, not worse, and
+>   this was measured on 2026-08-09 and never written down.** Head to head, v6
+>   (`c_puct_init=0.875`, `fpu=-0.05`) against the pre-v6 constants (1.25,
+>   -0.2), same nets, same seed, 8x the budget between the arms:
+>
+>   | arm | W/D/L | Elo | draws |
+>   |---|---|---|---|
+>   | `transfer-400`, 400 sims, 600 games | 166/356/78 | **+51.3 +-17.0** | 59% |
+>   | `transfer-3200`, 3200 sims, 400 games | 123/252/25 | **+86.9 +-19.6** | 63% |
+>
+>   Difference **+35.6 +-26.0, z = 2.68.** The control reproduced the
+>   vs-Stockfish estimate (+51.3 against +63.5 +-13, a 12.2 +-21 difference), so
+>   the two designs agree, and the answer arm says the gain does not decay with
+>   budget. `MCTS.c_puct_at`'s docstring warns that exploration constants tuned
+>   at one N need not transfer to another; here they transfer and then some.
+>   Draw rates 59% and 63% are high, but the unit's own blindness threshold was
+>   85% and these are well under it.
+>
+>   **This is the third time in two days that this file asserted something the
+>   archive contradicted**, after the FPU record and the "queued and NOT started"
+>   line I repeated on 08-11 without checking. `runs/matches` is the source of
+>   truth and it is 95 directories deep; STATE.md is a summary of it and drifts.
+>   `scripts/run_transfer_test.sh` now checks for a complete arm and reuses it
+>   rather than starting one, which is what caught this, and the same check
+>   belongs in front of any unit that costs GPU hours.
+>
 > - **THE PARITY LADDER LANDED, 05:00 on 2026-08-12, and it replaces `scale_D`
 >   with a number that has no Elo in it.** All four arms ran, 11h14m, and all
 >   three re-aimed rungs landed near parity (+33.1, +37.1, -25.9), so the aim
@@ -811,12 +837,11 @@ experience (see the CURRENT block). Two designs, and the second is cheaper:
 
 Do (b). Do NOT publish `scale_D` x 0.69 in the meantime; see LAB-NOTES.
 
-**Also queued and NOT started: `sumofish-tune-transfer.service`.** Does the
-+63.5 Elo combined-config gain survive a bigger search budget? It was measured
-entirely at 400 sims and the bot plays at ~60,000 nodes, which is the mistake
-`MCTS.c_puct_at`'s own docstring warns about. The unit exists, self-contained,
-two arms. It is second because a config gain measured head-to-head does not
-depend on the ladder, so nothing about it is blocked by the withdrawal.
+**DONE, and it was done on 2026-08-09: `sumofish-tune-transfer.service`.** The
+claim that stood here on 08-11, that the unit had never been started, was FALSE
+and I repeated it out loud before checking `runs/matches`. Both arms had run
+three days earlier and the answer was on disk the whole time. See the CURRENT
+block.
 
 
 **0. DONE, and it changed what matters. `match-9m-long`** ran 100 games and

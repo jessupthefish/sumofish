@@ -1375,3 +1375,55 @@ straight into STATE.md.
 - Keeping the superseded runs on disk under a distinguishing prefix (`*WARM-*`,
   `rulerN200-*`) is right, and it also means any scan that globs broadly will
   eventually pick one up. Filter in, do not glob and hope.
+
+## 2026-08-12: I started a job that had finished three days earlier
+
+`sumofish-tune-transfer.service` was described in STATE.md as queued and never
+started. I repeated that to Steven, he said start it, and the driver printed:
+
+    === transfer-400: 400 sims, 600 games ===
+        complete already (600 games), reusing:
+        166W 356D 78L  elo +51.3 +-17.0  draws 59%  (2026-08-09T17:33:27)
+    === transfer-3200: 3200 sims, 400 games ===
+        complete already (400 games), reusing:
+        123W 252D 25L  elo +86.9 +-19.6  draws 63%  (2026-08-09T23:38:39)
+
+Both arms ran on 08-09. The answer had been on disk for three days: the v6
+constants gain +35.6 +-26.0 MORE at 3200 sims than at 400, z = 2.68, so the
+tuning survives an 8x budget increase and grows with it.
+
+Only two things made this cheap instead of a wasted 7 GPU-hours, and neither was
+me remembering:
+
+- **`match.py` refuses to resume across a fingerprint change.** That is what
+  raised the flag: it would not write into an existing directory, and the reason
+  it gave named the real problem. A guard that fails LOUDLY in the one case its
+  author did not anticipate is worth more than one that silently does the right
+  thing.
+- **The driver checks for a complete arm before starting one.** I added that
+  check in the same session to reuse a control arm, for unrelated reasons, and
+  it immediately found the answer arm too.
+
+**Put an existence check in front of anything that costs GPU hours.** Read
+`runs/matches` first; it is the archive and it is 95 directories deep. STATE.md
+is a summary of the archive and it drifts, and this is the THIRD contradiction
+between the two in two days:
+
+  1. `tune-search.json` said stage 1 was skipped; five completed arms were on disk.
+  2. STATE said the four `sims-*` rungs were deliberately FAILED; they had been
+     re-run honestly (that one predates me, and the file records it).
+  3. STATE said this unit had never been started; it had run to completion.
+
+The pattern is always the same direction: the summary says a thing was not done,
+the disk says it was. Nobody writes "this ran" into the summary at the moment a
+job finishes, because the job finishes at 23:38 and the session ended at 22:00.
+
+**A cheap audit that works**: for every `runs/matches/*/status.json` with a real
+game count, grep the docs for the directory name. It over-reports, because
+plenty of runs are written up by their numbers rather than by their path, but it
+took one command and it is what found `transfer-*`.
+
+**And an honesty note on how I reported it.** I told Steven the unit was queued
+and unstarted because STATE.md said so, in a session whose entire subject was a
+number that had been published without checking the assumption under it. The
+check I was applying to the ladder was not being applied to my own inputs.
