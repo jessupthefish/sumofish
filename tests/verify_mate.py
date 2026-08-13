@@ -25,8 +25,37 @@ For each position with a forced mate in N moves for the side to move:
 Reported for `mate_distance` OFF and ON, on the same positions and seed, so the
 difference is the fix and nothing else.
 
+# The mock evaluator was hiding the answer, in both directions (2026-08-13)
+
+`--real-nets` drives the search with the deployed value and policy nets instead
+of `identity_search`'s mock. It changes both headline numbers, and the mock was
+wrong the *pessimistic* way on one and the *optimistic* way on the other:
+
+    34 forced mates, 400 sims        mock          deployed nets
+    shortest mate-in-1               22/23 -> 23/23   23/23 both
+    shortest mate-in-2                6/11 ->  6/11   11/11 both
+    proofs claimed (0 bogus)                     25          34
+    tree nodes                     55,331 -> 41,868   6,647 -> 3,185
+    tree reduction                              24%         52%
+
+So the move-choice question this file was built to answer is **saturated**: with
+a real prior the engine already plays the shortest mate in every position, with
+the fix and without it. That is not "the fix does nothing", it is "this suite
+cannot discriminate", and the reason is the cap of mate-in-2 that the exhaustive
+solver imposes. The failure `mate_distance` actually prevents -- shuffling in a
+won position until the fifty-move rule intervenes -- needs mates far longer than
+`min_mate` can enumerate, and is only visible in whole games.
+
+What the real nets DO establish is the other number: the tree is **52% smaller**,
+twice the mock's 24%, and squarely on Lc0's published ~50% for tactical
+positions. That is a CLOCK gain. A fixed-simulation match cannot see a clock
+gain by construction, which is why `runs/matches/mate-distance-400sims` is a
+lower bound and a fixed-time arm is the measurement that answers deployment.
+See `docs/OPERATING-POINT.md`.
+
 Usage:
-    tests/verify_mate.py --positions 200 --sims 400
+    tests/verify_mate.py --positions 200 --sims 400              # mock, no GPU
+    tests/verify_mate.py --positions 200 --sims 400 --real-nets  # the real answer
 """
 
 from __future__ import annotations
@@ -152,15 +181,22 @@ def preserves_minimum(fen: str, uci: str, n: int) -> bool:
     return _defended(b, n)
 
 
-def run(suite: list[tuple[str, int]], sims: int, mate_distance: bool):
+def run(suite: list[tuple[str, int]], sims: int, mate_distance: bool,
+        evaluate=None, batch: int = 32):
+    evaluate = rust_evaluate if evaluate is None else evaluate
     by_n: dict[int, list[int]] = {}
     claimed = 0
     bogus = 0
     nodes = 0
     for fen, n in suite:
         pos = core.Position(fen)
-        m = core.Mcts(batch=32, dedup=True, mate_distance=mate_distance)
-        m.search(pos, sims, rust_evaluate)
+        # `vloss_fix` matches the deployment (CHESSGPU_VLOSS_FIX=1 since
+        # 2026-07-30); `dedup` does not, and is on here because this is an
+        # oracle for proof soundness rather than a strength measurement. Both
+        # arms carry the identical setting, so it cannot favour either.
+        m = core.Mcts(batch=batch, dedup=True, vloss_fix=True,
+                      mate_distance=mate_distance)
+        m.search(pos, sims, evaluate)
         nodes += m.node_count
         best = m.best_move()
         good = bool(best) and preserves_minimum(fen, best, n)
@@ -180,12 +216,44 @@ def run(suite: list[tuple[str, int]], sims: int, mate_distance: bool):
     return ok, claimed, bogus, nodes, by_n
 
 
+def real_evaluator(value_path: str, policy_path: str, device: str, batch: int):
+    """The evaluator the bot actually plays with.
+
+    Imported lazily so the default mock path stays importable without torch,
+    CUDA or a checkpoint on disk -- `tests/run_all.sh` runs this file and must
+    not acquire a GPU dependency.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from match import load_prior, load_value  # noqa: E402
+    from sumofish.rust_mcts import make_evaluator  # noqa: E402
+
+    value = load_value(value_path, device=device)
+    policy = load_prior(policy_path, device=device)
+    return make_evaluator(policy, value, compile_nets=False, pad_to=None)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--positions", type=int, default=200)
     ap.add_argument("--sims", type=int, default=400)
     ap.add_argument("--cap", type=int, default=2, help="max mate distance in moves")
+    ap.add_argument("--real-nets", action="store_true",
+                    help="drive the search with the DEPLOYED value and policy "
+                         "nets instead of identity_search's mock. Needs the "
+                         "GPU. This is the only mode that can see move choice: "
+                         "with random priors the search rarely finds a mate-in-2 "
+                         "at all, so it rarely has a fast-versus-slow mate to "
+                         "choose between.")
+    ap.add_argument("--value", default=str(ROOT / "runs/value.pt"))
+    ap.add_argument("--policy", default=str(ROOT / "runs/policy.pt"))
+    ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--batch", type=int, default=32)
     args = ap.parse_args()
+
+    evaluate = None
+    if args.real_nets:
+        print(f"loading the deployed nets ({args.value}, {args.policy})")
+        evaluate = real_evaluator(args.value, args.policy, args.device, args.batch)
 
     print(f"building a suite of forced mates (exhaustive solver, cap {args.cap} moves)")
     suite = build_suite(args.positions, args.cap)
@@ -197,9 +265,12 @@ def main() -> int:
         dist[n] = dist.get(n, 0) + 1
     print(f"  {len(suite)} positions: " + ", ".join(f"mate in {k}: {v}" for k, v in sorted(dist.items())))
 
-    print(f"\nsearching each at {args.sims} simulations")
-    off_ok, off_claimed, off_bogus, off_nodes, off_by = run(suite, args.sims, False)
-    on_ok, on_claimed, on_bogus, on_nodes, on_by = run(suite, args.sims, True)
+    which = "the DEPLOYED nets" if args.real_nets else "the mock evaluator"
+    print(f"\nsearching each at {args.sims} simulations, with {which}")
+    off_ok, off_claimed, off_bogus, off_nodes, off_by = run(
+        suite, args.sims, False, evaluate=evaluate, batch=args.batch)
+    on_ok, on_claimed, on_bogus, on_nodes, on_by = run(
+        suite, args.sims, True, evaluate=evaluate, batch=args.batch)
 
     n = len(suite)
     print(f"  {'':18s} {'OFF':>12s} {'ON':>12s}")
@@ -230,14 +301,41 @@ def main() -> int:
     print("  tree -- most at low simulation counts, which matches Lc0's measured")
     print("  ~50% node reduction on tactical positions.")
     print()
-    print("  NOT established: any effect on move choice. The shortest-mate rate is")
-    print("  unchanged here, and the reason is the harness rather than the fix --")
-    print("  the mock evaluator returns random priors, so the search rarely finds")
-    print("  a mate-in-2 at all and therefore rarely has a fast-versus-slow mate")
-    print("  to choose between. The tell is that the mate-in-2 rate gets WORSE")
-    print("  from 400 to 2000 simulations: a real policy prior concentrates on")
-    print("  forcing moves, random noise does not. Measuring the move-choice")
-    print("  benefit needs the trained policy net, and therefore the GPU.")
+    total_off = sum(sum(v) for v in off_by.values())
+    total_on = sum(sum(v) for v in on_by.values())
+    if not args.real_nets:
+        print("  NOT established: any effect on move choice, because of the")
+        print("  HARNESS and not the fix. The mock evaluator returns random")
+        print("  priors, so the search rarely finds a mate-in-2 at all and")
+        print("  therefore rarely has a fast-versus-slow mate to choose between.")
+        print("  The tell is that the mate-in-2 rate gets WORSE from 400 to 2000")
+        print("  simulations: a real policy prior concentrates on forcing moves,")
+        print("  random noise does not.")
+        print()
+        print("  Re-run with --real-nets to answer it. That needs the GPU.")
+        return 0
+
+    print(f"  Move choice, with the deployed nets: {total_off}/{n} shortest-mate")
+    print(f"  with the fix OFF against {total_on}/{n} with it ON, over {n}")
+    print("  positions whose true minimum was established by exhaustive search.")
+    print()
+    if total_on > total_off:
+        print(f"  The fix CHANGES MOVE CHOICE, by +{total_on - total_off} positions.")
+        print("  That is a direct count and not an Elo inference, so it does not")
+        print("  depend on the measurement crisis of 2026-08-11 at all.")
+    elif total_on == total_off:
+        print("  No move-choice difference at this budget. Note what that does")
+        print("  and does not say: the tree is still smaller, which is a CLOCK")
+        print("  gain, and this suite is capped at mate-in-2. The shuffling-in-a-")
+        print("  won-position failure the fix is really for needs longer mates")
+        print("  than an exhaustive solver can enumerate here.")
+    else:
+        print(f"  The fix made move choice WORSE by {total_off - total_on}. If that")
+        print("  survives a bigger suite it is a real regression and the flag")
+        print("  should stay off regardless of what the tree size says.")
+    print()
+    print(f"  Sample size: {n} positions. A difference of one or two positions is")
+    print("  noise at this n; run --positions higher before acting on a small gap.")
     return 0
 
 
