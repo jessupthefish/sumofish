@@ -1,0 +1,26 @@
+# Guard against search tools walking multi-gigabyte binary artifacts.
+# Added 2026-08-12 after a "grep -ril" over ~/dev buffered a 34G ROS bag
+# into memory as a single line and livelocked the machine for 18 hours.
+# All of these are large, binary and reproducible. Override with --no-ignore.
+
+# ROS bags
+*.bag
+*.bag.*
+
+# Model checkpoints and weights. The suffixed forms matter: *.pt alone
+# does NOT match best.pt.dead-2026-08-02, which is 2.1G.
+*.pt
+*.pt.*
+*.pth
+*.pth.*
+*.ckpt
+*.ckpt.*
+*.safetensors
+*.onnx
+*.h5
+*.npz
+
+# Bulk datasets
+*.tfrecord
+*.parquet
+*.arrow

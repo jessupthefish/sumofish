@@ -1427,3 +1427,70 @@ took one command and it is what found `transfer-*`.
 and unstarted because STATE.md said so, in a session whose entire subject was a
 number that had been published without checking the assumption under it. The
 check I was applying to the ladder was not being applied to my own inputs.
+
+## 2026-08-13: a flag has three sources of truth, and only one of them plays chess
+
+I opened the session about to spend ~10 GPU-hours pricing "the three MCTS defect
+fixes", because STATE.md's own "Open, smaller" list holds them open. Two of the
+three were already answered, and the answers were in the same file and in the
+systemd unit.
+
+**`vloss_fix` has been deployed since 2026-07-30** at +364 Elo, W25 D7 L0.
+STATE.md said so at line 657 and said the opposite at line 994, and both lines
+had stood together for two weeks. That is the fourth contradiction between this
+file and the disk in three days, after the FPU record, the "queued and NOT
+started" line, and the transfer test that had finished three days earlier.
+
+**`dedup` did not go unmeasured either. It lost**, -168 Elo at a fixed clock,
+and the interesting part is that the number keeping it off is much weaker than
+the decision resting on it: 20 games, W0 D11 L9, measured jointly with
+`CHESSGPU_COMPILE` so neither flag has its own figure, on the warm harness, pre
+Rust default, pre `vloss_fix`, pre v6. Every confound this project has since
+found, in one measurement. It stays off regardless, because the mechanism the
+unit records does not depend on the Elo: at a fixed clock it bought 7,297
+nominal simulations against plain's 4,161 while delivering 3,464 UNIQUE
+evaluations against 4,160. A reason that survives a harness fix is worth more
+than a point estimate that does not.
+
+**I got the direction wrong twice on the way to this, in opposite directions,
+and both times from a real artefact.**
+
+  1. I read `runs/matches/*/config.json` across the archive, saw
+     `a.vloss_fix: true` on 65 of 100 runs, and concluded the v6 constants had
+     been tuned on a search the bot does not deploy. Backwards.
+  2. Then I read STATE.md's "Open, smaller" bullet and nearly concluded the
+     opposite, that the fix was built and never shipped.
+
+Both readings came from files that genuinely say what I read. The reconciliation
+is that **`config.json` records the HARNESS's flags and can never tell you what
+the bot runs**, and STATE.md is a summary that drifts. There is exactly one
+authority and it is one command:
+
+    systemctl --user show sumofish-bot.service -p Environment
+    # Environment=CHESSGPU_SIMS=100000000 CHESSGPU_CORE=rust CHESSGPU_VLOSS_FIX=1
+
+Note `show` on the RUNNING unit, not `cat` on the unit file and not the copy in
+`systemd/` in the repo, which is a source file that a `systemctl --user edit` or
+a stale `daemon-reload` can leave lying. Run it before believing any flag claim,
+including one in this paragraph.
+
+**What the archive audit IS good for**, and it took one command:
+
+    for d in runs/matches/*/; do python -c "...print config.json a/b flags..."; done
+
+It cannot resolve deployment, but it proves the arms of a comparison agree with
+each other, which is the "+30.5, was +44.4" failure. Every arm of the parity
+ladder, the anchors and the FPU sweep carries `a.vloss_fix: true`, and every
+Stockfish-vs-Stockfish ruler rung carries `false` because there is no SumoFish
+in it. That is internally consistent and it is the check worth keeping.
+
+**`tests/verify_mate.py` is an instrument honest enough to report its own
+blindness, and that is why the third fix is only half open.** It confirms 25
+proofs with 0 bogus against an independent exhaustive solver, and a 24% smaller
+tree. Then it says in its own output that it cannot see move choice, because it
+drives the core with `identity_search`'s mock evaluator and random priors rarely
+find a mate-in-2 at all. Its tell is that the mate-in-2 rate gets WORSE from 400
+to 2000 simulations, which a real policy prior would not do. An instrument that
+prints the reason its own headline number is uninformative is worth building;
+this one saved the GPU run from being designed around a metric that could not
+move.

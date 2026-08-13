@@ -918,10 +918,11 @@ that is a per-call latency observation, not an end-to-end throughput number.
 util the whole time): **2.45x games/hour**, batched vs. today's one-game-at-
 a-time. Smaller runs landed 2.16x-3.99x, noisy at low n. So: real and worth having eventually, but "close to free" overstated it --
 this is a moderate multiplier under contention, not an order of magnitude,
-and it is NOT a blocking dependency for verifying the 3 MCTS defect fixes
-(leaf dedup, virtual loss, mate distance -- see "Open, smaller" below): that
-verification is affordable on today's unbatched harness per the audit's own
-GPU-hour estimate. Production integration (adjudication, PGN/games.jsonl
+and it was never a blocking dependency for the 3 MCTS defect fixes (leaf
+dedup, virtual loss, mate distance), and none of them needed it: vloss_fix
+shipped 2026-07-30, dedup lost in 2026-07-29, and mate_distance is being priced
+on the unbatched harness on 2026-08-13 for about five GPU-hours. See "Open, smaller" below for
+where each landed. Production integration (adjudication, PGN/games.jsonl
 logging, SPRT stopping across concurrent games) is real additional work the
 sizing script does not do.
 
@@ -984,15 +985,72 @@ that many games. Keep running it; a replay is invisible to every other check.
   the old window gave 150 candidates, 94 of them BELOW us; the new one gives 114,
   only 31 below. These bounds are static and do not track the rating -- revisit
   if rapid moves more than ~150.
-- **Fixed 2026-07-30.** This line previously said "virtual loss is applied to
-  N and not Q" -- backwards. Direct code read confirmed the actual defect was
-  the opposite: virtual loss was applied via a real `backup()` call, so it
-  went straight into `value_sum` (Q) at every node on the path, not just a
-  visit count. Now behind a `vloss_fix` flag (`rust/src/tree.rs`), default
-  off, proven correct by 5 new Rust unit tests (never leaks, never touches
-  `value_sum`, and is proven to actually change search rather than being a
-  silently-inert no-op). It needs Elo, so it still waits for the ladder --
-  the fix existing is not the same as the fix being worth shipping.
+- **The virtual-loss fix is SETTLED AND DEPLOYED, and this bullet said the
+  opposite until 2026-08-13.** It read "it still waits for the ladder -- the fix
+  existing is not the same as the fix being worth shipping", while the
+  recalibration block ~330 lines above this one says in as many words that the
+  live bot has run `CHESSGPU_VLOSS_FIX=1` since 2026-07-30, where it earned its
+  default on W25 D7 L0, LOS 100%, and +364 Elo at 400 sims
+  (`runs/matches/vloss-fix-verify`). Both statements stood in this file at once
+  for two weeks, one of them holding open a piece of work the other had already
+  closed, and gating it on a ladder that has since been withdrawn, rebuilt in a
+  new currency, and withdrawn again. **This is the fourth instance of the same
+  drift in three days**, after the FPU record, the "queued and NOT started"
+  line, and the transfer test that had finished three days earlier.
+
+  The check that settles it costs one call and reads the RUNNING unit rather
+  than the file on disk, which is the distinction that matters after any
+  `systemctl --user edit`: `systemctl --user show sumofish-bot.service -p
+  Environment`. Do that before believing any flag claim in this file.
+
+  What survives from the old bullet, all still true: the defect was virtual
+  loss going through a real `backup()` into `value_sum` (Q) at every node on
+  the path, not the "applied to N and not Q" this line asserted before
+  2026-07-30; the fix is in `rust/src/tree.rs` behind five Rust unit tests that
+  prove it never leaks, never touches `value_sum`, and is not a silently-inert
+  no-op; it stays `store_true`-off in `match.py`, because `tests/identity_*.py`
+  hold the oracle identity against `sumofish.mcts` only with all three defects
+  off, and on in `lab.py`'s `match_argv`, because that is the engine that plays.
+
+- **`dedup` is not unpriced. It LOST, and the number that keeps it off is
+  weaker than the decision resting on it.** `sumofish-bot.service` cites -168
+  Elo at a fixed clock. That is **20 games, W0 D11 L9**, measured 2026-07-29
+  jointly with `CHESSGPU_COMPILE`, so neither flag has a number of its own, on
+  the warm harness later proven to hand Stockfish its hash between games,
+  before the Rust core became the default, before `vloss_fix` was deployed, and
+  before the v6 constants. Every confound this project has found since, in one
+  measurement.
+
+  **Keep it off anyway**, because the mechanism the unit records is sound and
+  does not depend on the Elo: at a fixed clock dedup bought 7,297 nominal
+  simulations against plain's 4,161 while delivering 3,464 UNIQUE evaluations
+  against plain's 4,160. It inflates the counter and shrinks what the search
+  actually knows, which is a reason that survives the harness fix. If it is
+  ever re-opened the unit is dedup ALONE, fixed clock, idle box, and the metric
+  is `unique/s` and then a game, never nps.
+
+- **`mate_distance` is the only one of the three genuinely unmeasured**, and
+  `tests/verify_mate.py` is why it is only HALF unmeasured. Run 2026-08-13 at
+  400 sims over 34 exhaustively-solved forced mates: **25 proofs claimed, 0
+  bogus** against an independent exhaustive solver rather than against the
+  engine's own word, and the tree **24% smaller** (55,331 nodes to 41,868).
+
+  What that oracle cannot see is MOVE CHOICE, and the reason is the harness and
+  not the fix: it drives the Rust core with the mock evaluator from
+  `identity_search`, whose random priors mean the search rarely finds a
+  mate-in-2 at all and therefore rarely has a fast-versus-slow mate to choose
+  between. The tell is in the script's own output, and it is worth keeping as a
+  worked example of an instrument reporting on itself: the mate-in-2 rate gets
+  WORSE from 400 to 2000 simulations. A real policy prior concentrates on
+  forcing moves and would not do that.
+
+  **Priced on the GPU 2026-08-13: `runs/matches/mate-distance-400sims`**, ON vs
+  OFF head to head, 2000 games at 400 sims, seed 4242, both arms carrying the
+  deployed `vloss_fix` and the shipped v6 constants, `--no-sprt` so the
+  interval is an interval and not a stopped-boundary artefact. Fixed SIMULATIONS
+  deliberately, which makes the result a **lower bound** on the deployed value:
+  the 24% tree reduction is a clock gain, and a fixed-simulation match is blind
+  to it by construction.
 - A blocking pre-push hook running `verify_replays.py --check`,
   `tests/verify_data.py`, and `tests/run_all.sh`.
 - Write down the operating point: opponent pool, time control, and how the
