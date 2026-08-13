@@ -88,7 +88,14 @@ from sumofish.hlgauss import HLGauss  # noqa: E402
 from sumofish.mcts import MCTS  # noqa: E402
 from sumofish.model import ChessTransformer, ModelConfig  # noqa: E402
 from sumofish.rules import terminal_value, terminal_value_legacy  # noqa: E402
-from sumofish.rust_mcts import select_mcts_class  # noqa: E402
+from sumofish.rust_mcts import select_mcts_class
+from sumofish.uci import Limits
+# The SAME time management the bot runs, imported rather than reimplemented:
+# a copy would drift, and the whole point of --tc is to exercise the
+# deployed code path.
+from sumofish.engines.search_engine import (
+    INSTAMOVE_SECONDS, decided, think_time,
+)  # noqa: E402
 from sumofish.value_policy import ValuePolicy  # noqa: E402
 
 # The match statistics live in `elo.py` so that `lab.py` can read a result
@@ -105,6 +112,50 @@ from elo import (  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # players
+
+
+class Clock:
+    """A real game clock: base plus increment, per side, in seconds.
+
+    Why this exists (2026-08-13): every arm in `runs/matches` is fixed-
+    simulation or fixed-movetime, and the deployed engine is neither. It is
+    clock-bound, and `docs/OPERATING-POINT.md` measures the gap at 9.2
+    doublings of search. Fixed movetime also cannot express the thing early
+    stopping is FOR -- time saved on one move raising the budget of later ones
+    -- because each move's allowance is independent under it.
+
+    Times are seconds here and milliseconds in `Limits`, matching UCI. The
+    conversion happens in `limits()` and nowhere else, because a factor of 1000
+    applied in two places is a factor of 1000 applied in one of them.
+    """
+
+    def __init__(self, base: float, increment: float):
+        self.base = base
+        self.increment = increment
+        self.remaining = {chess.WHITE: base, chess.BLACK: base}
+        self.spent = {chess.WHITE: 0.0, chess.BLACK: 0.0}
+
+    def limits(self) -> Limits:
+        return Limits(
+            wtime=int(self.remaining[chess.WHITE] * 1000),
+            btime=int(self.remaining[chess.BLACK] * 1000),
+            winc=int(self.increment * 1000),
+            binc=int(self.increment * 1000),
+        )
+
+    def charge(self, side: bool, elapsed: float) -> bool:
+        """Bill `side` for a move. Returns False if it flagged.
+
+        The increment is added AFTER the deduction and only if the side did not
+        flag, which is the FIDE rule and also the only order that lets a player
+        lose on time in a position with an increment.
+        """
+        self.remaining[side] -= elapsed
+        self.spent[side] += elapsed
+        if self.remaining[side] < 0:
+            return False
+        self.remaining[side] += self.increment
+        return True
 
 
 @dataclass
@@ -145,6 +196,22 @@ class Spec:
     # this harness before either earns a default.
     mate_distance: bool = False
     vloss_fix: bool = False
+    # Time management, exercised only under --tc. Both are OFF in deployment as
+    # of 2026-08-13 and both exist to be priced here, which was impossible
+    # before --tc: `Player.move` calls `mcts.search()` directly and never
+    # touched `search_engine.choose`, so `think_time` was not in the loop at
+    # all and a fixed movetime cannot express "banked time raises later moves'
+    # budgets", which is early stopping's entire payoff.
+    instamove: bool = False
+    early_stop: bool = False
+    # True under --tc. Like `movetime`, it means the CLOCK stops the search, so
+    # the simulation cap must not also bind -- see the comment at the
+    # `simulations=` argument below, which documents this exact bug happening
+    # once already for --time. It happened again for --tc, and was caught by a
+    # 2-game smoke test in which side A spent 3x side B's clock: A took the
+    # sliced search path and ran to its deadline while B stopped at 400 sims.
+    # The match was measuring "400 sims vs clock-bound", not the flags.
+    clocked: bool = False
     # Set (not None) makes this side an external UCI engine (Stockfish) at a
     # fixed node budget instead of the neural MCTS. See `Player.__init__` and
     # the Arbiter docstring above: fixed NODES, full strength, is the same
@@ -156,13 +223,20 @@ class Spec:
             return f"stockfish nodes={self.stockfish_nodes} (full strength, node-limited)"
         if self.searchless:
             return f"value={self.value} searchless"
-        budget = f"{self.movetime}s" if self.movetime else f"{self.sims} sims"
+        if self.clocked:
+            budget = "clock"
+        elif self.movetime:
+            budget = f"{self.movetime}s/move"
+        else:
+            budget = f"{self.sims} sims"
         flags = "".join(
             c for c, on in (
                 ("D", self.dedup),
                 ("C", self.compile_nets),
                 ("M", self.mate_distance),
                 ("V", self.vloss_fix),
+                ("I", self.instamove),
+                ("E", self.early_stop),
             ) if on
         )
         return (
@@ -268,7 +342,7 @@ class Player:
                 c_puct=spec.c_puct,
                 c_puct_init=spec.c_puct_init,
                 fpu=spec.fpu,
-                simulations=10**9 if spec.movetime else spec.sims,
+                simulations=10**9 if (spec.movetime or spec.clocked) else spec.sims,
                 batch=spec.batch,
                 reuse=spec.reuse,
                 dedup=spec.dedup,
@@ -309,7 +383,7 @@ class Player:
                 # applied an equal-TIME bar. `smoke.py` and `bench_search.py`
                 # already write 10**9 for exactly this reason; this was the one
                 # place that forgot.
-                simulations=10**9 if spec.movetime else spec.sims,
+                simulations=10**9 if (spec.movetime or spec.clocked) else spec.sims,
                 batch=spec.batch,
                 reuse=spec.reuse,
                 terminal=terminal_value_legacy if spec.legacy_draws else terminal_value,
@@ -382,13 +456,33 @@ class Player:
         if reset is not None:
             reset()
 
-    def move(self, board: chess.Board) -> tuple[chess.Move, float]:
+    def move(self, board: chess.Board,
+             clock: "Clock | None" = None) -> tuple[chess.Move, float]:
+        """Play a move. `clock` is the live game clock under --tc, else None.
+
+        With a clock, the neural side goes through `search_engine.think_time`
+        -- the SAME function the bot uses, not a copy -- so instamove and early
+        stopping are exercised exactly as deployed. Without one the behaviour is
+        unchanged from before --tc existed.
+        """
         if self.engine is not None:
             import chess.engine
 
+            limit = (
+                chess.engine.Limit(
+                    white_clock=clock.remaining[chess.WHITE],
+                    black_clock=clock.remaining[chess.BLACK],
+                    white_inc=clock.increment, black_inc=clock.increment,
+                )
+                if clock is not None
+                # Fixed NODES, never depth and never Skill Level: the Arbiter
+                # docstring gives the reasoning and a playing side is held to
+                # the same rule.
+                else chess.engine.Limit(nodes=self.spec.stockfish_nodes)
+            )
             result = self.engine.play(
                 board,
-                chess.engine.Limit(nodes=self.spec.stockfish_nodes),
+                limit,
                 info=chess.engine.INFO_SCORE,
                 # Changing this token is what makes python-chess emit
                 # `ucinewgame`. See new_game().
@@ -407,12 +501,55 @@ class Player:
         if self.mcts is None:
             ranked = self.value.rank_moves(board)
             return ranked[0][0], ranked[0][1]
-        deadline = (
-            time.perf_counter() + self.spec.movetime if self.spec.movetime else None
-        )
-        root, visits = self.mcts.search(board, deadline=deadline)
+
+        should_stop = None
+        if clock is not None:
+            budget = think_time(clock.limits(), board.turn)
+            if self.spec.instamove and board.legal_moves.count() == 1:
+                budget = min(budget, INSTAMOVE_SECONDS)
+            deadline = time.perf_counter() + budget
+            if self.spec.early_stop:
+                started = time.perf_counter()
+
+                def should_stop(pairs, done, remaining):
+                    return decided([n for _, n in pairs], done,
+                                   time.perf_counter() - started, remaining, budget)
+        else:
+            deadline = (
+                time.perf_counter() + self.spec.movetime
+                if self.spec.movetime else None
+            )
+
+        kwargs = {}
+        if should_stop is not None:
+            # Only the Rust wrapper accepts it, and only it is ever configured
+            # with early_stop -- see the guard in main(). Passed conditionally
+            # so the Python core keeps working as the identity oracle.
+            kwargs["should_stop"] = should_stop
+        root, visits = self.mcts.search(board, deadline=deadline, **kwargs)
         move = max(visits.items(), key=lambda kv: kv[1])[0]
         return move, root.q
+
+    def warmup(self, seconds: float = 2.0) -> None:
+        """Compile the CUDA kernels before the first move that is charged for.
+
+        Deliberately NOT `self.move(chess.Board())`, which is what this used to
+        be. That call takes its budget from the match's mode, and under --tc
+        the mode is "the clock decides" -- so with no clock passed it got
+        `deadline=None` on top of `simulations=10**9` and searched forever. The
+        first --tc smoke test hung in the warmup before playing a single move.
+
+        A warmup has nothing to do with the match's budget: its job is to make
+        the first real search pay for arithmetic rather than for compilation.
+        So it states its own bound and takes it from nothing else.
+        """
+        if self.engine is not None:
+            self.move(chess.Board())      # a UCI handshake, already bounded
+            return
+        if self.mcts is None:
+            self.value.rank_moves(chess.Board())
+            return
+        self.mcts.search(chess.Board(), deadline=time.perf_counter() + seconds)
 
     def close(self) -> None:
         if self.engine is not None:
@@ -603,6 +740,7 @@ def play_game(
     adj_plies: int,
     arbiter: "Arbiter | None" = None,
     arbiter_id: str | None = None,
+    tc: tuple[float, float] | None = None,
 ) -> dict:
     """Play one game from a book position and return how it ended.
 
@@ -627,6 +765,7 @@ def play_game(
     # error is guaranteed.
     curve: list[float] = []
     started = time.perf_counter()
+    clock = Clock(*tc) if tc is not None else None
 
     while True:
         outcome = board.outcome(claim_draw=True)
@@ -657,8 +796,19 @@ def play_game(
                     break
 
         player = white if board.turn == chess.WHITE else black
-        move, wp = player.move(board)
-        curve.append(wp if board.turn == chess.WHITE else 1.0 - wp)
+        mover = board.turn
+        move_started = time.perf_counter()
+        move, wp = player.move(board, clock)
+        if clock is not None and not clock.charge(mover, time.perf_counter() - move_started):
+            # Losing on time is a real result and is recorded as one. It is also
+            # a LOUD one: think_time is explicitly conservative (a thirtieth of
+            # what remains, capped at a third) so a flag here means either the
+            # budget rule is wrong or a move overran its deadline, and both are
+            # worth failing visibly rather than absorbing into the draw rate.
+            result = "0-1" if mover == chess.WHITE else "1-0"
+            reason = "time-forfeit"
+            break
+        curve.append(wp if mover == chess.WHITE else 1.0 - wp)
         board.push(move)
 
     return {
@@ -679,6 +829,15 @@ def play_game(
         # do. Four bytes a ply. Storing it costs nothing and not storing it
         # means the question cannot be asked retrospectively.
         "curve": [round(p, 4) for p in curve],
+        # Clock usage per side, seconds, under --tc only. This is the raw
+        # material for pricing time management: instamove and early stopping
+        # are supposed to show up here as time BANKED, and if a flag is on and
+        # this does not move, the flag is not reaching the search.
+        "clock": ({"white_spent": round(clock.spent[chess.WHITE], 2),
+                   "black_spent": round(clock.spent[chess.BLACK], 2),
+                   "white_left": round(clock.remaining[chess.WHITE], 2),
+                   "black_left": round(clock.remaining[chess.BLACK], 2)}
+                  if clock is not None else None),
         # What was actually playing. A match spans hours and the working tree
         # is editable throughout; without this, a match that straddles an edit
         # is indistinguishable from one that did not. Cheap insurance against
@@ -734,7 +893,16 @@ def main() -> None:
                          "and every match ran the hardcoded 1.25.")
     ap.add_argument("--fpu", type=float, default=-0.05)
     ap.add_argument("--time", type=float, default=None,
-                    help="seconds per move; overrides --sims when set")
+                    help="seconds per MOVE; overrides --sims when set. This is "
+                         "not a game clock -- see --tc, which is.")
+    ap.add_argument("--tc", default=None, metavar="BASE+INC",
+                    help="a real game clock in seconds, e.g. '60+1'. Overrides "
+                         "--sims and --time. This is the only mode that "
+                         "exercises search_engine.think_time, and therefore the "
+                         "only one that can price --a-instamove/--a-early-stop: "
+                         "under --time each move's allowance is independent, so "
+                         "time saved on one move goes nowhere, which is exactly "
+                         "what early stopping exists to exploit.")
 
     for side in ("a", "b"):
         ap.add_argument(f"--{side}-value")
@@ -810,6 +978,14 @@ def main() -> None:
                         help="prefer the shortest proven mate instead of "
                              "backing up mate-in-2 and mate-in-14 identically "
                              "(rust only)")
+        ap.add_argument(f"--{_s}-instamove", action="store_true",
+                        help="spend 50 ms rather than the full budget when "
+                             "there is only one legal move (--tc only)")
+        ap.add_argument(f"--{_s}-early-stop", action="store_true",
+                        help="stop once the runner-up cannot be caught even if "
+                             "every remaining simulation went to it (--tc only, "
+                             "rust core only). Provably cannot change which "
+                             "move is played, only when.")
         ap.add_argument(f"--{_s}-vloss-fix", action="store_true",
                         help="virtual loss affects only the PUCT selection "
                              "denominator, not the backed-up value_sum "
@@ -909,10 +1085,47 @@ def main() -> None:
             compile_nets=getattr(args, f"{side}_compile"),
             mate_distance=getattr(args, f"{side}_mate_distance"),
             vloss_fix=getattr(args, f"{side}_vloss_fix"),
+            instamove=getattr(args, f"{side}_instamove"),
+            early_stop=getattr(args, f"{side}_early_stop"),
+            clocked=bool(args.tc),
             stockfish_nodes=getattr(args, f"{side}_stockfish_nodes"),
         )
 
     a, b = spec("a"), spec("b")
+
+    tc = None
+    if args.tc:
+        try:
+            base_s, inc_s = (float(x) for x in args.tc.replace("/", "+").split("+"))
+        except ValueError:
+            print(f"--tc must be BASE+INC in seconds, e.g. '60+1'; got {args.tc!r}",
+                  file=sys.stderr)
+            return 2
+        if base_s <= 0 or inc_s < 0:
+            print(f"--tc needs a positive base and a non-negative increment; "
+                  f"got {base_s}+{inc_s}", file=sys.stderr)
+            return 2
+        tc = (base_s, inc_s)
+        print(f"time control: {base_s:g}+{inc_s:g} (a real clock; "
+              f"think_time is in the loop)")
+
+    # A flag that cannot reach the search is worse than one that is off, because
+    # it produces a null result that reads as "the feature does not help". Both
+    # of these are silently inert without --tc, and early stopping additionally
+    # needs the Rust core, whose search() is the only one with a should_stop
+    # parameter. Refuse rather than run a match that cannot measure its subject.
+    for side, spec_ in (("a", a), ("b", b)):
+        if (spec_.instamove or spec_.early_stop) and tc is None:
+            print(f"--{side}-instamove/--{side}-early-stop do nothing without "
+                  f"--tc: without a game clock `think_time` is never called and "
+                  f"banked time has nowhere to go. Refusing to run a match that "
+                  f"cannot measure what it was asked to measure.", file=sys.stderr)
+            return 2
+        if spec_.early_stop and spec_.core != "rust":
+            print(f"--{side}-early-stop needs the rust core; sumofish.mcts."
+                  f"search has no should_stop parameter.", file=sys.stderr)
+            return 2
+
     if args.no_adjudicate:
         args.adjudicate_wp, args.adjudicate_plies = 2.0, 10**9
 
@@ -1032,10 +1245,10 @@ def main() -> None:
         "a": Player(a, args.device, stockfish_path=args.stockfish_path),
         "b": Player(b, args.device, stockfish_path=args.stockfish_path),
     }
-    # Warm the kernels before the first timed move, so a --time match does not
-    # charge one side for CUDA's first-call latency.
+    # Warm the kernels before the first timed move, so a --time or --tc match
+    # does not charge one side for CUDA's first-call latency.
     for p in players.values():
-        p.move(chess.Board())
+        p.warmup()
 
     # Every record, because the pair statistics need the colour-swapped partner
     # and not just a running W/D/L.
@@ -1063,7 +1276,7 @@ def main() -> None:
                 rec = play_game(
                     white, black, openings[pair],
                     args.max_plies, args.adjudicate_wp, args.adjudicate_plies,
-                    arbiter, arbiter_id,
+                    arbiter, arbiter_id, tc,
                 )
                 # Score from A's point of view, which is what everything below
                 # counts. This is the one place the colour swap is undone.

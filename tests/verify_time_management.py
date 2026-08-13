@@ -31,8 +31,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import chess  # noqa: E402
+
 from sumofish.engines.search_engine import (  # noqa: E402
     EARLY_STOP_MIN_FRACTION, EARLY_STOP_SAFETY, INSTAMOVE_SECONDS, decided,
+    think_time,
 )
 
 
@@ -94,6 +97,45 @@ def main() -> int:
     check(decided([100_000 - 1, 1], 100_000, 0.95 * budget, 0.05 * budget, budget),
           "the rule never fires even in the most lopsided possible position, "
           "which would make early stopping dead code")
+
+    # -- the game clock ----------------------------------------------------
+    #
+    # match.py's Clock is what makes any of the above measurable: --time is
+    # seconds per MOVE, and under it time saved on one move goes nowhere, which
+    # is exactly what early stopping exists to exploit.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from match import Clock  # noqa: E402
+
+    c = Clock(60.0, 1.0)
+    check(c.remaining[chess.WHITE] == 60.0 and c.remaining[chess.BLACK] == 60.0,
+          "both sides start on the base time")
+
+    # A normal move: bill it, then add the increment.
+    check(c.charge(chess.WHITE, 5.0), "a 5s move on a 60s clock must not flag")
+    check(abs(c.remaining[chess.WHITE] - 56.0) < 1e-9,
+          f"60 - 5 + 1 should be 56, got {c.remaining[chess.WHITE]}")
+    check(abs(c.spent[chess.WHITE] - 5.0) < 1e-9, "spent must track the raw cost")
+    check(c.remaining[chess.BLACK] == 60.0, "charging one side must not touch the other")
+
+    # The increment is added AFTER the deduction and only on survival. Any other
+    # order makes it impossible to lose on time in a game with an increment.
+    c2 = Clock(10.0, 5.0)
+    check(not c2.charge(chess.WHITE, 12.0),
+          "overrunning the clock must flag even when the increment would cover it")
+    check(c2.remaining[chess.WHITE] < 0,
+          "a flagged clock stays negative rather than being topped up")
+
+    # Exactly on the buzzer is not a flag.
+    c3 = Clock(10.0, 0.0)
+    check(c3.charge(chess.WHITE, 10.0), "spending exactly the clock must not flag")
+
+    # Limits are milliseconds, converted in one place only.
+    lim = Clock(60.0, 1.5).limits()
+    check(lim.wtime == 60_000 and lim.btime == 60_000,
+          f"clock -> Limits must be ms, got wtime={lim.wtime}")
+    check(lim.winc == 1500 and lim.binc == 1500,
+          f"increment -> Limits must be ms, got winc={lim.winc}")
+    check(think_time(lim, chess.WHITE) > 0, "think_time must accept a Clock's Limits")
 
     check(INSTAMOVE_SECONDS > 0,
           "a forced move gets a SMALL budget, not zero: rust/src/tree.rs "
