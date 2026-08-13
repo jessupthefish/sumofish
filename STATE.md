@@ -1143,15 +1143,36 @@ that many games. Keep running it; a replay is invisible to every other check.
   Ponder is still untouched and is a different kind of change: it searches on the
   opponent's clock, so it interacts with `concurrency: 2` on one GPU.
 
-- **Give `match.py` a real game clock (base + increment).** Needed to price
-  instamove and early stopping at all, per the item above. It also opens the
-  only route this project has to measuring anywhere near its own operating
-  point: every arm in the archive is fixed-simulation, deployment is
-  clock-bound, and `docs/OPERATING-POINT.md` puts the gap at 9.2 doublings.
-  A full 15+10 game is ~22 minutes, so this wants a fast TC (60+1 or similar)
-  that exercises the identical code path at a fifteenth of the cost. What it
-  cannot do is make a fast-TC number an absolute; it makes the MECHANISM
-  measurable, which is what instamove and early stopping need.
+- **DONE 2026-08-13: `match.py --tc BASE+INC`**, a real per-side clock with
+  increment, routed through the SAME `think_time` the bot uses (imported, not
+  reimplemented, so it cannot drift). This is what makes instamove and early
+  stopping measurable at all, and it is the only route this project has toward
+  measuring near its own operating point: every arm in the archive is
+  fixed-simulation and deployment is clock-bound, 9.2 doublings away.
+
+  Verified on a 4-game smoke test: the arm with both flags used **96% of the
+  other's clock**, consistently in every game. That is the mechanism, not an Elo
+  number, and 4 games cannot be one.
+
+  **Two bugs, both caught by running it and neither by reading it**, and both
+  worth remembering because they are the same shape:
+  1. `simulations=10**9 if spec.movetime else spec.sims` still bound under
+     `--tc`, so both sides stopped at 400 sims while the flagged side, taking
+     the sliced search path, ran on to its deadline. It spent 3x the other's
+     clock and the match was measuring "400 sims vs clock-bound". **The comment
+     on that exact line already documents this bug happening once for `--time`.**
+  2. The kernel warmup was `p.move(chess.Board())`, which takes its budget from
+     the match's mode. Under `--tc` that mode is "the clock decides", so with no
+     clock it got `deadline=None` on top of `simulations=10**9` and searched
+     forever. The first `--tc` run never played a move.
+
+  Both flags now REFUSE rather than run inert: `--a-instamove`/`--a-early-stop`
+  without `--tc` exits 2, and early stopping additionally requires the rust
+  core. Per-side clock usage is recorded per game, so a flag that is on and does
+  not move the clock is visibly not reaching the search.
+
+  What a fast TC cannot do is make its number an absolute. It makes the
+  MECHANISM measurable, which is what these two need.
 - The value net enables resignation, draw offers, and calibrated difficulty.
 
 **Numbers worth remembering:**
