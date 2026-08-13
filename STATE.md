@@ -1127,9 +1127,31 @@ that many games. Keep running it; a replay is invisible to every other check.
   move one of a live game after a `CHESSGPU_CORE=python` rollback, not the
   silent no-op the other four RUST_ONLY_FLAGS are.
 
-  **Neither has an Elo number and neither ships without one.** Ponder is still
-  untouched, and is a different kind of change: it searches on the opponent's
-  clock, so it interacts with `concurrency: 2` on one GPU.
+  **Neither has an Elo number, neither ships without one, and THE HARNESS
+  CANNOT CURRENTLY PRODUCE ONE.** `scripts/match.py --time` is seconds per MOVE,
+  not a game clock, and `Player.move` calls `self.mcts.search(board,
+  deadline=...)` directly: it never goes through `search_engine.choose`, so
+  `think_time` and everything built on it is not exercised by any match this
+  project can run. Instamove would still fire but its saving would go nowhere,
+  and early stopping's whole payoff is that the banked time raises later moves'
+  budgets, which a fixed movetime cannot express.
+
+  That is almost certainly why time management was never built: it could not be
+  priced, so it never came up. It is now the top item under "Open, smaller"
+  because it gates more than itself, see the game-clock item below.
+
+  Ponder is still untouched and is a different kind of change: it searches on the
+  opponent's clock, so it interacts with `concurrency: 2` on one GPU.
+
+- **Give `match.py` a real game clock (base + increment).** Needed to price
+  instamove and early stopping at all, per the item above. It also opens the
+  only route this project has to measuring anywhere near its own operating
+  point: every arm in the archive is fixed-simulation, deployment is
+  clock-bound, and `docs/OPERATING-POINT.md` puts the gap at 9.2 doublings.
+  A full 15+10 game is ~22 minutes, so this wants a fast TC (60+1 or similar)
+  that exercises the identical code path at a fifteenth of the cost. What it
+  cannot do is make a fast-TC number an absolute; it makes the MECHANISM
+  measurable, which is what instamove and early stopping need.
 - The value net enables resignation, draw offers, and calibrated difficulty.
 
 **Numbers worth remembering:**

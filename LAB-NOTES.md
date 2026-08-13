@@ -1494,3 +1494,76 @@ to 2000 simulations, which a real policy prior would not do. An instrument that
 prints the reason its own headline number is uninformative is worth building;
 this one saved the GPU run from being designed around a metric that could not
 move.
+
+## 2026-08-13: three flags, three different reasons the evidence did not say what it looked like
+
+Continuing the session above. Each of the three MCTS flags turned out to be
+mis-documented, and no two for the same reason.
+
+**`vloss_fix`: the file disagreed with itself.** Covered above.
+
+**`dedup`: the counter does not count what its name says.** The -168 Elo keeping
+it off is justified in `sumofish-bot.service` by a mechanism: dedup delivered
+"3,464 UNIQUE evaluations against plain's 4,160", 17% less knowledge of the
+position. `rust/src/tree.rs:558` is where that falls apart:
+
+    self.evaluations += pending.len() as u64;
+    self.unique_evaluations += distinct.len() as u64;
+
+`distinct` is the deduplicated set. **With dedup OFF, no deduplication happens,
+so `unique_evaluations` equals the row count by construction** and is not a
+distinct-position count at all. Plain's 4,160 is just its simulation count
+wearing a different name. Nobody ever measured plain's duplicates, so the two
+numbers were never comparable.
+
+The like-for-like version, Rust against Rust at v6 constants with `vloss_fix`
+on: **byte-identical root visit vectors 12/12 at batch 32, 64 and 256, sending
+54.2% fewer network rows at batch 64.** Same tree, same leaves, same knowledge,
+half the bill. And the 07-29 measurement predates `vloss_fix`, which is exactly
+what stops parallel paths collapsing onto one leaf: with the real nets at 800
+sims and batch 64, the collapsed fraction goes from **72.9% off to 43.8% on**.
+
+Generalising: **a metric whose meaning depends on the flag being tested cannot
+compare the two arms of that test.** Check what the counter increments before
+quoting a ratio of it.
+
+**`mate_distance`: the harness could not see the thing it was built to see.**
+Covered in the commit. The pattern worth keeping is that `tests/verify_mate.py`
+printed the reason its own headline number was uninformative, and was right.
+
+**And a fourth, structural one: the match harness cannot measure time management
+at all.** `scripts/match.py --time` is SECONDS PER MOVE, not a game clock, and
+`Player.move` calls `self.mcts.search(board, deadline=...)` directly. It never
+goes through `search_engine.choose`, so `think_time`, and therefore instamove
+and early stopping, are not exercised by any match this project can run. That is
+very likely why time management was never built: there was no way to price it,
+so it never came up. **Before building a feature, check that the harness can see
+it** -- and note this one is invisible in the good way, silently, with every test
+passing.
+
+## 2026-08-13: two pipeline traps in one command, one of them already in this file
+
+Ran the suite as:
+
+    bash tests/run_all.sh 2>&1 | tail -45
+
+with `run_in_background`. Two separate failures, and the file already warns about
+the first:
+
+1. **A backgrounded pipeline ending in `tail` writes NOTHING until it finishes.**
+   The output file sat at 0 bytes for ten minutes, which reads exactly like a job
+   that died on startup. This is already in the global CLAUDE.md, dated
+   2026-08-11, and I did it anyway.
+2. **A pipeline's exit code is the LAST command's.** `tail` succeeds
+   unconditionally, so the `exit code 0` I got back said nothing whatsoever about
+   whether the suite passed, and I very nearly reported a green suite on it.
+
+The suite had in fact passed, and the evidence for that was structural rather
+than the exit code: `run_all.sh` sets `-euo pipefail` at line 54, so it aborts at
+the first failure, and the captured tail ended with the output of its final
+command. Re-ran without the pipe to get a real exit code rather than argue from
+inference.
+
+**Never pipe a test runner into anything.** Redirect to a file and read the file.
+If output volume is the worry, the fix is `tail` on the FILE afterwards, which
+costs nothing and keeps both the exit code and the full log.
