@@ -1021,13 +1021,34 @@ that many games. Keep running it; a replay is invisible to every other check.
   before the v6 constants. Every confound this project has found since, in one
   measurement.
 
-  **Keep it off anyway**, because the mechanism the unit records is sound and
-  does not depend on the Elo: at a fixed clock dedup bought 7,297 nominal
-  simulations against plain's 4,161 while delivering 3,464 UNIQUE evaluations
-  against plain's 4,160. It inflates the counter and shrinks what the search
-  actually knows, which is a reason that survives the harness fix. If it is
-  ever re-opened the unit is dedup ALONE, fixed clock, idle box, and the metric
-  is `unique/s` and then a game, never nps.
+  **I wrote "keep it off anyway, the mechanism is sound" here earlier on
+  2026-08-13, and then measured the mechanism and it is not.** The unit's
+  argument is that dedup delivered "3,464 UNIQUE evaluations against plain's
+  4,160", i.e. 17% less knowledge of the position. That comparison does not
+  hold: **`unique_evaluations` counts ROWS SENT** (`rust/src/tree.rs:558`), so
+  with dedup OFF it equals the leaf-visit count by construction and is not a
+  distinct-position count at all. Nothing ever measured plain's duplicates. It
+  is a deduplicated distinct-count against a non-deduplicated row-count.
+
+  The like-for-like version is now `tests/verify_dedup.py` section 3, Rust
+  against Rust at v6 constants with `vloss_fix` on, which is the search that
+  actually plays: **root visit vectors byte-identical 12/12 at batch 32, 64 and
+  256, while sending 54.2% fewer network rows at batch 64.** Identical trees
+  mean both arms visit the same leaves and hold the same knowledge. Dedup pays
+  for about half as many of them.
+
+  The other half of the 07-29 measurement is stale in the way everything from
+  that week is: it predates `vloss_fix`, which is precisely the mechanism that
+  stops parallel paths collapsing onto one leaf. Measured 2026-08-13 with the
+  real nets at 800 sims and batch 64, the collapsed fraction falls from **72.9%
+  with `vloss_fix` off to 43.8% with it on**, and dedup ran ~11% faster on that
+  workload.
+
+  **So the -168 is not trustworthy and dedup is a live question again.** The
+  unit is dedup ALONE, fixed clock, idle box, on the deployed engine. It stays
+  off until that runs, because "the old verdict is unsound" is not the same
+  claim as "the flag is good", and this file has been burned by that exact
+  substitution before.
 
 - **`mate_distance` is the only one of the three genuinely unmeasured**, and
   `tests/verify_mate.py` is why it is only HALF unmeasured. Run 2026-08-13 at

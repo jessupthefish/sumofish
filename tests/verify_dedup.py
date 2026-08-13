@@ -33,6 +33,33 @@ from sumofish.mcts import MCTS  # noqa: E402
 from identity_search import MockPolicy, MockValuePolicy, corpus, rust_evaluate  # noqa: E402
 
 
+def deployed(moves, sims, batch):
+    """Rust vs Rust at the DEPLOYED search, dedup the only difference.
+
+    `one()` below can only run at pre-v6 constants with every defect off,
+    because it compares against `sumofish.mcts`, and that identity holds only
+    there. So it says nothing about the search that actually plays. This does:
+    v6 constants and vloss_fix on, which is the live configuration.
+
+    The mock evaluator is deliberate and load-bearing. With the real nets dedup
+    changes the ROW COUNT of each forward pass, and the network is not
+    batch-shape invariant (`scripts/batch_invariance.py`: priors move on ~250 of
+    256 positions once a pass carries 44+ rows), so the two arms would differ
+    for float reasons and tell you nothing about the tree. The mock is
+    batch-shape invariant by construction, which isolates the question.
+    """
+    out = {}
+    for dedup in (False, True):
+        pos = core.Position()
+        for u in moves:
+            pos.push_uci(u)
+        m = core.Mcts(c_puct=2.0, c_puct_base=19652.0, c_puct_init=0.875,
+                      fpu=-0.05, batch=batch, dedup=dedup, vloss_fix=True)
+        out[dedup] = (m.search(pos, sims, rust_evaluate),
+                      m.evaluations, m.unique_evaluations)
+    return out
+
+
 def one(moves, sims, batch):
     py_board = chess.Board()
     for u in moves: py_board.push(chess.Move.from_uci(u))
@@ -84,11 +111,54 @@ def main() -> int:
         print(f"  {batch:>6} {args.sims:>6} {ev:>8,} {un:>8,} {dup:>10.1f}%")
 
     print()
-    if bad_on or bad_off:
+    print("3. THE DEPLOYED SEARCH: dedup ON vs OFF at v6 constants, vloss_fix=1")
+    print("   (section 1 can only run with every defect OFF, so it cannot see this)")
+    bad_dep = 0
+    print(f"  {'batch':>6} {'identical':>12} {'rows':>10} {'leaf visits':>12} {'saved':>8}")
+    for batch in (32, 64, 256):
+        same = 0
+        tot_e = tot_u = 0
+        for moves in games:
+            out = deployed(moves, args.sims, batch)
+            if out[False][0] == out[True][0]:
+                same += 1
+            tot_e += out[True][1]
+            tot_u += out[True][2]
+        bad_dep += len(games) - same
+        saved = 100.0 * (tot_e - tot_u) / max(tot_e, 1)
+        print(f"  {batch:>6} {f'{same}/{len(games)}':>12} {tot_u:>10,} "
+              f"{tot_e:>12,} {saved:>7.1f}%")
+
+    print()
+    if bad_on or bad_off or bad_dep:
         print("FAIL: dedup is NOT identity-preserving as implemented")
         return 1
-    print("OK: dedup is identity-preserving. The tree is unchanged; only the")
-    print("number of network rows drops. No Elo measurement needed to justify it.")
+    print("OK: dedup is identity-preserving, at the pre-v6 settings the Python")
+    print("oracle needs AND at the deployed ones. The tree is unchanged; only the")
+    print("number of network rows drops.")
+    print()
+    print("WHAT THIS MEANS FOR THE -168 ELO THAT KEEPS THE FLAG OFF")
+    print("  sumofish-bot.service cites -168 Elo at a fixed clock, 20 games,")
+    print("  measured 2026-07-29 jointly with CHESSGPU_COMPILE. Its mechanism was")
+    print("  that dedup delivered '3,464 UNIQUE evaluations against plain's 4,160',")
+    print("  i.e. 17% less knowledge of the position.")
+    print()
+    print("  That comparison does not hold. `unique_evaluations` counts ROWS SENT")
+    print("  (rust/src/tree.rs:558), so with dedup OFF it is equal to the leaf-visit")
+    print("  count by construction and is not a distinct-position count at all.")
+    print("  Nothing measured plain's duplicates. Section 3 above is the like-for-")
+    print("  like version: the trees are byte-identical, so both arms visit the same")
+    print("  leaves and hold the same knowledge, and dedup simply pays for about half")
+    print("  as many of them.")
+    print()
+    print("  The other half of that measurement is also stale: it predates")
+    print("  vloss_fix, which is exactly the mechanism that stops parallel paths")
+    print("  collapsing onto one leaf. Measured 2026-08-13 with the real nets at")
+    print("  800 sims and batch 64, the collapsed fraction falls from 72.9% with")
+    print("  vloss_fix off to 43.8% with it on.")
+    print()
+    print("  So the flag's verdict is not trustworthy and dedup deserves a")
+    print("  re-measurement, ALONE, at a fixed clock, on the deployed engine.")
     return 0
 
 
