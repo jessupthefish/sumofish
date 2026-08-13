@@ -30,10 +30,27 @@ from sumofish.batching import BatchedEvaluator  # noqa: E402
 
 
 def fake_raw(fens, actions):
-    """Deterministic pure function of each row, independent of batching."""
+    """Deterministic pure function of each row, independent of batching.
+
+    NOTE what this can and cannot prove, because the docstring above overstated
+    it until 2026-08-11: batch-shape invariance is true here BY CONSTRUCTION, so
+    these checks detect slice misattribution and nothing else. The real net is
+    not batch-shape invariant; `scripts/batch_invariance.py` measures that on the
+    GPU, and `fixed_rows` is the answer to it. The checks below cover the part
+    that can be tested on CPU: that every forward pass really does carry the
+    fixed row count.
+    """
     priors = [[len(f) * 1.0 + i for i in a] for f, a in zip(fens, actions)]
     values = [float(sum(ord(c) for c in f) % 1000) for f in fens]
     return priors, values
+
+
+def recording_raw(sizes):
+    """`fake_raw`, plus a record of the row count of every pass it was given."""
+    def raw(fens, actions):
+        sizes.append(len(fens))
+        return fake_raw(fens, actions)
+    return raw
 
 
 def main() -> int:
@@ -130,13 +147,67 @@ def main() -> int:
     check(not t.is_alive(), "stop() left a waiter blocked forever")
     check(out == ["raised"], f"stop() should fail pending waiters, got {out}")
 
+    # -- fixed_rows: every pass carries exactly that many rows -------------
+    #
+    # This is the property that makes a batched run reproducible, and it is the
+    # only half of it that can be checked without a GPU. The other half is that
+    # the net's output depends on the row count at all, which is what makes
+    # fixing the count worth doing: see scripts/batch_invariance.py.
+    sizes: list[int] = []
+    b = BatchedEvaluator(recording_raw(sizes), active_games=1, fixed_rows=8)
+    # 20 rows in one submission: must go out as 8 + 8 + 4, not as one pass of 20.
+    fens = [f"fen{i}" for i in range(20)]
+    acts = [[i] for i in range(20)]
+    priors, values = b.evaluate(fens, acts)
+    b.stop()
+    check(sizes == [8, 8, 4], f"expected passes of 8+8+4 rows, got {sizes}")
+    check(len(priors) == 20 and len(values) == 20,
+          f"chunking lost rows: {len(priors)} priors, {len(values)} values")
+    ref_p, ref_v = fake_raw(fens, acts)
+    check(priors == ref_p and values == ref_v,
+          "chunking a flush changed the results or misaligned the spans")
+    check(b.short_passes == 1,
+          f"the 4-row tail should be counted short, got {b.short_passes}")
+
+    # A short pass is only safe if the evaluator pads it, which this class
+    # cannot see. It must therefore refuse to certify the run.
+    raised = False
+    try:
+        b.assert_reproducible()
+    except RuntimeError:
+        raised = True
+    check(raised, "assert_reproducible() must raise when a pass was short")
+
+    # Exact multiples: no short pass, and the run certifies.
+    sizes2: list[int] = []
+    b2 = BatchedEvaluator(recording_raw(sizes2), active_games=1, fixed_rows=8)
+    b2.evaluate([f"g{i}" for i in range(16)], [[i] for i in range(16)])
+    b2.stop()
+    check(sizes2 == [8, 8], f"expected 8+8, got {sizes2}")
+    check(b2.short_passes == 0, "an exact multiple must produce no short pass")
+    try:
+        b2.assert_reproducible()
+    except RuntimeError as exc:  # noqa: BLE001
+        check(False, f"assert_reproducible() raised on a clean run: {exc}")
+
+    # Without fixed_rows the run is not reproducible and must say so.
+    b3 = BatchedEvaluator(fake_raw, active_games=1)
+    b3.evaluate(["x"], [[1]])
+    b3.stop()
+    raised3 = False
+    try:
+        b3.assert_reproducible()
+    except RuntimeError:
+        raised3 = True
+    check(raised3, "assert_reproducible() must raise when fixed_rows is unset")
+
     if failures:
         print("FAIL")
         for f in failures:
             print(f"  - {f}")
         return 1
     print("verify_batching: OK (batching does not change evaluations; "
-          "errors and stop() reach every waiter)")
+          "fixed_rows holds the pass shape; errors and stop() reach every waiter)")
     return 0
 
 
