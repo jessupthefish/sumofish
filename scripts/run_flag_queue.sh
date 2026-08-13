@@ -32,10 +32,23 @@
 #      tree 52% smaller on forced mates, and a fixed-simulation match is blind
 #      to a per-simulation cost saving by construction.
 #
-# NOT here, because the harness cannot express it: instamove and early stopping.
-# match.py's --time is seconds per MOVE and Player.move never calls
-# search_engine.choose, so think_time is not in the loop at all. See the
-# game-clock item in STATE.md.
+#   4. timemgmt-tc    instamove + early stopping, on a real clock.
+#      This arm was impossible until --tc landed on 2026-08-13: --time is
+#      seconds per MOVE, and under it time saved on one move goes nowhere,
+#      which is the entire thing early stopping exploits.
+#
+#      READ THE CLOCK COLUMN FIRST, NOT THE ELO. The effect is small -- a
+#      4-game smoke test had the flagged arm using 96% of the other's clock --
+#      and an Elo that small is not resolvable at any affordable n: a drawish
+#      mirror match needs a few thousand games to reach +-10 Elo, which is
+#      50+ hours on a real clock because both sides burn wall time. What this
+#      arm CAN establish cheaply is the mechanism (clock spent per side is a
+#      continuous per-game measurement, so its interval closes fast) and that
+#      the Elo is not NEGATIVE. Those two together are the decision: banked
+#      time is only worth having if it costs no strength.
+#
+#      If the clock column does not move, the flags are not reaching the search,
+#      and that is a bug report rather than a null result.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -48,6 +61,13 @@ ARMS=(
   "dedup-time|600|--time|0.5|--a-dedup"
   "matedist-time|600|--time|0.5|--a-mate-distance"
 )
+
+# The clock arm does not fit the table above: it needs --tc plus two flags, and
+# a different games count. Kept separate rather than generalising the table,
+# because a table that can express everything stops documenting anything.
+TC_ARM_NAME=${TC_ARM_NAME:-timemgmt-tc}
+TC=${TC:-20+0.2}
+TC_GAMES=${TC_GAMES:-400}
 
 for spec in "${ARMS[@]}"; do
     IFS='|' read -r NAME GAMES BFLAG BUDGET AFLAG <<< "$spec"
@@ -83,6 +103,53 @@ draws {s['d']/s['games']:.0%}  ({s['updated']})\")" "runs/matches/$NAME/status.j
         --a-label "${AFLAG#--a-} ON" --b-label "${AFLAG#--a-} OFF" \
         --no-sprt
 done
+
+echo
+echo "=== $TC_ARM_NAME: $TC_GAMES games at $TC, A gets instamove + early stopping ==="
+if [ -f "runs/matches/$TC_ARM_NAME/status.json" ]; then
+    DONE=$($PY -c "import json,sys;print(json.load(open(sys.argv[1]))['games'])" \
+           "runs/matches/$TC_ARM_NAME/status.json")
+    if [ "$DONE" -ge "$TC_GAMES" ]; then
+        echo "    complete already ($DONE games), reusing"
+    else
+        RUN_TC=1
+    fi
+else
+    RUN_TC=1
+fi
+if [ "${RUN_TC:-0}" = "1" ]; then
+    $PY scripts/match.py \
+        --name "$TC_ARM_NAME" --games "$TC_GAMES" --tc "$TC" --seed "$SEED" \
+        --a-vloss-fix --b-vloss-fix \
+        --a-instamove --a-early-stop \
+        --a-label "instamove+earlystop ON" --b-label "OFF" \
+        --no-sprt
+fi
+
+# The clock column is the mechanism check and it closes far faster than the Elo.
+$PY - "$TC_ARM_NAME" <<'PYEOF'
+import json, sys, statistics as st
+from pathlib import Path
+path = Path("runs/matches") / sys.argv[1] / "games.jsonl"
+if not path.exists():
+    raise SystemExit(0)
+rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+rows = [r for r in rows if r.get("clock")]
+if not rows:
+    raise SystemExit("no clock data: was this arm run without --tc?")
+ratios = []
+for r in rows:
+    c = r["clock"]
+    a = "white" if r["a_white"] else "black"
+    b = "black" if r["a_white"] else "white"
+    if c[b + "_spent"] > 0:
+        ratios.append(c[a + "_spent"] / c[b + "_spent"])
+mean = st.mean(ratios)
+half = 1.96 * st.stdev(ratios) / len(ratios) ** 0.5 if len(ratios) > 1 else float("nan")
+print(f"\n    CLOCK: A spent {mean:.3f} +-{half:.3f} of B's time over {len(ratios)} games")
+print("    Below 1.0 means the flags are banking time. If this sits at 1.000,")
+print("    they are not reaching the search and the Elo below means nothing.")
+PYEOF
 
 echo
 echo "=== all arms done ==="
