@@ -56,14 +56,37 @@ free for the same reason batching pays at all, and `make_evaluator` repeats the
 last row rather than zero-padding, because an all-zero token sequence is not a
 legal position and produces NaNs that read as a model bug.
 
-# What this still does NOT buy
+# Two different kinds of "comparable", and only one of them is lost
 
-**Comparability with the existing archive.** Every result in `runs/matches` was
-measured by an unbatched search sending variable row counts, and no choice of
-`fixed_rows` reproduces that. A batched run is comparable to other batched runs
-at the same N, and to nothing else. Before any batched number is quoted beside
-an archived one, that has to be said out loud, or the batched arm has to be
-re-run unbatched.
+An earlier version of this section said a batched run "is comparable to other
+batched runs at the same N, and to nothing else." That overstates the cost, and
+overstating a cost is the same class of error as overstating a result.
+
+**REPLAY comparability is genuinely lost.** No choice of `fixed_rows` reproduces
+an archived run game for game, because every result in `runs/matches` came from
+an unbatched search sending variable row counts. A batched run replays only
+against another batched run at the same N.
+
+**STATISTICAL comparability is probably not lost, and that is the one the lab
+actually uses.** A match estimates an Elo difference over a distribution of
+games; it does not care which individual games it drew. In a SumoFish-vs-
+SumoFish match both arms share this batcher, so any perturbation is symmetric by
+construction and cannot bias the estimate.
+
+**The case that is not symmetric is SumoFish vs Stockfish**, where only our side
+goes through the batcher. There the perturbation lands on one arm, and the
+argument that it is harmless (a ~1 ULP value change, a prior argmax moved on
+1.2% of positions, in a search that is stochastic in its tie-breaks anyway) is
+an ARGUMENT and not a measurement. A slightly perturbed search is a slightly
+noisier search, and noisier is weaker, so the sign of that effect is not
+obviously zero.
+
+**So before batching is used for any anchor or ladder rung: run one arm both
+ways.** Same configuration, same seed, batched against unbatched, and check the
+Elo agrees inside its interval. That is one arm of GPU time and it converts the
+paragraph above from reasoning into evidence. Until it exists, batching is safe
+for throughput work and for mirror matches, and is not to be used for a number
+that gets published against a pinned external opponent.
 
 # What this deliberately does NOT do
 
