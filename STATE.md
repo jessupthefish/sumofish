@@ -1053,8 +1053,28 @@ that many games. Keep running it; a replay is invisible to every other check.
   to it by construction.
 - A blocking pre-push hook running `verify_replays.py --check`,
   `tests/verify_data.py`, and `tests/run_all.sh`.
-- Write down the operating point: opponent pool, time control, and how the
-  budget is distributed. Several arguments have quietly assumed different ones.
+- **DONE 2026-08-13: `docs/OPERATING-POINT.md`**, regenerate the measured half
+  with `scripts/operating_point.py`. It was worth doing and not for the reason
+  it was listed: **the lab measures at 400 simulations and the deployed engine
+  searches a median of 231,273, which is 578x, or 9.2 doublings.** The parity
+  ladder's top rung is 3,200 sims, so the operating point sits **6.2 doublings
+  above the highest budget this project has ever measured at**, and the ladder's
+  own central finding is that the exchange rate is not constant along that axis
+  (1.15 node-doublings per sims-doubling at 200 sims, 0.49 at 1600).
+
+  This invalidates nothing. Cheap arms are what make 2,000-game intervals
+  affordable, and the one direct test of upward transfer came out the good way
+  (+35.6 +-26.0 MORE for the v6 constants at 3,200 than at 400, z = 2.68). The
+  rule it earns is narrower: **anything meant to justify a deployment decision
+  needs a second arm at a higher budget, and every write-up states the budget it
+  was measured at.** `transfer-400`/`transfer-3200` is the pattern.
+
+  Two things fell out that are not about budget. The engine spends **100% of its
+  allowance on every move and has never taken under a second**, so there is no
+  early stopping and no instamove, and it thinks for 19 seconds in positions
+  with one legal reply. And two concurrent games cost nearly nothing (7,761
+  nodes/s under `concurrency: 2` against 7,763 measured idle), which turns
+  cross-game batching from plausible into measured.
 - `CHESSGPU_BATCH` defaults to 64 and 256 is faster per call, but batch size
   trades against search quality (more virtual loss in flight, more collisions).
   Given item 2 above, settle it on `unique/s` and then in a game, never on nps.
