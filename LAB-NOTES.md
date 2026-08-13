@@ -1567,3 +1567,38 @@ inference.
 **Never pipe a test runner into anything.** Redirect to a file and read the file.
 If output volume is the worry, the fix is `tail` on the FILE afterwards, which
 costs nothing and keeps both the exit code and the full log.
+
+## 2026-08-13: sizing the follow-up queue, and a 2x error in my own estimate
+
+Told Steven the four queued arms were "20+ GPU-hours" from a mental estimate.
+Measured them against the archive's own per-game timings instead and it is
+**38.3**, which is 1.6 days rather than most of one.
+
+    arm               games   s/game   hours   basis
+    matedist-3200       400       55     6.1   transfer-3200, the same budget
+    dedup-time          600       60    10.0   0.5s/move
+    matedist-time       600       60    10.0   same
+    timemgmt-tc         400      110    12.2   20+0.2, both sides burn wall time
+    TOTAL                               38.3
+
+The estimate was wrong in the predictable direction: I priced the arms I had
+already seen (400-sim head-to-head, 6.7s/game) and not the ones that are
+expensive by construction. **Everything on a clock costs more than everything on
+a simulation count**, because a fixed-simulation arm gets cheaper when the GPU is
+free and a clock arm never does: it spends its wall time whatever happens. The
+`--tc` arm is the worst case, since BOTH sides burn real seconds.
+
+The archive makes this a one-command check and there is no excuse for guessing:
+
+    sum(r["seconds"] for r in games.jsonl) / len(rows)
+
+Two other things worth keeping from the timings:
+
+- **`mate-distance-400sims` ran at 16.7s/game while my `--tc` smoke tests were
+  running and 7.2s/game once they stopped**, i.e. a 2.3x slowdown from two tiny
+  4-game matches sharing the card. Anything measured in wall time while another
+  job holds the GPU is measuring the other job as much as itself. Fixed-simulation
+  arms are immune to this and that is a real argument for them, separate from
+  cost.
+- Sizing a queue from `runs/matches` also answers "has this already been run",
+  which is the check that was missing on 2026-08-12.
