@@ -1078,7 +1078,37 @@ that many games. Keep running it; a replay is invisible to every other check.
 - `CHESSGPU_BATCH` defaults to 64 and 256 is faster per call, but batch size
   trades against search quality (more virtual loss in flight, more collisions).
   Given item 2 above, settle it on `unique/s` and then in a game, never on nps.
-- Time management: ponder, early stopping, instamove. Untouched.
+- **Time management: instamove and early stopping BUILT 2026-08-13, both
+  default off, neither measured yet.** This line said "untouched" and the
+  operating-point work is what made the case: across 336 logged moves the engine
+  spent **100% of its allowance on every move and never once took under a
+  second**, including in positions with a single legal reply, where it thought
+  for 19 seconds.
+
+  `CHESSGPU_INSTAMOVE` gives a forced move 50 ms rather than the full budget.
+  Deliberately not zero: `reroot()` in `rust/src/tree.rs` declines once more
+  than 2 plies have passed since the last root, so skipping the search outright
+  would discard the tree on the FOLLOWING move and pay for the saving twice.
+
+  `CHESSGPU_EARLY_STOP` stops once the runner-up cannot be caught even if every
+  remaining simulation were handed to it. It **provably cannot change which move
+  is played**, only when: the move is `max(visits)` either way, and the rule
+  requires the leader's margin to exceed the optimistic remaining simulations by
+  a 1.25 safety factor. `tests/verify_time_management.py` checks that as an
+  algebraic bound rather than on examples -- since `lead <= done` always, the
+  rule cannot fire before **5/9 of the budget** has elapsed, and a regression
+  that ate the safety margin would not show up in any single case. The test also
+  asserts the rule is REACHABLE, so it cannot decay into a no-op wearing a
+  feature's hat.
+
+  Rust core only, and gated rather than merely listed: `sumofish.mcts.MCTS.search`
+  has no `should_stop` parameter, so an ungated flag would be a TypeError on
+  move one of a live game after a `CHESSGPU_CORE=python` rollback, not the
+  silent no-op the other four RUST_ONLY_FLAGS are.
+
+  **Neither has an Elo number and neither ships without one.** Ponder is still
+  untouched, and is a different kind of change: it searches on the opponent's
+  clock, so it interacts with `concurrency: 2` on one GPU.
 - The value net enables resignation, draw offers, and calibrated difficulty.
 
 **Numbers worth remembering:**

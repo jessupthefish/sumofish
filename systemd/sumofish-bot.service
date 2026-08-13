@@ -55,9 +55,35 @@ Environment=CHESSGPU_CORE=rust
 Environment=CHESSGPU_VLOSS_FIX=1
 
 # NOT set: CHESSGPU_MATE_DISTANCE. Already correctly implemented (confirmed
-# 2026-07-29), but it hasn't been through the pair-match harness on its own --
-# only vloss_fix has a verdict so far. Same rule applies: earns its default
-# from a match, not from "it's obviously correct."
+# 2026-07-29), and as of 2026-08-13 confirmed SOUND against an exhaustive solver
+# with the real nets (tests/verify_mate.py --real-nets: 34 proofs, 0 bogus, tree
+# 52% smaller). It still has no pair-match verdict of its own, which is what the
+# default turns on. runs/matches/mate-distance-400sims is that match. Note it is
+# a FIXED-SIMULATION match and the fix's benefit is a smaller tree, i.e. a CLOCK
+# gain, so that arm is a lower bound and a fixed-time arm is the one that
+# answers deployment.
+
+# NOT set: CHESSGPU_INSTAMOVE and CHESSGPU_EARLY_STOP. Added 2026-08-13 after
+# scripts/operating_point.py measured that this engine spends 100% of its
+# allowance on EVERY move and has never once taken under a second, across 336
+# logged moves -- it thinks 19 seconds in positions with one legal reply.
+#
+#   CHESSGPU_INSTAMOVE   a forced move gets 50 ms instead of the full budget.
+#                        Not zero: reroot() in rust/src/tree.rs declines after
+#                        more than 2 plies, so skipping the search outright
+#                        would discard the tree on the FOLLOWING move.
+#   CHESSGPU_EARLY_STOP  stop once the runner-up cannot be caught even if every
+#                        remaining simulation went to it. Conservative by
+#                        construction and provably cannot change WHICH move is
+#                        played (tests/verify_time_management.py pins the
+#                        algebraic floor at 5/9 of the budget). Rust core only:
+#                        sumofish.mcts.MCTS.search has no should_stop parameter,
+#                        so it is gated as well as listed in RUST_ONLY_FLAGS, or
+#                        a rollback to CHESSGPU_CORE=python would crash on move
+#                        one rather than no-op.
+#
+# Same rule as everything else here: neither earns its default from being
+# obviously right. Both need a match.
 
 ExecStart=/home/nomad/dev/active/sumofish/.venv/bin/python lichess-bot.py
 

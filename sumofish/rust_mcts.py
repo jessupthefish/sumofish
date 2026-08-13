@@ -215,7 +215,8 @@ class RustMCTS:
         return pos
 
     def search(self, board: chess.Board, deadline: float | None = None,
-               on_progress=None, progress_every: float = 0.15):
+               on_progress=None, progress_every: float = 0.15,
+               should_stop=None):
         """Search and return `(root_handle, {move: visits})`.
 
         `deadline` arrives as a `time.perf_counter()` absolute, matching
@@ -248,7 +249,7 @@ class RustMCTS:
 
         pos = self._position(board)
 
-        if deadline is None or on_progress is None:
+        if deadline is None or (on_progress is None and should_stop is None):
             # No clock, or nobody's listening: one call, unchanged from
             # before this could slice at all. Also the exact fast path
             # `search_engine`'s own comment already documents for telemetry
@@ -269,6 +270,7 @@ class RustMCTS:
         self.evaluations = self._core.evaluations
         self.reused = self._core.reused
 
+        self.stopped_early = False
         while _time.perf_counter() < deadline:
             # Root visits sum to the cumulative simulation count, the same
             # quantity `sumofish/mcts.py::search`'s own `done` tracks -- an
@@ -276,12 +278,25 @@ class RustMCTS:
             # good enough for a progress readout, not used for anything that
             # needs to be exact.
             done = sum(v for _, v in pairs)
-            try:
-                on_progress(root, done)
-            except Exception:  # noqa: BLE001 -- a spectator must never cost the engine a move
-                pass
+            if on_progress is not None:
+                try:
+                    on_progress(root, done)
+                except Exception:  # noqa: BLE001 -- a spectator must never cost the engine a move
+                    pass
             remaining = deadline - _time.perf_counter()
             if remaining <= 0:
+                break
+            # Early stopping, between slices and never inside a Rust call. The
+            # predicate gets the live visit counts and the time left, and it is
+            # the caller's job to be conservative: this loop just believes it.
+            # An exception here is NOT swallowed the way on_progress's is. A
+            # spectator that throws must not cost the engine a move; a stopping
+            # rule that throws is a bug in the engine's own time management and
+            # hiding it would mean silently searching to the deadline forever,
+            # which is exactly the no-op-that-looks-like-a-feature this
+            # repository keeps finding.
+            if should_stop is not None and should_stop(pairs, done, remaining):
+                self.stopped_early = True
                 break
             this_slice = min(slice_s, remaining)
             pairs = self._core.continue_search(pos, self.simulations, self._evaluate, this_slice)

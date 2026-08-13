@@ -119,6 +119,10 @@ echo
 echo "=== oracle 10: mate distance, proofs vs an exhaustive solver ==="
 $PY tests/verify_mate.py --positions 60 --sims 400 | tail -12
 
+# Time management. Pure arithmetic, no GPU: the early-stopping rule must
+# never be able to change WHICH move is played, only when.
+$PY tests/verify_time_management.py
+
 echo
 echo "=== oracle 6: what is reproducible about the prior softmax ==="
 $PY tests/verify_softmax.py --positions 4000 | tail -8

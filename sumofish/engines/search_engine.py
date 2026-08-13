@@ -154,15 +154,87 @@ def env_flag(name: str) -> bool:
 # runtime -- not boot telemetry, not the dashboard -- to show the mistake,
 # the same invisible-failure shape as the root_q/top()/pv() bugs found
 # elsewhere in this project the same night this was caught.
+# CHESSGPU_EARLY_STOP is here for a sharper reason than the other four. They
+# are silent no-ops under the Python core; it would be a TypeError on the first
+# move of a live game, because `sumofish.mcts.MCTS.search` has no `should_stop`
+# parameter and only `rust_mcts.RustMCTS.search` gained one. So it is both
+# reported as ignored AND gated below, and the gate is what keeps a rollback to
+# CHESSGPU_CORE=python from crashing the bot.
 RUST_ONLY_FLAGS = ("CHESSGPU_DEDUP", "CHESSGPU_COMPILE",
-                    "CHESSGPU_MATE_DISTANCE", "CHESSGPU_VLOSS_FIX")
+                    "CHESSGPU_MATE_DISTANCE", "CHESSGPU_VLOSS_FIX",
+                    "CHESSGPU_EARLY_STOP")
+
+# --- time management --------------------------------------------------------
+#
+# Measured 2026-08-13 over 336 logged moves (`scripts/operating_point.py`): the
+# engine spent 100% of its allowance on EVERY move and never once took under a
+# second. It thinks 19 seconds in positions with a single legal reply. There was
+# no instamove and no early stopping; both are below, both default OFF, and both
+# earn their default from a match the way vloss_fix did and not from the fact
+# that they are obviously right.
+#
+# Why a forced move gets a SMALL budget instead of no search at all: `reroot` in
+# rust/src/tree.rs declines when more than 2 plies have passed since the last
+# root, so skipping the search entirely would leave `root_stack` behind and
+# force a full tree discard on the FOLLOWING move. A 50 ms search reroots
+# normally, keeps the invariant, and still emits the telemetry a skipped move
+# would have left a hole in.
+INSTAMOVE_SECONDS = 0.05
+
+# Do not trust a simulation-rate estimate from the first fraction of a move.
+# The rate climbs while the batch fills and the tree warms, so an early estimate
+# is low, which makes the remaining-simulations budget look small, which makes
+# the stopping rule fire when it should not.
+EARLY_STOP_MIN_FRACTION = 0.2
+# The lead must beat the OPTIMISTIC remaining simulations by this factor before
+# the decision counts as settled. Above 1.0 = conservative: it stops later than
+# the arithmetic strictly requires.
+EARLY_STOP_SAFETY = 1.25
+
+
+def decided(counts, done: int, elapsed: float, remaining: float,
+            budget: float) -> bool:
+    """Can the runner-up still be caught? If not, the move is already decided.
+
+    Pure, over explicit numbers rather than over a live search, for the same
+    reason `ignored_rust_flags` is pure over an explicit env mapping: a time
+    management rule that can only be exercised by playing a game is a rule
+    nobody exercises.
+
+    `counts` is the root visit count of each candidate move, in any order.
+
+    Conservative by construction. It assumes EVERY remaining simulation goes to
+    the second-placed move -- the best it could possibly do -- and still
+    requires the leader's margin to exceed that by `EARLY_STOP_SAFETY`. So
+    stopping here cannot change WHICH move is played, only when. The move is
+    `max(visits)` either way.
+
+    The time given back is not discarded: `think_time` spends a fraction of what
+    REMAINS on the clock, so finishing early raises the budget of every later
+    move in the game.
+    """
+    if len(counts) < 2:
+        return True                     # nothing to decide
+    if elapsed < EARLY_STOP_MIN_FRACTION * budget:
+        return False                    # rate estimate not trustworthy yet
+    if elapsed <= 0:
+        return False
+    ordered = sorted(counts, reverse=True)
+    lead = ordered[0] - ordered[1]
+    rate = done / elapsed
+    return lead > EARLY_STOP_SAFETY * rate * remaining
 
 
 def ignored_rust_flags(env: dict) -> list[str]:
-    """Which of RUST_ONLY_FLAGS are set true in env but core is not rust.
+    """Which of RUST_ONLY_FLAGS are set true in `env`.
 
-    Pure over an explicit env mapping (not os.environ) so it's directly
-    testable. Raises the same way env_flag does on an unrecognized spelling.
+    It does NOT itself check the core; the only call site is already inside the
+    non-rust branch, and passing `env` in keeps this pure over an explicit
+    mapping (not os.environ) so it is directly testable. An earlier version of
+    this docstring said "but core is not rust", which reads as a check this
+    function makes and does not.
+
+    Raises the same way env_flag does on an unrecognized spelling.
     """
     def flag(name: str) -> bool:
         raw = env.get(name, "0")
@@ -305,8 +377,18 @@ def main() -> None:
     # Warm the kernels during the handshake, not on move one with a running clock.
     mcts.play(chess.Board(), deadline=time.perf_counter() + 2.0)
 
+    # Instamove is core-agnostic: it only shrinks a budget. Early stopping is
+    # not, see RUST_ONLY_FLAGS above.
+    instamove = env_flag("CHESSGPU_INSTAMOVE")
+    early_stop = env_flag("CHESSGPU_EARLY_STOP") and core_name == "rust"
+
     def choose(board: chess.Board, limits: Limits) -> chess.Move:
         budget = think_time(limits, board.turn)
+        forced = board.legal_moves.count() == 1
+        if instamove and forced:
+            # No decision to make. The only risk here is a bug, never a worse
+            # move: there is no other move.
+            budget = min(budget, INSTAMOVE_SECONDS)
         start = time.perf_counter()
         ply = board.ply()
         fen = board.fen()
@@ -346,11 +428,16 @@ def main() -> None:
         # No observer, no work: `snapshot` generates SAN and walks the PV, and
         # that happens on the clock. With telemetry off this is exactly the
         # search that ran before any of this was added.
+        def stop_rule(pairs, done, remaining) -> bool:
+            return decided([n for _, n in pairs], done,
+                           time.perf_counter() - start, remaining, budget)
+
         root, visits = mcts.search(
             board,
             deadline=start + budget,
             on_progress=(lambda node, done: tele.emit(snapshot(node, done, False)))
             if tele.enabled else None,
+            should_stop=stop_rule if early_stop else None,
         )
         if not visits:
             raise ValueError(f"no legal moves in {fen}")
