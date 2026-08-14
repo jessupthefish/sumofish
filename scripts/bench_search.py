@@ -76,6 +76,33 @@ from sumofish.value_policy import ValuePolicy  # noqa: E402
 POSITION = "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2Q1RK1 w - - 0 9"
 
 
+class _FusedHead(torch.nn.Module):
+    """A two-head net presented to the value path, which expects one head.
+
+    `--fused` builds a trunk with a `bins + NUM_ACTIONS` output so that ONE
+    forward pass produces both the value distribution and the policy logits,
+    which is the whole proposal. But `ValuePolicy` hands the output straight to
+    `HLGauss`, which expects exactly `bins` columns, so the raw fused model
+    fails with "the size of tensor a (2032) must match the size of tensor b
+    (64)" before a single node is searched.
+
+    Slicing here is not a cheat, it is the measurement. The full 2032-wide head
+    is computed -- that cost is real and a real fused net pays it -- and only
+    the value columns are handed on, because in this arm the policy net's own
+    forward has been zeroed and nothing downstream wants the policy half. What
+    is measured is therefore one forward of the fused shape, which is exactly
+    what the proposed net does per node.
+    """
+
+    def __init__(self, inner: torch.nn.Module, bins: int) -> None:
+        super().__init__()
+        self.inner = inner
+        self.bins = bins
+
+    def forward(self, x):                                   # noqa: ANN001
+        return self.inner(x)[:, :self.bins]
+
+
 class _FreeNet(torch.nn.Module):
     """Stands in for one of the two nets so that its forward pass costs nothing.
 
@@ -189,7 +216,9 @@ def main() -> None:
         out = args.bins + NUM_ACTIONS if fused else args.bins
         cfg = shape(spec, out)
         model = ChessTransformer(cfg)
-        value = ValuePolicy(model, HLGauss(bins=args.bins), device=args.device)
+        # A fused trunk emits bins + NUM_ACTIONS; the value path wants bins.
+        value = ValuePolicy(_FusedHead(model, args.bins) if fused else model,
+                            HLGauss(bins=args.bins), device=args.device)
         if skip_value:
             # Keep the ValuePolicy wrapper (the search calls into it) but make
             # its forward free, so what is left is tree + policy forward.

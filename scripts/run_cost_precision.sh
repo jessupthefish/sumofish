@@ -45,6 +45,18 @@ for rep in $(seq 1 "$REPS"); do
         echo "--- fused $d, rep $rep ---"
         timeout 900 $PY scripts/bench_search.py --preset "$d" --baseline 9M --fused \
             --batch 64 --seconds "$S" --out "$OUT/fused-$d-rep$rep.json" 2>&1 | tail -4
+        # Fail LOUDLY on a missing result. The first attempt at this pass ran
+        # five fused arms that every one of them died on (the fused trunk emits
+        # bins+1968 and ValuePolicy hands that straight to HLGauss, which wants
+        # bins), and because each arm is piped through `tail` the exit status
+        # was masked and the script sailed on printing a traceback per arm. An
+        # empty output directory read as "the analysis found nothing".
+        if [ ! -s "$OUT/fused-$d-rep$rep.json" ]; then
+            echo "ABORT: fused $d rep $rep wrote no result. Not continuing on a"
+            echo "       broken arm: an empty sweep is indistinguishable from a"
+            echo "       null one, and this pass exists to produce an interval."
+            exit 1
+        fi
     done
 done
 
