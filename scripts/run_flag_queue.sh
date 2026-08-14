@@ -105,18 +105,28 @@ draws {s['d']/s['games']:.0%}  ({s['updated']})\")" "runs/matches/$NAME/status.j
 done
 
 echo
-echo "=== $TC_ARM_NAME: $TC_GAMES games at $TC, A gets instamove + early stopping ==="
+echo "=== $TC_ARM_NAME: CANCELLED, see the note below. Set RUN_TIMEMGMT_TC=1 to override ==="
 if [ -f "runs/matches/$TC_ARM_NAME/status.json" ]; then
     DONE=$($PY -c "import json,sys;print(json.load(open(sys.argv[1]))['games'])" \
            "runs/matches/$TC_ARM_NAME/status.json")
     if [ "$DONE" -ge "$TC_GAMES" ]; then
         echo "    complete already ($DONE games), reusing"
-    else
-        RUN_TC=1
     fi
-else
-    RUN_TC=1
 fi
+# CANCELLED 2026-08-14. The arm was queued to see whether instamove + early
+# stopping bank clock time, on the theory that the 900+10 time forfeits were a
+# time-management problem. They are not. The mechanism was found in source:
+# `rust/src/tree.rs` checks the search deadline BETWEEN batches, never mid-batch,
+# so a stalled GPU callback means the check never runs. The full ledger is 10
+# rated forfeits plus 23 games accepted and never moved in, and this arm fixes
+# none of the 33. It costs 12.2 GPU-h of exclusive box, which is most of the
+# Phase 1 budget that decides whether to build a bigger net at all.
+#
+# The fix is plan item 0.9: a GPU mutex (`scripts/gpu_lock.py`, built) plus a
+# hard engine-side per-move deadline that can interrupt a stalled batch.
+#
+# Set RUN_TIMEMGMT_TC=1 to run it anyway. Read docs/PLAN-2026-08-14.md first.
+RUN_TC=${RUN_TIMEMGMT_TC:-0}
 if [ "${RUN_TC:-0}" = "1" ]; then
     $PY scripts/match.py \
         --name "$TC_ARM_NAME" --games "$TC_GAMES" --tc "$TC" --seed "$SEED" \

@@ -165,6 +165,15 @@ class Spec:
     label: str
     value: str
     policy: str
+    # The CONTENT of each checkpoint, not just where it was. `value` and
+    # `policy` are paths, and `runs/value.pt` is a path that gets overwritten
+    # by every promotion, so a resume keyed on the path alone will happily
+    # extend a match with a different network and report the two halves as one
+    # population. PHILOSOPHY:197-199 names this hazard and `release.py:95`
+    # already content-hashes for exactly this reason. These fields land inside
+    # the resume fingerprint automatically, because it hashes `Spec.__dict__`.
+    value_sha: str
+    policy_sha: str
     sims: int
     batch: int
     c_puct: float
@@ -452,6 +461,7 @@ class Player:
             return
         # Tree reuse, once it exists, must not carry a subtree from the
         # previous game into this one.
+        self.evals = self.unique_evals = self.searches = 0
         reset = getattr(self.mcts, "reset", None)
         if reset is not None:
             reset()
@@ -527,6 +537,17 @@ class Player:
             # so the Python core keeps working as the identity oracle.
             kwargs["should_stop"] = should_stop
         root, visits = self.mcts.search(board, deadline=deadline, **kwargs)
+        # The quantity a slower net actually loses, and until 2026-08-14 the one
+        # the harness threw away. Under --time and --tc `simulations` is set to
+        # 10**9 so the clock binds, which makes the evaluation count the
+        # DEPENDENT variable of the experiment -- and `games.jsonl` recorded
+        # result, plies, seconds and curve, but never this. A wall-clock match
+        # therefore could not see what it was measuring. PHILOSOPHY also
+        # mandates reporting unique/s rather than raw nps, which needs the
+        # second counter.
+        self.evals += getattr(self.mcts, "evaluations", 0)
+        self.unique_evals += getattr(self.mcts, "unique_evaluations", 0)
+        self.searches += 1
         move = max(visits.items(), key=lambda kv: kv[1])[0]
         return move, root.q
 
@@ -595,6 +616,82 @@ import subprocess  # noqa: E402
 
 
 @functools.lru_cache(maxsize=1)
+def contending_units() -> list[str]:
+    """Anything on this box that would bias a wall-clock match, by name.
+
+    Deliberately includes the live bot, which `lab.py::wait_for_quiet` excludes:
+    a fixed-simulation arm is immune to contention (it costs time, not validity)
+    and a clock arm is not.
+    """
+    import subprocess
+    busy = []
+    # The unit THIS process is running under, if any. Without this the guard
+    # blocks itself: a match launched as `systemd-run --user --unit=
+    # sumofish-compile-gate` matches its own `sumofish-*` glob, is listed as
+    # running, and refuses to start on the grounds that it is already running.
+    # Reading the cgroup is the reliable way to ask; $INVOCATION_ID says that
+    # you are under systemd but not which unit.
+    own_unit = ""
+    try:
+        for line in open("/proc/self/cgroup"):
+            for part in line.strip().split("/"):
+                if part.endswith((".service", ".scope")):
+                    own_unit = part
+    except OSError:
+        pass
+    r = subprocess.run(["systemctl", "--user", "list-units", "--state=running",
+                        "--no-legend", "--plain", "sumofish-*"],
+                       capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        # The rating sampler and the watchdogs are timers doing nothing on the
+        # GPU; only long-running GPU work matters here.
+        if unit and not unit.startswith(("sumofish-rating", "sumofish-watchdog",
+                                         "sumofish-train-watchdog")):
+            if unit == own_unit:
+                continue
+            busy.append(f"{unit} (running)")
+    # Anything on the card whose working directory is this repo. Matching on the
+    # COMMAND LINE would miss `.venv/bin/python scripts/match.py --name ...`,
+    # which contains no "sumofish" at all, and would also self-match -- the trap
+    # LAB-NOTES records for `pgrep -f`, and the reason `lab.py` reads /proc too.
+    import os as _os
+    smi = subprocess.run(
+        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+        capture_output=True, text=True)
+    if smi.returncode == 0:
+        for pid in (p.strip() for p in smi.stdout.split()):
+            if not pid.isdigit() or int(pid) == _os.getpid():
+                continue
+            try:
+                cwd = _os.path.realpath(f"/proc/{pid}/cwd")
+                cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode()
+            except OSError:
+                continue
+            if cwd.startswith(str(ROOT)) or "sumofish" in cmd:
+                busy.append(f"pid {pid}: {cmd[:90].strip()}")
+    return busy
+
+
+def checkpoint_sha(path: str | None) -> str:
+    """sha256 of a checkpoint's bytes, or a reason it has none.
+
+    Stockfish arms carry no checkpoint, and a missing file must be a distinct
+    value rather than the empty string, or two different absences hash equal.
+    Truncated to 12 hex chars, matching `release.py`.
+    """
+    if not path:
+        return "none"
+    f = Path(path)
+    if not f.exists():
+        return "missing"
+    h = hashlib.sha256()
+    with f.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
 def code_fingerprint() -> str:
     """git SHA plus a hash of the package, so a stale result can be spotted.
 
@@ -838,6 +935,19 @@ def play_game(
                    "white_left": round(clock.remaining[chess.WHITE], 2),
                    "black_left": round(clock.remaining[chess.BLACK], 2)}
                   if clock is not None else None),
+        # How much search each side actually got. Under --time and --tc this is
+        # the DEPENDENT variable -- `simulations` is pinned at 10**9 so the clock
+        # binds -- and it is precisely what a dearer network loses. Recording
+        # only seconds, as this file did until 2026-08-14, meant a wall-clock
+        # match could not see the quantity it existed to measure: seconds/ply
+        # sits pinned at the movetime by construction, so the archive's six
+        # movetime arms are blind to their own confound. `unique` is the count
+        # PHILOSOPHY mandates reporting; with dedup off it equals `evals` by
+        # construction and is a row count, not a distinct-position count.
+        "search": {"white_evals": white.evals, "black_evals": black.evals,
+                   "white_unique": white.unique_evals,
+                   "black_unique": black.unique_evals,
+                   "white_moves": white.searches, "black_moves": black.searches},
         # What was actually playing. A match spans hours and the working tree
         # is editable throughout; without this, a match that straddles an edit
         # is indistinguishable from one that did not. Cheap insurance against
@@ -1018,6 +1128,12 @@ def main() -> None:
     ap.add_argument("--elo1", type=float, default=20.0, help="SPRT alternative")
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--beta", type=float, default=0.05)
+    ap.add_argument("--allow-contended", action="store_true",
+                    help="run a wall-clock match anyway while the GPU is "
+                         "shared. The contention is then stamped into "
+                         "config.json, so a later reader can see it. Exists so "
+                         "that accepting an invalid measurement is a visible "
+                         "choice; two arms in the archive made it invisibly.")
     ap.add_argument("--no-sprt", action="store_true",
                     help="play every game; do not stop early")
     ap.add_argument("--min-pairs", type=int, default=0,
@@ -1052,6 +1168,27 @@ def main() -> None:
             f"bad shard {args.shard_index}/{args.shard_count}: need "
             f"shard_count >= 1 and 0 <= shard_index < shard_count"
         )
+    if (args.time or args.tc) and not args.allow_contended:
+        # PHILOSOPHY: "A wall-clock match requires an idle machine. Contention
+        # biases a time-budgeted experiment and nothing else, so it is the one
+        # experiment where 'the bot was also running' invalidates the result."
+        # That rule was stated and never enforced, and `scripts/lab.py`'s own
+        # `wait_for_quiet` docstring says a --time match "must not share the
+        # card" while its code does not implement it. Both clock arms in the
+        # 2026-08-13 flag queue ran with the bot up, and because seconds/ply is
+        # pinned at the movetime by construction, nothing in games.jsonl could
+        # show it afterwards. Enforced here instead of trusted.
+        busy = contending_units()
+        if busy:
+            raise SystemExit(
+                "refusing to start a wall-clock match while the GPU is shared:\n"
+                + "".join(f"  {u}\n" for u in busy)
+                + "  wrap it:  scripts/gpu_lock.py run --drain-bot -- "
+                  "scripts/match.py ...\n"
+                  "  or pass --allow-contended to record the contention and "
+                  "proceed anyway."
+            )
+
     if args.shard_count > 1 and not args.no_sprt:
         # A shard sees a biased subset (every Nth pair) and cannot run the
         # sequential test on it: stopping on a shard's own LLR would stop the
@@ -1068,6 +1205,8 @@ def main() -> None:
             label=getattr(args, f"{side}_label") or side.upper(),
             value=pick("value"),
             policy=pick("policy"),
+            value_sha=checkpoint_sha(pick("value")),
+            policy_sha=checkpoint_sha(pick("policy")),
             sims=pick("sims"),
             batch=pick("batch"),
             c_puct=pick("cpuct"),
@@ -1185,10 +1324,27 @@ def main() -> None:
             )
             return 2
         if prior != fingerprint:
+            # Say WHICH field moved. A bare "the fingerprint differs" on a
+            # swapped checkpoint reads as a harness bug, and the whole point of
+            # hashing content is that this case is now diagnosable.
+            diff = []
+            try:
+                pc = json.loads(cfg_path.read_text())
+                for side, now in (("a", a), ("b", b)):
+                    was = pc.get(side) or {}
+                    for k, v in now.__dict__.items():
+                        if k in was and was[k] != v:
+                            diff.append(f"    {side}.{k}: {was[k]!r} -> {v!r}")
+            except Exception:                                # noqa: BLE001
+                pass
+            what = ("  what moved:\n" + "\n".join(diff) + "\n") if diff else (
+                "  the difference is in the args or the code fingerprint, not in\n"
+                "  either arm's spec.\n")
             print(
                 f"REFUSING to resume {outdir}: spec fingerprint differs.\n"
                 f"  on disk: {prior}\n"
                 f"  now:     {fingerprint}\n"
+                f"{what}"
                 f"Those games were played by a different configuration. Resuming\n"
                 f"would report them as this one's -- which is how the exchange-rate\n"
                 f"ladder came to be four replays. Use a new --name.",
@@ -1199,6 +1355,13 @@ def main() -> None:
     cfg_path.write_text(
         json.dumps(
             {"fingerprint": fingerprint, "code": code_fingerprint(),
+             # Machine state at launch. Absent from every archived match, which
+             # is why the 2026-08-13 clock arms cannot be audited for
+             # contention after the fact: seconds/ply is pinned at the movetime,
+             # so wall clock cannot see it, and sims were not recorded either.
+             "machine": {"contending": contending_units(),
+                         "clock_match": bool(args.time or args.tc),
+                         "at": __import__("time").time()},
              "a": a.__dict__, "b": b.__dict__, "args": vars(args)},
             indent=2, default=str,
         )

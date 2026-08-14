@@ -164,6 +164,13 @@ class MCTS:
         # match. Nothing but an experiment should ever pass this.
         self.terminal = terminal
         self.evaluations = 0
+        # Present so the match harness records it without branching on core.
+        # The Python tree does not deduplicate, so by construction this EQUALS
+        # evaluations: it is a row count, not a distinct-position count. That
+        # identity is precisely why the 2026-07-29 dedup comparison was a
+        # category error, and it is stated here so nobody reads the two
+        # counters as independent on this core.
+        self.unique_evaluations = 0
 
         # Tree reuse. See `_reroot`. `_root_stack` is the move stack of the
         # board `_root` was searched from, copied because the caller's board
@@ -287,6 +294,7 @@ class MCTS:
             node.children[move] = Node(prior=prior, to_move=not node.to_move)
 
         self.evaluations += 1
+        self.unique_evaluations += 1
         return self.value_policy.value_of(board)
 
     # ---- phase 1: select -------------------------------------------------
@@ -466,6 +474,7 @@ class MCTS:
         priors = self._priors_batch(boards)
         values, _ = self.value_policy.evaluate(boards)
         self.evaluations += len(boards)
+        self.unique_evaluations += len(boards)
 
         for (path, _), prior, value in zip(pending, priors, values, strict=True):
             leaf = path[-1]
@@ -513,6 +522,7 @@ class MCTS:
         the engine a move. It defaults to None and off.
         """
         self.evaluations = 0
+        self.unique_evaluations = 0
 
         # A reused root arrives already expanded and already carrying visits.
         # Expanding it again would overwrite its children and destroy the whole

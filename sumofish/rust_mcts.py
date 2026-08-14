@@ -190,6 +190,11 @@ class RustMCTS:
             vloss_fix=vloss_fix,
         )
         self.evaluations = 0
+        # PHILOSOPHY mandates reporting unique/s and never raw nps, and the
+        # core has counted this since the dedup work -- it was simply never
+        # surfaced here, so tests/verify_dedup.py was its only consumer and no
+        # match could report the metric the objective function requires.
+        self.unique_evaluations = 0
         self.reused = 0
 
     def reset(self) -> None:
@@ -259,6 +264,7 @@ class RustMCTS:
                 max_seconds = max(0.0, deadline - _time.perf_counter())
             pairs = self._core.search(pos, self.simulations, self._evaluate, max_seconds)
             self.evaluations = self._core.evaluations
+            self.unique_evaluations = self._core.unique_evaluations
             self.reused = self._core.reused
             visits = {chess.Move.from_uci(u): v for u, v in pairs}
             return _Root(self._core, board), visits
@@ -268,6 +274,7 @@ class RustMCTS:
         first = max(0.0, min(slice_s, deadline - _time.perf_counter()))
         pairs = self._core.search(pos, self.simulations, self._evaluate, first)
         self.evaluations = self._core.evaluations
+        self.unique_evaluations = self._core.unique_evaluations
         self.reused = self._core.reused
 
         self.stopped_early = False
@@ -301,6 +308,7 @@ class RustMCTS:
             this_slice = min(slice_s, remaining)
             pairs = self._core.continue_search(pos, self.simulations, self._evaluate, this_slice)
             self.evaluations = self._core.evaluations
+            self.unique_evaluations = self._core.unique_evaluations
 
         visits = {chess.Move.from_uci(u): v for u, v in pairs}
         return root, visits
@@ -330,6 +338,7 @@ class RustMCTS:
             "move": chess.Move.from_uci(top[0][0]) if top else None,
             "win_prob": c.root_q,
             "evaluations": c.evaluations,
+            "unique_evaluations": c.unique_evaluations,
             "reused": c.reused,
             "pv": pv_san,
             "top": [

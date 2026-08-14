@@ -702,7 +702,18 @@ impl Mcts {
                     return Err("root prior length mismatch".to_string());
                 }
                 self.expand_from(root_ix, &priors[0], &moves);
+                // Both counters. This site incremented only `evaluations` until
+                // 2026-08-14, so `unique_evaluations` undercounted by exactly one
+                // per search and the invariant documented above -- that with
+                // dedup OFF the two are equal by construction -- was false. It
+                // showed up as 651 evaluations against 620 unique over 31 moves
+                // in a dedup-off match: a difference of precisely one per move.
+                // Harmless to play (nothing reads these to choose a move) and
+                // not harmless to an argument, because the one metric PHILOSOPHY
+                // mandates reporting was wrong, and `tests/verify_dedup.py` is
+                // its only consumer.
                 self.evaluations += 1;
+                self.unique_evaluations += 1;
             }
         }
 
@@ -1064,6 +1075,26 @@ mod continue_search_tests {
         let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
         let mut ev = FixedEval { value: 0.5 };
         assert!(mcts.continue_search(&mut pos, 128, &mut ev, None).is_err());
+    }
+
+    #[test]
+    fn unique_equals_evaluations_when_dedup_is_off() {
+        // The invariant the doc comment on `unique_evaluations` states. It was
+        // false from the root-expansion site until 2026-08-14, by one per
+        // search, and nothing checked it -- which is how a counter the
+        // objective function mandates reporting stayed wrong.
+        let mut mcts = Mcts::new(2.0, Some(19652.0), 1.25, -0.2, 32);
+        assert!(!mcts.dedup, "this test is about the dedup-OFF invariant");
+        let mut pos = Position::new(Board::from_fen(STARTPOS).unwrap());
+        let mut ev = FixedEval { value: 0.5 };
+        mcts.search(&mut pos, 256, &mut ev, None).unwrap();
+        assert!(mcts.evaluations > 0, "the search must have evaluated something");
+        assert_eq!(
+            mcts.evaluations, mcts.unique_evaluations,
+            "with dedup off every queued leaf is its own distinct row, so the \
+             two counters must agree exactly; a gap means a site increments one \
+             and not the other"
+        );
     }
 
     #[test]
