@@ -59,9 +59,11 @@ be *replays*: the jobs credited with producing them re-served existing match log
 instead of playing, detectable only as an elapsed time that could not have
 produced that many games. The rate, the "+50 Elo per doubling" extrapolated from
 it, and the "two independent estimates agreeing" claim are all withdrawn rather
-than annotated. `scripts/verify_replays.py` audits the archive; nothing in it is
-currently trusted. The lichess rating above stands, because it is measured by
-someone else on an instrument this project cannot forge.
+than annotated. `scripts/verify_replays.py` audits the archive and fails
+closed: 4 of 104 matches have a credited wall clock to check against, and the
+other 100 are reported `unverifiable` rather than trusted. The lichess rating
+above stands, because it is measured by someone else on an instrument this
+project cannot forge.
 
 Versions are tracked in `VERSIONS.jsonl`; each one's win/loss record starts at
 zero, because a lifetime record averages engines that no longer exist.

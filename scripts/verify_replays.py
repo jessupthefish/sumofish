@@ -24,9 +24,23 @@ and anything that fires on legitimate work gets bypassed.
 Also reports provenance, since a match with no `code` fingerprint cannot be
 attributed even in principle: three of the four rungs carry one on 0 of 300 games.
 
+**Fails closed, since 2026-08-14, and the reason is the whole point.** The
+verdict used to start at "trusted" and downgrade only on positive evidence, so a
+match whose central check could not RUN was reported identically to one that ran
+and passed. `credited` comes only from `runs/lab/state.json`, and the lab has
+driven nothing since 2026-08-02, so the inequality was ABSTAINING on 100 of 104
+directories while the tool printed "99 trusted". A verdict of `unverifiable` now
+says so, and `--check` refuses it.
+
+The honest coverage today is 4 of 104, and those four are the `sims-*` rungs the
+tool was written to catch. Nothing else in the archive has a credited wall clock
+to compare against. That is a statement about coverage, not about the other
+hundred matches being dirty, and the fix is for `match.py` to record its own
+start and end time rather than for this script to guess.
+
     scripts/verify_replays.py                 # audit and print
     scripts/verify_replays.py --json          # machine-readable
-    scripts/verify_replays.py --check         # exit 1 if anything is untrustworthy
+    scripts/verify_replays.py --check         # exit 1 unless every match is verified
 """
 
 from __future__ import annotations
@@ -89,28 +103,55 @@ def audit_match(d: Path, job_seconds: dict[str, float]) -> dict:
     key = d.name.replace("-vs-", "-")
     credited = job_seconds.get(key)
 
-    verdict, why = "trusted", []
+    # Verdict by PRECEDENCE, worst first, rather than by a chain of
+    # `if verdict == "trusted"` guards. The old form started at "trusted" and
+    # downgraded only on positive evidence, which meant a match whose central
+    # check could not RUN was reported identically to one that ran and passed.
+    # On 2026-08-14 that was 100 of 104 directories graded "trusted" on a check
+    # that never executed. A pass must assert that something was measured; it
+    # must never be the mere absence of a failure.
+    why: list[str] = []
+    replayed = credited is not None and total_seconds > credited
+    if replayed:
+        why.append(
+            f"credited {credited:.0f}s for {total_seconds:.0f}s of logged play "
+            f"({total_seconds / max(credited, 1e-9):.0f}x impossible)"
+        )
+
+    unprovenanced = False
+    if codes == {None}:
+        unprovenanced = True
+        why.append(f"no code fingerprint on any of {games} games")
+    elif len(codes) > 1:
+        unprovenanced = True
+        why.append(f"{len(codes)} different code fingerprints in one match")
+    if not cfg.get("fingerprint"):
+        unprovenanced = True
+        why.append("config.json has no spec fingerprint")
+
+    # The inequality PHILOSOPHY calls "physically impossible to violate
+    # legitimately" needs a credited wall clock to compare against, and that
+    # comes only from `runs/lab/state.json`. Matches driven by a shell script
+    # rather than the lab have none, so the check ABSTAINS. Abstention is not
+    # a pass.
+    unverifiable = credited is None
+    if unverifiable and games:
+        why.append(
+            "no credited job wall clock: the sum(game.seconds) <= job.seconds "
+            "check could not run, so this match is UNCHECKED, not clean"
+        )
+
     if games == 0:
-        verdict, why = "empty", ["no games"]
+        verdict = "empty"
+        why = ["no games"]
+    elif replayed:
+        verdict = "REPLAYED"
+    elif unprovenanced:
+        verdict = "unprovenanced"
+    elif unverifiable:
+        verdict = "unverifiable"
     else:
-        if credited is not None and total_seconds > credited:
-            verdict = "REPLAYED"
-            why.append(
-                f"credited {credited:.0f}s for {total_seconds:.0f}s of logged play "
-                f"({total_seconds / max(credited, 1e-9):.0f}x impossible)"
-            )
-        if codes == {None}:
-            if verdict == "trusted":
-                verdict = "unprovenanced"
-            why.append(f"no code fingerprint on any of {games} games")
-        elif len(codes) > 1:
-            if verdict == "trusted":
-                verdict = "unprovenanced"
-            why.append(f"{len(codes)} different code fingerprints in one match")
-        if not cfg.get("fingerprint"):
-            if verdict == "trusted":
-                verdict = "unprovenanced"
-            why.append("config.json has no spec fingerprint")
+        verdict = "trusted"
 
     return {
         "name": d.name,
@@ -159,10 +200,18 @@ def main() -> int:
                 print(f"  {r['name']}: {w}")
         print(f"\nwrote {out_path}")
 
+    from collections import Counter
+    tally = Counter(r["verdict"] for r in rows)
     bad = [r for r in rows if r["verdict"] not in ("trusted", "empty")]
-    replayed = [r for r in rows if r["verdict"] == "REPLAYED"]
-    print(f"\n{len(rows)} matches: {len(rows) - len(bad)} trusted, "
-          f"{len(replayed)} REPLAYED, {len(bad) - len(replayed)} unprovenanced")
+    print(f"\n{len(rows)} matches: " + ", ".join(
+        f"{tally[v]} {v}" for v in
+        ("trusted", "unverifiable", "unprovenanced", "REPLAYED", "empty")
+        if tally[v]))
+    if tally["unverifiable"]:
+        print(f"\n{tally['unverifiable']} matches could not be checked at all. "
+              "The wall-clock inequality needs a credited job time from "
+              "runs/lab/state.json, and only lab-driven jobs have one. This is "
+              "a statement about coverage, not about those matches being dirty.")
     if args.check and bad:
         print("FAIL: numbers from these matches may not be cited.", file=sys.stderr)
         return 1

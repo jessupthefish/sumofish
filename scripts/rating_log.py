@@ -31,6 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 LOG = ROOT / "logs" / "rating.jsonl"
 USER = "SumoFish"
 CONTROLS = ("bullet", "blitz", "rapid", "classical")
+# Controls we also fetch a win/loss/draw breakdown for. `/api/account` and
+# `/api/user/{name}` only carry an ACCOUNT-WIDE count, so a "352W 393L 178D"
+# next to a rapid rating silently mixes in bullet and blitz -- and those are
+# where the losses concentrate, so the headline control looks worse than it is.
+# Rapid only, deliberately: one extra request per sample, and the other two
+# controls have 23 and 38 games against rapid's 785.
+DETAIL_CONTROLS = ("rapid",)
 
 
 def fingerprint() -> dict:
@@ -71,6 +78,41 @@ def _fetch(path: str, token: str | None):
     req = urllib.request.Request(f"https://lichess.org{path}", headers=headers)
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
+
+
+def perf_counts(control: str) -> dict | None:
+    """Win/loss/draw for ONE time control.
+
+    `/api/user/{name}/perf/{perf}` is the only endpoint that breaks the record
+    down per control, and there is no authenticated equivalent, so this shares
+    the public per-IP budget that lichess-bot is already spending from. Treated
+    as strictly best-effort: on any failure the sample is still written, just
+    without this field, because a missing breakdown is a cosmetic gap and a
+    missing SAMPLE is a hole in the one record of whether a deploy helped.
+    """
+    try:
+        d = _fetch(f"/api/user/{USER}/perf/{control}", None)
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        code = getattr(e, "code", None)
+        print(f"[rating] perf/{control} unavailable ({type(e).__name__}"
+              f"{f' {code}' if code else ''}); no W/L/D this sample")
+        return None
+    c = (d.get("stat") or {}).get("count") or {}
+    if not c:
+        return None
+    # win+loss+draw sums to `all`, not to `rated`, so `all` is the figure that
+    # makes the three numbers add up when they are shown together.
+    out = {"win": c.get("win", 0), "loss": c.get("loss", 0),
+           "draw": c.get("draw", 0), "played": c.get("all", 0)}
+    # Peak rating for this control. Worth recording because the current number
+    # alone never says whether it is at its ceiling or well down from it, and
+    # this endpoint is the only place lichess reports it.
+    hi = (d.get("stat") or {}).get("highest") or {}
+    if isinstance(hi.get("int"), int):
+        out["peak"] = hi["int"]
+        if hi.get("at"):
+            out["peak_at"] = hi["at"]
+    return out
 
 
 def sample() -> dict | None:
@@ -125,6 +167,11 @@ def sample() -> dict | None:
         },
         "deployed": fingerprint(),
     }
+    for c in DETAIL_CONTROLS:
+        if c in rec["ratings"]:
+            got = perf_counts(c)
+            if got:
+                rec["ratings"][c].update(got)
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a") as f:
         f.write(json.dumps(rec) + "\n")

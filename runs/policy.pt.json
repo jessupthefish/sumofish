@@ -1,0 +1,21 @@
+{
+  "source": "runs/9M-bc-2026-08-01/best.pt",
+  "promoted_at": 1785634016.7760508,
+  "promoted_at_human": "2026-08-01 11:5x PDT",
+  "promoted_by": "manual swap (scripts/promote.py handles runs/value.pt only)",
+  "step": 300000,
+  "held_out_loss": {
+    "new": 1.59138,
+    "incumbent": 1.6667,
+    "delta": -0.07532,
+    "measured_by": "scripts/eval_heldout.py, which replicates train.py's validate() and reproduces its logged 1.59485 for step 280k exactly"
+  },
+  "puzzles": {
+    "new": "0.435-0.447",
+    "incumbent": 0.409
+  },
+  "elo": null,
+  "smoke": "passed: boots, uci ok, 7780 nps at 3.0s (floor 300), 4 positions all legal, report() clean",
+  "caveat": "UNMEASURED IN ELO. Selected on held-out loss, which PHILOSOPHY ranks as an instrument below Elo. The incumbent had NO held-out number until today (runs/9M-causal logged 31 puzzle evals and zero val_loss), so this comparison had to be created before it could be made. The policy net sets the prior for every search, so c_puct/FPU tuning must now be settled against THIS prior, not the old one.",
+  "rollback": "cp runs/policy.pt.previous runs/policy.pt"
+}

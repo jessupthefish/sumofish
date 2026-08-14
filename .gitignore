@@ -24,7 +24,7 @@ logs/
 reference/
 research/attempts/
 research/best.py
-runs/
+runs/*
 runs-*.log
 bot.env
 *.env
@@ -42,3 +42,9 @@ tools/
 *.pt.*
 *.bag.*
 *.safetensors.*
+
+# Provenance sidecars are NOT large and NOT reproducible: runs/policy.pt.json holds the
+# only rollback instruction for the live policy net, and they record why each
+# net was promoted. They must survive a fresh clone. Negation goes last, because the
+# *.pt.* rule above would otherwise re-exclude value.pt.json (last match wins).
+!runs/*.pt.json

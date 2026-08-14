@@ -91,6 +91,12 @@ POSITIONS = [
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("checkpoint")
+    ap.add_argument("--net", choices=("value", "policy"), default="value",
+                    help="which slot the candidate fills. The other slot is "
+                         "filled from the live file, so a policy candidate is "
+                         "gated inside the real engine with the deployed value "
+                         "net beside it, which is the only way its priors get "
+                         "exercised at all.")
     ap.add_argument("--seconds", type=float, default=3.0,
                     help="per-move budget to test at")
     ap.add_argument("--min-nps", type=float, default=300.0,
@@ -148,14 +154,23 @@ def main() -> int:
     from sumofish.rust_mcts import select_mcts_class
     from sumofish.value_policy import ValuePolicy
 
-    ck = torch.load(path, map_location="cuda:0", weights_only=False)
+    # Whichever slot the candidate fills, the OTHER slot comes from the live
+    # file. Gating a policy candidate against the deployed value net is the
+    # only arrangement in which its priors are exercised by a real search.
+    value_path = path if args.net == "value" else ROOT / "runs/value.pt"
+    policy_path = path if args.net == "policy" else ROOT / "runs/policy.pt"
+    if not Path(value_path).exists() or not Path(policy_path).exists():
+        print(f"FAIL: need both nets; missing one of {value_path}, {policy_path}")
+        return 1
+
+    ck = torch.load(value_path, map_location="cuda:0", weights_only=False)
     fields = {f.name for f in __import__("dataclasses").fields(ModelConfig)}
     model = ChessTransformer(
         ModelConfig(**{k: v for k, v in ck["cfg"].items() if k in fields}))
     model.load_state_dict(
         {k: v.float() for k, v in (ck.get("ema") or ck["model"]).items()})
     value = ValuePolicy(model, HLGauss(bins=ck["cfg"]["output_size"]), device="cuda:0")
-    policy, _ = load_policy(str(ROOT / "runs/policy.pt"))
+    policy, _ = load_policy(str(policy_path))
 
     # The same branch `search_engine.py::main()` takes, on the same flags, so
     # this constructs whichever engine is actually deployed rather than

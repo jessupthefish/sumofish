@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-"""Swap the live value net, by hand, the same way the lab does it automatically.
+"""Swap a live net, by hand, the same way the lab does it automatically.
+
+Handles BOTH deployed nets as of 2026-08-14. It previously handled `value.pt`
+alone, which meant the policy net -- half the deployed model -- was swapped
+with `cp` and had no tooled rollback. `runs/policy.pt.json` still carries the
+scar: `"promoted_by": "manual swap (scripts/promote.py handles runs/value.pt
+only)"`.
 
 Rewritten 2026-07-29. The previous version was broken three ways, and all three
 are worth recording, because this is the path `CLAUDE.md` pointed a human at:
@@ -23,8 +29,9 @@ decides: keep the outgoing net, stage beside the target, rename atomically, writ
 the provenance sidecar, and gate on the smoke test rather than on a noisy metric.
 
     scripts/promote.py runs/9M-sv-warm-full/best.pt
-    scripts/promote.py --status
-    scripts/promote.py --rollback
+    scripts/promote.py --net policy runs/9M-bc-2026-08-01/best.pt
+    scripts/promote.py --status                 # both nets
+    scripts/promote.py --net policy --rollback
 """
 
 from __future__ import annotations
@@ -39,13 +46,28 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LIVE = ROOT / "runs" / "value.pt"
-PREVIOUS = ROOT / "runs" / "value.pt.previous"
-STAGED = ROOT / "runs" / "value.pt.staged"
-SIDECAR = ROOT / "runs" / "value.pt.json"
+
+# Both nets, not just the value net. Until 2026-08-14 this script handled
+# `value.pt` alone, so the policy net -- half the deployed model -- was
+# promoted by a hand-typed `cp` and its only rollback instruction lived in a
+# sidecar that `.gitignore` excluded. `runs/policy.pt.json` still records
+# `"promoted_by": "manual swap (scripts/promote.py handles runs/value.pt
+# only)"`, which is the artefact of exactly that gap.
+NETS = ("value", "policy")
 
 
-def smoke(ckpt: Path) -> tuple[bool, str]:
+def paths(net: str) -> dict[str, Path]:
+    """Live, previous, staged and sidecar paths for one net."""
+    base = ROOT / "runs" / f"{net}.pt"
+    return {
+        "live": base,
+        "previous": base.with_suffix(".pt.previous"),
+        "staged": base.with_suffix(".pt.staged"),
+        "sidecar": base.with_suffix(".pt.json"),
+    }
+
+
+def smoke(ckpt: Path, net: str) -> tuple[bool, str]:
     """Does this checkpoint actually work? `scripts/smoke.py` is the gate.
 
     A match says "stronger"; this says "loads, boots, moves inside the budget,
@@ -55,7 +77,8 @@ def smoke(ckpt: Path) -> tuple[bool, str]:
     `failed`.
     """
     r = subprocess.run(
-        [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/smoke.py"), str(ckpt)],
+        [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/smoke.py"),
+         str(ckpt), "--net", net],
         capture_output=True, text=True, check=False,
     )
     out = r.stdout + r.stderr
@@ -66,27 +89,38 @@ def smoke(ckpt: Path) -> tuple[bool, str]:
     return True, "smoke passed"
 
 
-def status() -> int:
-    if not LIVE.exists():
-        print("no runs/value.pt -- nothing is live")
-        return 1
-    print(f"live: {LIVE}  ({LIVE.stat().st_size / 1e6:.0f} MB)")
-    if SIDECAR.exists():
-        print(json.dumps(json.loads(SIDECAR.read_text()), indent=2))
-    else:
-        print("no provenance sidecar: this net was put here by something that did "
-              "not record why, so it cannot be attributed.")
-    print(f"rollback available: {PREVIOUS.exists()}")
-    return 0
+def status(nets: tuple[str, ...] = NETS) -> int:
+    """Both nets by default: the deployed engine is the PAIR, and reporting on
+    one of them was how the policy net's provenance went unexamined."""
+    rc = 0
+    for net in nets:
+        p = paths(net)
+        print(f"=== {net} ===")
+        if not p["live"].exists():
+            print(f"  no {p['live'].relative_to(ROOT)} -- nothing is live")
+            rc = 1
+            continue
+        print(f"  live: {p['live'].relative_to(ROOT)}  "
+              f"({p['live'].stat().st_size / 1e6:.0f} MB)")
+        if p["sidecar"].exists():
+            body = json.dumps(json.loads(p["sidecar"].read_text()), indent=2)
+            print("  " + body.replace("\n", "\n  "))
+        else:
+            print("  no provenance sidecar: this net was put here by something "
+                  "that did not record why, so it cannot be attributed.")
+        print(f"  rollback available: {p['previous'].exists()}")
+    return rc
 
 
-def rollback() -> int:
-    if not PREVIOUS.exists():
-        print("no runs/value.pt.previous to roll back to", file=sys.stderr)
+def rollback(net: str) -> int:
+    p = paths(net)
+    if not p["previous"].exists():
+        print(f"no {p['previous'].relative_to(ROOT)} to roll back to",
+              file=sys.stderr)
         return 1
-    shutil.copyfile(PREVIOUS, STAGED)
-    os.replace(STAGED, LIVE)
-    print(f"rolled back: {PREVIOUS} -> {LIVE}")
+    shutil.copyfile(p["previous"], p["staged"])
+    os.replace(p["staged"], p["live"])
+    print(f"rolled back: {p['previous'].name} -> {p['live'].name}")
     print("the next game picks it up; no restart needed")
     return 0
 
@@ -94,6 +128,11 @@ def rollback() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("checkpoint", nargs="?")
+    ap.add_argument("--net", choices=NETS, default="value",
+                    help="which net this checkpoint is. Default value, because "
+                         "that is what the lab promotes; pass --net policy for "
+                         "the prior. Getting this wrong is caught by the smoke "
+                         "test, which loads the candidate into the named slot.")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--rollback", action="store_true")
     ap.add_argument(
@@ -107,7 +146,7 @@ def main() -> int:
     if args.status:
         return status()
     if args.rollback:
-        return rollback()
+        return rollback(args.net)
     if not args.checkpoint:
         ap.error("give a checkpoint, or --status / --rollback")
 
@@ -116,9 +155,11 @@ def main() -> int:
         print(f"no such checkpoint: {ckpt}", file=sys.stderr)
         return 1
 
+    p = paths(args.net)
+
     if not args.skip_smoke:
-        print(f"smoke testing {ckpt.name} ...")
-        ok, msg = smoke(ckpt)
+        print(f"smoke testing {ckpt.name} as the {args.net} net ...")
+        ok, msg = smoke(ckpt, args.net)
         print(f"  {msg}")
         if not ok:
             print("refusing to promote a checkpoint that does not work",
@@ -129,15 +170,16 @@ def main() -> int:
 
     # Keep the outgoing net. One deep is thin, but a rollback that exists beats
     # one that does not.
-    if LIVE.exists():
-        shutil.copyfile(LIVE, PREVIOUS)
+    if p["live"].exists():
+        shutil.copyfile(p["live"], p["previous"])
 
     # Stage beside the target and rename. Atomic, because the engine loads this
     # file per game and a game starting mid-copy would read a torn one.
-    shutil.copyfile(ckpt, STAGED)
-    os.replace(STAGED, LIVE)
+    shutil.copyfile(ckpt, p["staged"])
+    os.replace(p["staged"], p["live"])
 
-    SIDECAR.write_text(json.dumps({
+    p["sidecar"].write_text(json.dumps({
+        "net": args.net,
         "source": str(ckpt),
         "promoted_at": time.time(),
         "promoted_by": "scripts/promote.py (manual)",
@@ -147,13 +189,13 @@ def main() -> int:
         # fiction. The lab writes a real one because a match gave it one.
         "elo": None,
         "smoke": "skipped" if args.skip_smoke else "passed",
-        "rollback": "scripts/promote.py --rollback",
+        "rollback": f"scripts/promote.py --net {args.net} --rollback",
     }, indent=2))
 
-    print(f"promoted -> {LIVE}")
+    print(f"promoted -> {p['live']}")
     print("the next game picks it up; NO restart, because lichess-bot spawns a "
           "fresh engine per game and restarting costs the game in progress")
-    print("rollback: scripts/promote.py --rollback")
+    print(f"rollback: scripts/promote.py --net {args.net} --rollback")
     print()
     print("This promotion is UNMEASURED. If it is meant to be a version, cut one "
           "deliberately with scripts/release.py.")
