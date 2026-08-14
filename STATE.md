@@ -1050,6 +1050,13 @@ that many games. Keep running it; a replay is invisible to every other check.
   claim as "the flag is good", and this file has been burned by that exact
   substitution before.
 
+  **RUNNING as of 2026-08-14 08:30, and the sign is already reversed.**
+  `runs/matches/dedup-time`, dedup alone at `--time 0.5` on the deployed
+  engine, 600 games: **+20.7 +-15.2 at 522 games, LOS 0.996, 71% draws.** Not
+  yet decisive, and already nowhere near -168: the old figure sits about twelve
+  half-widths below this arm's point estimate. Wait for the full 600 before
+  quoting a number, but the direction is not in doubt.
+
 - **`mate_distance` is the only one of the three genuinely unmeasured**, and
   `tests/verify_mate.py` is why it is only HALF unmeasured. Run 2026-08-13 at
   400 sims over 34 exhaustively-solved forced mates: **25 proofs claimed, 0
@@ -1065,13 +1072,44 @@ that many games. Keep running it; a replay is invisible to every other check.
   WORSE from 400 to 2000 simulations. A real policy prior concentrates on
   forcing moves and would not do that.
 
-  **Priced on the GPU 2026-08-13: `runs/matches/mate-distance-400sims`**, ON vs
-  OFF head to head, 2000 games at 400 sims, seed 4242, both arms carrying the
-  deployed `vloss_fix` and the shipped v6 constants, `--no-sprt` so the
-  interval is an interval and not a stopped-boundary artefact. Fixed SIMULATIONS
-  deliberately, which makes the result a **lower bound** on the deployed value:
-  the 24% tree reduction is a clock gain, and a fixed-simulation match is blind
-  to it by construction.
+  **PRICED, and it is a real gain: +23.7 +-6.7 Elo, LOS 1.0000**, over 2000
+  games at 400 sims (`runs/matches/mate-distance-400sims`, W457 D1222 L321, 61%
+  draws, seed 4242, both arms on the deployed `vloss_fix` and the v6 constants,
+  `--no-sprt`). This is the largest measured gain in the project since the v6
+  constants themselves, and it costs no training.
+
+  **The mechanism is NOT what the flag is named after.** Two things rule out
+  the obvious readings. `tests/verify_mate.py --real-nets` showed move choice
+  saturated: with a real prior the engine already plays the shortest mate in
+  34/34 positions with the fix and without. And the "shuffles in a won position
+  until the fifty-move rule" failure did not appear either: **3 fifty-move
+  games out of 2000.** What is left is the tree: refuting proven-lost branches
+  makes the search 52% smaller on tactical positions, so at a FIXED simulation
+  count the same simulations are spent on a better-chosen part of the tree.
+  That is a search-allocation gain, and it is what this arm measured.
+
+  Correction to what stood here on 2026-08-13: this arm was called "a lower
+  bound, because the tree reduction is a clock gain". Half right. The reduction
+  is ALSO a per-simulation cost saving, which this arm is genuinely blind to,
+  but the pruning helps at fixed simulations too and that is most of the +23.7.
+
+- **THE 8x-BUDGET ARM CAME BACK INCONCLUSIVE, and that is the operating-point
+  rule doing its job rather than a null to shrug at.** `matedist-3200`, 400
+  games at 3200 sims: **+10.4 +-15.8, LOS 0.903, 74% draws.** Its own interval
+  includes zero, so it does not establish a gain. It also does not establish a
+  DECAY: the difference from the 400-sim arm is -13.2 +-17.1, z = -1.51, so the
+  two are statistically consistent.
+
+  **It is underpowered, by construction, and the fix is games.** 400 games at
+  3200 sims cost 6.1 GPU-hours; resolving +23.7 there needs roughly 2000, i.e.
+  ~30 hours. `match.py` excludes `games` from the resume fingerprint precisely
+  so an arm can be extended later, so re-running with `--games 2000` continues
+  rather than replays.
+
+  **Do not ship `mate_distance` on the 400-sim number alone.** The rule earned
+  in `docs/OPERATING-POINT.md` was that a deployment decision needs a second arm
+  higher up the budget axis. It has one, and it says "not shown". Deployment is
+  a further 6.2 doublings above 3200 anyway.
 - A blocking pre-push hook running `verify_replays.py --check`,
   `tests/verify_data.py`, and `tests/run_all.sh`.
 - **DONE 2026-08-13: `docs/OPERATING-POINT.md`**, regenerate the measured half
