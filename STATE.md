@@ -564,12 +564,38 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 >   lichess-bot), left alone because the bot holds that file open for appending.
 >   Counting games from that directory needs dedup by `Site`, not a file count.
 >
-> - **Two things that look broken and are not. Do not re-investigate.** The
->   `Traceback` blocks in the bot journal ending in `ReadTimeoutError` are
->   lichess event-stream timeouts; the line that matters is `Control stream
->   error, reconnecting` and it recovers every time (10 on 08-08). And
->   `sumofish-train-watchdog` firing every 5 minutes with no training running
->   logs `no live training process; nothing to watch` and exits 0.
+> - **ONE thing that looks broken and is not**, and one that looked benign and
+>   is not. `sumofish-train-watchdog` firing every 5 minutes with no training
+>   running logs `no live training process; nothing to watch` and exits 0. That
+>   one is fine.
+>
+>   **The `ReadTimeoutError` block is NOT fine, and the "do not re-investigate"
+>   ruling that stood here until 2026-08-14 was a load-bearing lie.** The
+>   observation was right: the stream does recover, every time. The inference
+>   was wrong: *the games do not*. Deduped across `logs/games/` and
+>   `logs/games-superseded/` on the `Site` URL, SumoFish has lost **10 rated
+>   games on time at 900+10** and separately **abandoned 23 more by accepting a
+>   challenge and never making its first move**. The abandons carry
+>   `Result "*"`, so they cost no rating and are invisible to `rating.jsonl`,
+>   which is why nobody counted them. 33 events at the deployed time control.
+>
+>   Mechanism, in source: `rust/src/tree.rs:658-659` checks the deadline
+>   **between batches, not mid-batch**, so a stalled GPU callback means the
+>   check never runs. Every 08-07 and 08-08 forfeit falls inside a concurrent
+>   lab job. One game shows a 290-second move against a ~30-second budget, then
+>   a terminal stall while still holding 384 seconds.
+>
+>   The rating cost is small and honest: **~+7.2 Elo**, because 6 of the 10
+>   forfeits are against 2759-2981 opponents where the expected score is
+>   0.10-0.25 and losing is nearly free. That is half the +-14.8 resolution of
+>   the only instrument that can see it. **Fix it because it is cheap and
+>   correct, and never claim the win afterwards.**
+>
+>   The general rule this earns: **a file with a demonstrated drift rate of
+>   five stale claims in four days must not be allowed to CLOSE an
+>   investigation.** "Do not re-investigate" rulings belong in `LAB-NOTES.md`,
+>   where they are dated and read as "on 2026-08-08 this looked benign" rather
+>   than as a standing verdict.
 
 > **THE WIDTH SWEEP IS COMPLETE, all three arms.** Matched tokens (20k steps x
 > 1024 effective batch = 20.5M positions), matched seed, matched data order;
@@ -812,6 +838,23 @@ is now the single largest speed item, which is a reversal: it was item 4 when
 the network was 9%.
 
 ## Next session, in order
+
+> **SUPERSEDED 2026-08-14 by `docs/PLAN-2026-08-14.md`, which is the ordered
+> plan. Read that first.** It comes out of a three-agent audit plus an
+> eleven-seat Council and it prices the whole programme; this section is kept
+> because the ladder reasoning below is still correct and still the right
+> design, but the ORDER here is stale. Where the two disagree, the plan wins.
+>
+> The plan's short version: measure `compile` before buying anything (it has
+> never once been isolated, its entire case against is 40 games with two flags
+> bundled), buy the FUSION of the two nets rather than width, and if the
+> arithmetic still holds after the bench, ship one shared-trunk two-head net at
+> d=384. Phase 0's repairs are done and in the tree. Three claims died on
+> contact with the numbers on the day it was written, all three the same
+> species of error, and all three are recorded in LAB-NOTES: the width sweep
+> measured the gradient clip, `9M-sv-long`'s terminal flatness measured the
+> cosine anneal, and the calibration finding measured the match result. Before
+> a number becomes a gate, regress it on the thing you already know moves it.
 
 **NOW, and it blocks every Elo claim: rebuild the ladder without the chain.**
 The absolutes are withdrawn because they walk a ruler SumoFish does not
@@ -1219,10 +1262,17 @@ that many games. Keep running it; a replay is invisible to every other check.
 - State value warm-started from its body -> 57.4% puzzles at 12% trained.
 - The 9M state-value curve: 48.6% at 10k, 64.8% at 100k, 67.0% at 150k, 68.7%
   at 280k; adjacent evals bounce 0.77 points. Flat from ~200k, while train loss
-  was still falling (2.2422 at 200k, 2.2133 at 292k). That is **underfitting**,
-  not capacity-bound -- 307M samples is under one epoch of a 36GB bag, so
-  overfitting is not available as an explanation. An earlier version of this
-  file asserted the opposite and steered a 37-hour run.
+  was still falling (2.2422 at 200k, 2.2133 at 292k). **The "that is
+  underfitting, not capacity-bound" reading of this is DELETED, 2026-08-14.**
+  It rested on "307M samples is under one epoch", and the deployed net is now
+  at 921.6M positions = **1.74 epochs**, so the premise expired. Worse, the
+  diagnosis never discriminated: all three width-sweep arms show the same
+  train-minus-val sign across a 1000x parameter range (tiny -0.077, 9M -0.099,
+  136M -0.092), because held-out is scored on EMA weights against a running
+  mean of raw ones. An earlier version of this file asserted the opposite of
+  the underfitting reading and steered a 37-hour run; this file then asserted
+  the underfitting reading for two weeks on evidence that could not support
+  either. See LAB-NOTES 2026-08-14.
 - **Extended to 600k, and it is STILL underfitting.** `runs/9M-sv-continue`:
   val 2.1522 at 305k -> **2.1120 at 600k**, puzzles 0.682 -> **0.700**. Held-out
   loss sits *below* train loss at all 63 evals and the gap never widens

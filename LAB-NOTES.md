@@ -1602,3 +1602,259 @@ Two other things worth keeping from the timings:
   cost.
 - Sizing a queue from `runs/matches` also answers "has this already been run",
   which is the check that was missing on 2026-08-12.
+
+## 2026-08-14: an audit, a council, and four false numbers from four sources
+
+A three-agent code audit plus an eleven-seat Council session. Full transcript at
+`~/.claude/council-runs/20260814-sumofish-next-phase/`. The plan it produced is
+in the session's plan file. What belongs here is the scar tissue.
+
+- **The width sweep measured the gradient clip, not width, and the verdict
+  "width bought nothing" is VOID rather than negative.** `--clip` defaults to
+  1.0 (`train.py`) and `clip_grad_norm_` returns the **pre-clip** norm, which is
+  the only thing logged. Every logged step of every arm was clipped, so each arm
+  ran at an effective `lr * min(1, clip/gn)`. Mean multipliers: **tiny 0.100,
+  136M 0.247, 9M 0.326** — perfectly rank-ordered with the final val losses
+  (2.9690 / 2.7678 / 2.5516). The 136M was also the BEST arm at step 2500
+  (3.0953 against the 9M's 3.3662), regressed 5k-10k, and at step 20000 was
+  still improving fastest (terminal slope -0.0197 against -0.0154). Neither arm
+  converged. A void trial is more dangerous than a negative one, because a
+  negative one at least closes a question. `train.py` now logs `clip_mult`
+  beside `grad_norm`; logging only the pre-clip norm is what hid this.
+
+- **"Held-out sits below train, therefore underfitting" discriminates nothing.**
+  All three sweep arms show the same sign across a **1000x** parameter range
+  (tiny -0.077, 9M -0.099, 136M -0.092). Held-out is scored on **EMA** weights
+  and train loss is a running mean of **raw** ones, so the offset is an artefact
+  of the comparison, not a property of any model. A test that returns the same
+  verdict for a 0.14M and a 134M model is not a capacity test.
+
+- **The "307M is under one epoch" argument expired and was still being quoted.**
+  The deployed value net is `9M-sv-long`: 900k steps x 1024 = **921.6M positions
+  = 1.74 epochs**. Deleted at its three points of *inference* (`train.py`,
+  `scripts/lab.py`, `STATE.md`); the statements that are merely true facts about
+  the 300k BC run were left alone. `train.py`'s version was the worst: it said
+  "It was capacity" and then gave the argument for the opposite conclusion, and
+  `STATE.md` two lines away records that the opposite assertion once steered a
+  37-hour run.
+
+- **`scripts/bench_search.py` loads the policy net ONCE, outside the arm loop,
+  and varies only the value net.** So the measured `3.06x` is
+  `(tree + p256 + v1024) / (tree + p256 + v256)`, and the entire d=256 policy
+  forward sits in the fitted intercept. Any shared-trunk cost model built on
+  those two points is therefore extrapolating off the axis that was never
+  varied, and the two-point linear fit implies a **negative** tree time
+  (`T + 2a = -48.1`), which is impossible. The script now takes shape specs
+  (`d384`, `d512L8h16`) and has `--decompose` to split the intercept directly.
+  **Do not price a fused net until that has run on an idle box.**
+
+- **`scripts/verify_replays.py` defaulted to `"trusted"` and downgraded only on
+  positive evidence.** Its central check needs a credited job wall clock from
+  `runs/lab/state.json`, and the lab has driven nothing since 2026-08-02, so the
+  inequality was ABSTAINING on 100 of 104 directories while the tool printed
+  "99 trusted". Now fails closed: **4 trusted, 95 unverifiable, 4 unprovenanced,
+  1 empty**, and `--check` exits 1. The four it can verify are the `sims-*`
+  rungs it was written to catch, which are withdrawn on other grounds, so
+  effective coverage of live claims is zero. A pass must assert that something
+  was measured; it must never be the absence of a failure.
+
+- **`--init-from` accepted a 1-of-93 transfer silently.** Measured against the
+  real checkpoints: a d=256 donor into d=384 or d=1024 transfers exactly one
+  tensor, `head.bias`. A d=256/L=8 donor into d=256/L=16 transfers 93 of 181
+  (51.4%), which is the dangerous case because it *looks* like a success and
+  then feeds a trained 8-block stack into eight random ones. `train.py` now
+  refuses below 90% unless `--allow-partial-transfer` is passed. LAB-NOTES asked
+  for this guard on 2026-07-29 after it cost 35 GPU-hours; it did not exist
+  until today.
+
+- **The `ReadTimeoutError` "do not re-investigate" ruling was hiding 33 events.**
+  10 rated time forfeits at 900+10 plus 23 games abandoned without a first move,
+  the latter carrying `Result "*"` so they are invisible to `rating.jsonl`.
+  Mechanism is `rust/src/tree.rs:658-659` checking the deadline between batches,
+  not mid-batch. Real cost ~+7.2 Elo against a +-14.8 floor, so fix it and never
+  claim the win. **A file that goes stale five times in four days must not be
+  allowed to close an investigation.**
+
+- **Half the deployed model had no tooled rollback.** `scripts/promote.py`
+  handled `value.pt` only, so the policy net was swapped with `cp` and the only
+  instruction for undoing it lived in `runs/policy.pt.json`, which `.gitignore`
+  excluded. A fresh clone could not have recovered the engine. `promote.py` now
+  takes `--net {value,policy}`, `smoke.py` takes `--net` so a policy candidate
+  is gated inside a real search with the live value net beside it,
+  `runs/*.pt.json` is un-ignored, and `docs/DEPLOY.md` is tracked.
+
+- **`compile` has never been isolated, in the entire archive.** Census of all
+  104 match configs: exactly **two** arms ever set it, `rust-fastflags-v3` and
+  `rust-fastflags-v3-contended`, both at **20 games** and both with `dedup`
+  bundled in. `dedup-time` carries `compile=False` on both sides and is not a
+  compile arm at all. Forty games, none isolating the flag, is the entire basis
+  for the -168 Elo that has kept a measured 1.9x on ~100% of search time
+  switched off since 2026-07-30. The diagnosed -168 mechanism is dedup's (more
+  descents collapsing onto already-evaluated leaves); compile sends the same
+  rows and cannot buy fake search.
+
+- **The seat that argued hardest was the one that had to retract most.** Six
+  self-refutations across the two rounds, including a "-68 rating points" that
+  was really +7.2 (it counted duplicated PGN records, and most of the forfeits
+  were against opponents where losing is nearly free), a VRAM constraint that
+  is a 2.6% accumulation tax, and a measurement-versus-training cost ratio that
+  inverted the moment model size went on the table. The Council's value was
+  almost entirely in the drops, not the proposals.
+
+## 2026-08-14, later: "further training is worthless" is an artefact of the anneal
+
+Reading the 90 evals in `runs/9M-sv-long/log.jsonl` for the first time, as the
+plan's item 1.0 asked. The number the Council put into the plan does not
+survive contact with them, and I had already written it into the plan myself.
+
+**The claim was "0.0139 nats per doubling of training compute AT THE CURRENT
+POINT", concluding that further training of the 9M is close to worthless.**
+0.0139 is `0.0903 nats / 6.49 doublings`, i.e. the average over the WHOLE run
+from step 10k to 900k. It is not a local rate and it should not have been
+labelled as one.
+
+**The local rate is roughly 1.75x higher and it is ABOVE the noise floor.**
+Least-squares `d(val)/d(log2 steps)` over the run's second half is
+**-0.0248 nats/doubling**, and the last true doubling (450k -> 900k) moved val
+**0.0241 nats** against a 0.0137 reproducibility floor. So one more doubling is
+a measurable quantity, not a rounding error.
+
+**And the "flat over the last 70k steps" observation, which appears in
+`runs/value.pt.json` and in STATE.md, is a statement about the LEARNING RATE
+SCHEDULE, not about the model.** `9M-sv-long` ran `--steps 900000 --lr 2e-4`
+with `lr_at`'s cosine and `min_frac=0.1`, so the LR at step 900k is **2.0e-05**,
+exactly the floor. The per-100k decline tracks the LR decay all the way down:
+
+    -0.0188  -0.0148  -0.0125  -0.0101  -0.0079  -0.0038  -0.0057  -0.0017
+
+A run annealed to its floor is flat because it was told to be. Reading that as
+"the architecture has stopped learning" is the same species of error as reading
+the width sweep's clip as capacity: an instrument setting mistaken for a
+property of the thing measured. Twice in one day, from the same file.
+
+**What is safe to say.** Further training at this architecture buys something
+measurable but small: ~0.024 nats per doubling, which at the loose <=660
+Elo/nat upper bound is <=16 Elo, and the only clock instrument this project
+owns resolves +-14.7. So it is not a good buy, and the ordering in the plan is
+unchanged. **But do not write "worthless" into the docs, and do not test it by
+continuing the annealed run** -- a warm restart off a floored LR is the dip
+LAB-NOTES already records at -2.7 and -2.8 puzzle points. The honest test is a
+fresh cosine over the longer horizon, and it is not worth its GPU-hours today.
+
+## 2026-08-14: the counter PHILOSOPHY mandates was itself wrong, by one per search
+
+Found while implementing plan item 0.10 (record sims per game), not by looking
+for it. A two-game fixed-sim smoke match came back with `white_evals 651` and
+`white_unique 620` over 31 moves, with **dedup off**. The doc comment on
+`unique_evaluations` (`rust/src/tree.rs:196-197`) says that with dedup off the
+two are equal by construction, and it is right about the batch loop: `existing`
+is `None` when `self.dedup` is false, so every queued leaf becomes its own
+`distinct` entry and lines 559-560 increment both counters by the same amount.
+
+**The gap is the ROOT EXPANSION.** `tree.rs:705` evaluated the root, expanded
+from it, and incremented `evaluations` only. One per search, which is exactly
+the 651-620=31 over 31 moves and 672-640=32 over 32.
+
+Consequences, in order of how much they matter:
+
+- Play is unaffected. Nothing reads either counter to choose a move, and the
+  Rust identity tests are on visit vectors, not on counters. This cannot have
+  changed a game.
+- **But it is the one metric PHILOSOPHY mandates reporting** ("Report
+  `unique/s`, never raw nps"), and it was wrong wherever it was read. Its only
+  consumer was `tests/verify_dedup.py`, which compares dedup ON against dedup
+  OFF and is dominated by a ~54% row saving, so a one-per-search offset never
+  surfaced.
+- It does not rescue the 2026-07-29 dedup verdict. That comparison was still a
+  deduplicated distinct-count against a non-deduplicated ROW count, which is a
+  category error of a different and larger kind. This finding only means the
+  invariant used to *state* that argument was itself off by one.
+
+Fixed at the site, and the invariant is now a test rather than a comment:
+`unique_equals_evaluations_when_dedup_is_off`. **Verified it fails without the
+fix** before keeping it, because a test that cannot fail is the "no-op wearing a
+feature's hat" this file already warns about twice. 15/15 Rust unit tests pass.
+
+**The installed `.so` has NOT been rebuilt.** `cargo test` builds
+`rust/target/debug/`; the venv's `sumofish_core` and `rust/target/release/` are
+untouched, so the live bot still carries the old counter. That is deliberate:
+rebuilding swaps the library the next rated game would load, and the box has
+been playing rated games and running a match throughout. Rebuild when the box is
+next drained, which the plan requires before any measurement anyway.
+
+**The general shape, and it is the third instance today.** A quantity was
+asserted in a comment, never asserted in a test, and was false. The width
+sweep's learning rate, the 9M's terminal flatness, and now this: in all three the
+instrument was wrong and the comment describing it was believed instead. Grep
+this file for "an argument from arithmetic, not a measurement".
+
+## 2026-08-14: the calibration finding was the match result, and 90% of it literally
+
+The Council put this in the plan as item 0.14, a promotion gate: "SumoFish is
+overconfident by +0.021 against Stockfish at parity and by +0.126 when
+outclassed, while Stockfish is *under*confident in the same games. The biases do
+not cancel, so it is not a pairing artefact." It is a pairing artefact. Both
+numbers are a regression line, and the control that was supposed to rule that
+out is the artefact stated twice.
+
+**How it was caught.** Building `scripts/calibration.py` to make the finding
+reproducible, the first full-archive run printed `ruler-1400-vs-2800` with
+SF@1400 at **+0.1619** and SF@2800 at **-0.1602**. Both sides are Stockfish.
+One evaluation function, evaluating the same games, reading as badly
+overconfident from one end and badly underconfident from the other.
+
+**The mechanism, and it is not subtle once seen.** An evaluation function scores
+the POSITION. The realised result contains the position *and* who was holding
+the pieces for the next forty moves. So a weaker player standing in an equal
+position is scored ~0.5 by any correct evaluator and goes on to score ~0.15, and
+that gap is charged to the evaluator as "overconfidence". The statistic is a
+strength-gap meter wearing a calibration label.
+
+**Measured, over 138 engine-rows in 69 archived matches:**
+
+    bias = -0.4876 * (score - 0.5) + 0.0017        R^2 = 0.90
+
+Ninety percent of the variance is the match result. What is left has spread
+0.026, and:
+
+- **The "+0.126 when outclassed" row is the line.** `stockfish-anchor-1600nodes`
+  reads bias +0.0963 where the score alone predicts +0.1110. The residual is
+  **-0.0147**, i.e. against a stronger opponent SumoFish is slightly BETTER
+  calibrated than the pairing effect accounts for. The claim has the sign
+  backwards after the confounder is removed.
+- **The "+0.021 at parity" row is inside the noise.** The residual spread is
+  0.026, so a raw 0.021 at parity is not a reading.
+- **Splitting the residuals by engine family kills it outright.** Stockfish rows
+  mean -0.0002, SumoFish rows mean +0.0002, difference **+0.0004 +-0.0089**.
+  There is no SumoFish-specific signal in the archive at all.
+- **The mirror-match "clean null" proves nothing either.** `mate-distance-400sims`
+  is SumoFish against SumoFish at scores 0.527/0.473, and still reads
+  +0.0386/-0.0366, because a 0.027 score gap is enough. A null taken on two
+  *identical* engines is a null on a zero score gap, not on the statistic.
+
+**The independent check, and it is the one that should have been run first.**
+`scripts/eval_heldout.py --calibration` now measures the same property against
+the held-out LABEL, where the target does not depend on who was playing. The
+deployed net over 8,192 positions: bias **+0.0003**, ECE 0.0025, Brier 0.0034.
+Essentially perfect. Two independent lines of evidence, and the claim survives
+neither.
+
+**The general lesson, which is the third instance of it today.** The width sweep
+measured the gradient clip and was read as capacity. The terminal flatness of
+`9M-sv-long` measured the cosine anneal and was read as saturation. This
+measured the score and was read as calibration. All three are an instrument
+setting or a confounder mistaken for a property of the thing measured, and all
+three survived because nobody plotted the statistic against the obvious
+confounder before quoting it. **Before a number becomes a gate, regress it on
+the thing you already know moves it.** One line of least squares would have
+killed this before the Council seat that raised it finished speaking.
+
+**What was kept.** `scripts/calibration.py` now fits the pairing line on the
+population in front of it, subtracts it, and reports the RESIDUAL as the column
+to read, with the row null (~+-0.05, the spread of the fit) printed beside it.
+That is a real if coarse screen and it is commissioned: it reads zero across the
+whole archive. Two traps recorded in the file itself, because I hit both. The
+row null and the group null are different quantities (+-0.05 vs +-0.009) and
+quoting the group null on a single row stars nearly every row in the archive.
+And the two sides of one match are near-mirror images, so a match contributes
+roughly ONE independent residual, not two; do not use the row count as n.
