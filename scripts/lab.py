@@ -697,12 +697,20 @@ PLAN: list[Job] = [
         needs=["sweep-tiny", "sweep-9m", "sweep-136m"]),
 
     # The other way to spend unlimited compute, and the one with no downside at
-    # play time. The 9M is UNDERFITTING, measured: held-out loss 2.1438 against
-    # 2.2094 on train, so it has memorised nothing and has not run out of
-    # things to learn. Its 300k steps saw 307M positions out of a bag holding
-    # well over 500M. Three times the training at the same architecture costs
+    # play time. Its 300k steps saw 307M positions out of a bag holding well
+    # over 500M, and three times the training at the same architecture costs
     # exactly nothing per move in a game, which is the one thing a bigger net
     # cannot say.
+    #
+    # This comment used to say "the 9M is UNDERFITTING, measured: held-out
+    # 2.1438 against 2.2094 on train, so it has memorised nothing". RETRACTED
+    # 2026-08-14, twice over. That comparison is EMA weights against a running
+    # mean of raw ones, and it returns the same sign for a 0.14M model and a
+    # 134M one, so it discriminates nothing. And the job below has since run:
+    # `9M-sv-long` reached 900k steps = 1.74 epochs, and its own log says the
+    # last 70k steps bought 0.00059 nats against a 0.0137 reproducibility
+    # floor. Further training of this architecture is close to worthless, which
+    # is the opposite of what this comment was recommending.
     Job(id="train-9m-long", what="the same 9M, trained 3x longer on 3x the data",
         argv=lambda f: python(
             str(ROOT / "train.py"),

@@ -41,6 +41,40 @@ from sumofish.value_policy import ValuePolicy
 ROOT = Path(__file__).resolve().parent
 
 
+def ladder_survivors(steps: list[int], keep_max: int) -> list[int]:
+    """Which step-tagged checkpoints to KEEP, newest-anchored and geometric.
+
+    Pure and total: give it the step numbers present and the cap, get back the
+    subset to keep. Deleting is the caller's job, which is what makes this
+    testable without a filesystem.
+
+    The rule: always keep the newest and the oldest, then fill the middle with
+    the checkpoints nearest to a geometric sweep back from the newest. That
+    spans the run at every scale rather than keeping a recent window, because
+    the question a surviving ladder has to answer is "what did training buy",
+    and a window of the last N answers it only over the last N.
+    """
+    steps = sorted(set(steps))
+    if keep_max <= 0 or len(steps) <= keep_max:
+        return steps
+    if keep_max == 1:
+        return [steps[-1]]
+    newest, oldest = steps[-1], steps[0]
+    keep = {newest, oldest}
+    # Geometric interpolation from newest down to oldest: target_i walks the
+    # log scale in equal strides, so the gaps between survivors double as you
+    # go back. keep_max-2 targets, since both ends are already in.
+    ratio = max(oldest, 1) / newest
+    for i in range(1, keep_max - 1):
+        target = newest * (ratio ** (i / (keep_max - 1)))
+        cand = min((x for x in steps if x not in keep),
+                   key=lambda x: abs(x - target), default=None)
+        if cand is None:
+            break
+        keep.add(cand)
+    return sorted(keep)
+
+
 def data_frac_after(start_frac: float, records_consumed: int, total_records: int) -> float:
     """Where the data stream actually sits after consuming records_consumed more.
 
@@ -115,6 +149,11 @@ def main() -> None:
     ap.add_argument("--warmup", type=int, default=2000)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--clip", type=float, default=1.0)
+    ap.add_argument("--allow-partial-transfer", action="store_true",
+                    help="permit --init-from to leave more than 10%% of the "
+                         "model at random init. Exists so that accepting a "
+                         "partial graft is a visible choice; a silent one "
+                         "already cost 35 GPU-hours.")
     ap.add_argument("--ema-decay", type=float, default=0.999)
     ap.add_argument("--causal", type=int, default=1, help="1 = upstream, 0 = bidirectional")
     ap.add_argument("--log-every", type=int, default=100)
@@ -125,9 +164,23 @@ def main() -> None:
                     help="begin the FIRST pass this fraction into the bag. A "
                          "fresh iterator otherwise starts at record 0, so a "
                          "continuation run replays the same prefix its parent "
-                         "already trained on. The 9M consumed 0.58 epochs of "
-                         "the state-value bag, so a continuation wants ~0.58 "
-                         "here to reach records no run has seen.")
+                         "already trained on. `9M-sv-warm-full` consumed 0.58 "
+                         "epochs of the state-value bag; the deployed "
+                         "`9M-sv-long` is at 1.74 epochs, so compute this from "
+                         "the parent's own step count rather than reusing 0.58.")
+    ap.add_argument("--keep-max", type=int, default=14,
+                    help="cap on how many step-tagged checkpoints survive. When "
+                         "the cap is exceeded the survivors are chosen as a "
+                         "GEOMETRIC ladder from the newest backwards, so the set "
+                         "always spans the whole run: dense where the model is "
+                         "still moving, sparse where it is annealed. best/latest/"
+                         "final are never candidates. 0 keeps everything, which "
+                         "is what every run before 2026-08-14 did. This exists "
+                         "because train.py pruned nothing: 9M-sv-long alone is "
+                         "6.1 GB of them, and a d=384 run at this cadence would "
+                         "put ~23 GB on the filesystem that also holds the vault "
+                         "and 70 GB of bags, then fail silently and take "
+                         "everything else on the box with it.")
     ap.add_argument("--keep-every", type=int, default=20_000,
                     help="also write a step-tagged checkpoint nobody overwrites, "
                          "so the run leaves a ladder the match harness can price. "
@@ -250,10 +303,32 @@ def main() -> None:
                 taken.append(k)
             else:
                 skipped.append(k)
+        # REFUSE a transfer that mostly did not happen. `--init-from` matches on
+        # name AND shape, so a donor of a different width matches nothing: a
+        # d=256 donor into a d=1024 model transferred 0 of 93 tensors, silently,
+        # printed a cheerful line, and burned 35 GPU-hours as an unintended cold
+        # start. LAB-NOTES 2026-07-29 asked for this guard; it did not exist
+        # until 2026-08-14. The denominator is the MODEL's tensor count, not the
+        # donor's, because the question is how much of the new net was actually
+        # initialised from the old one.
+        frac = len(taken) / max(len(own), 1)
+        print(f"warm start from {args.init_from} (step {donor.get('step')}): "
+              f"{len(taken)}/{len(own)} tensors copied ({frac:.1%}), "
+              f"{len(skipped)} donor tensors unused")
+        if frac < 0.90 and not args.allow_partial_transfer:
+            missed = [k for k in own if k not in taken]
+            raise SystemExit(
+                f"refusing to start: only {frac:.1%} of this model was warm "
+                f"started, which is a cold start wearing a warm start's name.\n"
+                f"  first uninitialised tensors: {missed[:6]}\n"
+                f"  if this is deliberate (a deliberately partial graft, or a "
+                f"grown net), pass --allow-partial-transfer and say so in the "
+                f"run note."
+            )
+        if frac < 1.0:
+            print(f"  NOTE: {len(own) - len(taken)} tensors left at random init")
         model.load_state_dict(own)
         ema = EMA(model, decay=args.ema_decay)   # rebuild around the new weights
-        print(f"warm start from {args.init_from} (step {donor.get('step')}): "
-              f"{len(taken)} tensors copied, {len(skipped)} left random {skipped}")
 
     train_step = model
     if args.compile:
@@ -321,9 +396,19 @@ def main() -> None:
     # else, which cannot separate "the model has stopped learning" from "the
     # model has started memorising" -- and the 9M state-value run needed exactly
     # that distinction when its puzzle curve went flat while its train loss kept
-    # falling. (It was capacity: 307M samples is under one epoch of a 530M
-    # position bag, so there was nothing to memorise. That was an argument from
-    # arithmetic, not a measurement, and it gets weaker at 136M.)
+    # falling.
+    #
+    # This comment used to answer that with "It was capacity: 307M samples is
+    # under one epoch of a 530M position bag, so there was nothing to memorise",
+    # which asserted one conclusion and then argued for its opposite. Both halves
+    # are now dead. The arithmetic expired: the DEPLOYED value net is
+    # `9M-sv-long`, 900k steps x 1024 = 921.6M positions = 1.74 epochs, so a
+    # second pass over the data is exactly what it has had. And the diagnosis
+    # never discriminated anyway -- all three width-sweep arms show the same
+    # train-minus-val sign across a 1000x parameter range, because held-out is
+    # scored on EMA weights and train loss is a running mean of raw ones.
+    # See LAB-NOTES 2026-08-14. Do not re-derive a capacity verdict from an
+    # epoch count.
     #
     # Deliberately deterministic: one worker, a shuffle buffer of one, a fresh
     # iterator each time. The same held-out positions in the same order at every
@@ -412,12 +497,20 @@ def main() -> None:
                 "ppl": round(math.exp(min(avg, 20)), 2),
                 "lr": lr,
                 "grad_norm": round(float(grad_norm), 3),
+                # `clip_grad_norm_` returns the PRE-clip norm, so grad_norm alone
+                # cannot tell you the clip fired. Logging only that is what hid
+                # the width sweep's confound for two weeks: all three arms ran
+                # nominally at lr 3e-4 and actually at lr*clip_mult, with mean
+                # multipliers 0.100 / 0.247 / 0.326 that were rank-ordered with
+                # the results. The sweep measured the clip, not width.
+                "clip_mult": round(min(1.0, args.clip / max(float(grad_norm), 1e-12)), 4),
                 "samples_per_s": round(seen / dt),
                 "positions": seen,
             }
             print(
                 f"step {rec['step']:>7,}  loss {rec['loss']:.4f}  ppl {rec['ppl']:>8.1f}  "
-                f"lr {lr:.2e}  gn {rec['grad_norm']:>6.2f}  {rec['samples_per_s']:>7,}/s"
+                f"lr {lr:.2e}  gn {rec['grad_norm']:>6.2f}  "
+                f"clip x{rec['clip_mult']:.2f}  {rec['samples_per_s']:>7,}/s"
             )
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
@@ -485,6 +578,33 @@ def main() -> None:
         # checkpoints that still exist.
         if args.keep_every and (step + 1) % args.keep_every == 0:
             save(step + 1, f"step{step + 1:07d}")
+            # Prune to a spanning ladder. Three things bound what this can
+            # touch, because it deletes and deletion is not undoable:
+            #   1. only `stepNNNNNNN.pt` in THIS run's own directory, so
+            #      best/latest/final are never candidates,
+            #   2. only checkpoints THIS PROCESS wrote (step > start_step).
+            #      A resume must not destroy the history it inherited: with a
+            #      cap of 14, resuming 9M-sv-long would otherwise delete 31
+            #      checkpoints that cost 42 GPU-hours, on startup, silently.
+            #   3. nothing at all when --keep-max is 0.
+            present = []
+            for f_ in out.glob("step[0-9]??????.pt"):
+                try:
+                    present.append((int(f_.stem[4:]), f_))
+                except ValueError:
+                    continue                     # not one of ours, leave it
+            inherited = [n for n, _ in present if n <= start_step]
+            mine = [(n, f_) for n, f_ in present if n > start_step]
+            survivors = set(ladder_survivors([n for n, _ in mine], args.keep_max))
+            dropped = [f_ for n, f_ in mine if n not in survivors]
+            for f_ in dropped:
+                f_.unlink()
+            if dropped:
+                print(f"  [retain] kept {len(survivors)} of {len(mine)} step "
+                      f"checkpoints from this run"
+                      + (f" ({len(inherited)} inherited, untouched)"
+                         if inherited else "")
+                      + f", dropped {', '.join(f_.stem for f_ in dropped)}")
 
         if stopping:
             print(f"stopped at step {step+1:,}")

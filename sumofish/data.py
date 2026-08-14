@@ -59,10 +59,13 @@ class _BagStream(IterableDataset):
         #
         # This exists because a fresh iterator always started at offset 0 (the
         # `if epoch else 0` below), and a resumed run builds a fresh iterator.
-        # So every run in this project read the same prefix of the bag: the 9M
-        # consumed 307M of 530,310,443 state-value records, 0.58 epochs, and a
-        # continuation would have replayed those same 307M rather than reaching
-        # the 223M records no run has ever seen. That would look like "more
+        # So every run in this project read the same prefix of the bag:
+        # `9M-sv-warm-full` consumed 307M of 530,310,443 state-value records,
+        # 0.58 epochs, and a continuation would have replayed those same 307M
+        # rather than reaching the 223M records no run had then seen. (The
+        # DEPLOYED net, `9M-sv-long`, is at 921.6M = 1.74 epochs, so compute
+        # this offset from the parent's own step count rather than reusing
+        # 0.58 -- see LAB-NOTES 2026-08-14.) That would look like "more
         # training" and actually be "a second epoch on identical data", which
         # is exactly the confound that makes an underfitting diagnosis
         # unfalsifiable.
