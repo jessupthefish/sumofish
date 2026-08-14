@@ -57,6 +57,8 @@ import sys
 import time
 from pathlib import Path
 
+import re
+
 import chess
 import torch
 
@@ -74,6 +76,58 @@ from sumofish.value_policy import ValuePolicy  # noqa: E402
 POSITION = "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2Q1RK1 w - - 0 9"
 
 
+class _FreeNet(torch.nn.Module):
+    """Stands in for one of the two nets so that its forward pass costs nothing.
+
+    Used only by `--decompose`. It returns a cached constant of the right shape,
+    so the search still runs its whole tree, its tokenisation, its numpy prior
+    softmax and the OTHER forward pass. The delta against the `both` arm is
+    therefore that net's true serial cost inside the loop, which is the one
+    quantity the historical two-point fit could not see.
+    """
+
+    def __init__(self, out: int, device: str) -> None:
+        super().__init__()
+        self.out, self.device_, self._cache = out, device, {}
+
+    def forward(self, x):                                   # noqa: D102
+        n = x.shape[0]
+        t = self._cache.get(n)
+        if t is None:
+            t = torch.zeros(n, self.out, device=self.device_)
+            self._cache[n] = t
+        return t
+
+
+_SPEC = re.compile(r"^d(\d+)(?:L(\d+))?(?:h(\d+))?$", re.I)
+
+
+def shape(spec: str, out: int) -> ModelConfig:
+    """A preset name, or `d384`, `d384L8`, `d512L8h16`.
+
+    `--preset` used to take `choices=list(PRESETS)`, so no width between 256 and
+    1024 could be benched at all -- which is why the cost of a 2x net was argued
+    from a two-point fit for two weeks instead of being measured in a minute.
+    Heads default to d/32 so head_dim stays 32, the value every preset uses and
+    the one exact channel duplication needs.
+    """
+    if spec in PRESETS:
+        return ModelConfig(**{**PRESETS[spec].__dict__, "output_size": out})
+    m = _SPEC.match(spec)
+    if not m:
+        raise SystemExit(
+            f"bad shape {spec!r}: give a preset ({', '.join(PRESETS)}) "
+            f"or dNNN[LN][hN], e.g. d384 or d512L8h16")
+    d = int(m.group(1))
+    layers = int(m.group(2)) if m.group(2) else 8
+    heads = int(m.group(3)) if m.group(3) else max(1, d // 32)
+    if d % heads:
+        raise SystemExit(f"{spec}: embedding_dim {d} not divisible by {heads} heads")
+    return ModelConfig(**{**PRESETS["9M"].__dict__, "embedding_dim": d,
+                          "num_layers": layers, "num_heads": heads,
+                          "output_size": out})
+
+
 def search_nps(mcts_cls, value: ValuePolicy, policy, seconds: float, batch: int) -> float:
     mcts = mcts_cls(value, policy=policy, simulations=10**9, batch=batch, reuse=False)
     board = chess.Board(POSITION)
@@ -89,8 +143,25 @@ def search_nps(mcts_cls, value: ValuePolicy, policy, seconds: float, batch: int)
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--preset", default="136M", choices=list(PRESETS))
-    ap.add_argument("--baseline", default="9M", choices=list(PRESETS))
+    ap.add_argument("--preset", default="136M",
+                    help="preset name or shape spec: d384, d512L8h16")
+    ap.add_argument("--baseline", default="9M",
+                    help="preset name or shape spec")
+    ap.add_argument("--decompose", action="store_true",
+                    help="Arm C. Instead of comparing two widths, run the "
+                         "BASELINE shape three ways -- both nets, value only, "
+                         "policy only -- to split the per-node cost into the "
+                         "tree, the value forward and the policy forward. This "
+                         "is the term the historical fit buried in its "
+                         "intercept: bench_search loaded the policy net once "
+                         "outside the loop and varied only the value net, so "
+                         "the measured 3.06x was (tree+p256+v1024)/"
+                         "(tree+p256+v256) and the policy pass a fused trunk "
+                         "would delete never appeared as a variable.")
+    ap.add_argument("--fused", action="store_true",
+                    help="model the shared-trunk two-head net: ONE forward of "
+                         "the given shape with a bins+1968 wide head, against "
+                         "today's two separate forwards.")
     ap.add_argument("--bins", type=int, default=64)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--seconds", type=float, default=6.0)
@@ -108,18 +179,76 @@ def main() -> None:
     mcts_cls, core_name = select_mcts_class()
     print(f"  core: {core_name}  (batch {args.batch}, {args.seconds}s per arm)")
 
-    policy, _ = load_policy(str(ROOT / "runs/policy.pt"), device=args.device)
+    from sumofish.tokenizer import NUM_ACTIONS
+
+    def real_policy():
+        return load_policy(str(ROOT / "runs/policy.pt"), device=args.device)[0]
+
+    def arm(spec: str, *, skip_policy=False, skip_value=False, fused=False):
+        """One measured configuration. Returns (nps, params, label)."""
+        out = args.bins + NUM_ACTIONS if fused else args.bins
+        cfg = shape(spec, out)
+        model = ChessTransformer(cfg)
+        value = ValuePolicy(model, HLGauss(bins=args.bins), device=args.device)
+        if skip_value:
+            # Keep the ValuePolicy wrapper (the search calls into it) but make
+            # its forward free, so what is left is tree + policy forward.
+            value.model = _FreeNet(args.bins, args.device).to(args.device).eval()
+        pol = real_policy()
+        if skip_policy or fused:
+            pol.model = _FreeNet(NUM_ACTIONS, args.device).to(args.device).eval()
+        nps = search_nps(mcts_cls, value, pol, args.seconds, args.batch)
+        n = 0 if skip_value else model.num_parameters()
+        del model, value, pol
+        torch.cuda.empty_cache()
+        return nps, n
+
+    if args.decompose:
+        # Three arms at ONE shape. The point is the differences, not the levels.
+        both, n_both = arm(args.baseline)
+        v_only, _ = arm(args.baseline, skip_policy=True)
+        p_only, _ = arm(args.baseline, skip_value=True)
+        us = lambda nps: 1e6 / nps                      # noqa: E731
+        t_both, t_v, t_p = us(both), us(v_only), us(p_only)
+        # tree = what survives when BOTH forwards are removed, inferred:
+        #   t_both = tree + v + p ;  t_v = tree + v ;  t_p = tree + p
+        tree = t_v + t_p - t_both
+        print(f"\n  both nets   {both:7.0f} nps   {t_both:7.2f} us/node")
+        print(f"  value only  {v_only:7.0f} nps   {t_v:7.2f} us/node")
+        print(f"  policy only {p_only:7.0f} nps   {t_p:7.2f} us/node")
+        print(f"\n  inferred:  tree {tree:6.2f}   value fwd {t_both - t_p:6.2f}"
+              f"   policy fwd {t_both - t_v:6.2f}  (us/node)")
+        share = (t_both - t_v) / t_both
+        print(f"\n  the policy forward is {share:.1%} of per-node cost.")
+        print("  KILL CONDITION (plan 1.1): under 25% means the policy forward "
+              "is not serial,\n  a fused trunk saves less than half what the "
+              "arithmetic assumes, and the\n  cost-neutral width drops toward "
+              "d=320-384.")
+        out_obj = {"mode": "decompose", "shape": args.baseline,
+                   "nps": {"both": round(both), "value_only": round(v_only),
+                           "policy_only": round(p_only)},
+                   "us_per_node": {"both": round(t_both, 3),
+                                   "value_only": round(t_v, 3),
+                                   "policy_only": round(t_p, 3),
+                                   "tree_inferred": round(tree, 3),
+                                   "value_fwd": round(t_both - t_p, 3),
+                                   "policy_fwd": round(t_both - t_v, 3)},
+                   "policy_share": round(share, 4),
+                   "core": core_name, "batch": args.batch, "position": POSITION}
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.out).write_text(json.dumps(out_obj, indent=2))
+            print(f"\n  wrote {args.out}")
+        return
 
     results = {}
     for name in (args.baseline, args.preset):
-        cfg = ModelConfig(**{**PRESETS[name].__dict__, "output_size": args.bins})
-        model = ChessTransformer(cfg)
-        value = ValuePolicy(model, HLGauss(bins=args.bins), device=args.device)
-        results[name] = search_nps(mcts_cls, value, policy, args.seconds, args.batch)
-        print(f"  {name:>5}  {results[name]:7.0f} nps in the search loop "
-              f"({model.num_parameters():,} params)")
-        del model, value
-        torch.cuda.empty_cache()
+        fused = args.fused and name == args.preset
+        nps, n = arm(name, fused=fused)
+        results[name] = nps
+        tag = " fused two-head" if fused else ""
+        print(f"  {name:>10}  {nps:7.0f} nps in the search loop "
+              f"({n:,} params){tag}")
 
     # Cost ratio as the SEARCH feels it: how many times fewer nodes per second.
     ratio = results[args.baseline] / results[args.preset]
