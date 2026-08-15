@@ -1858,3 +1858,87 @@ row null and the group null are different quantities (+-0.05 vs +-0.009) and
 quoting the group null on a single row stars nearly every row in the archive.
 And the two sides of one match are near-mirror images, so a match contributes
 roughly ONE independent residual, not two; do not use the row count as n.
+
+## 2026-08-14: width is nearly free up to d=384 and expensive after, and that is a property of the CARD
+
+Plan item 1.1, measured on a drained box under `scripts/gpu_lock.py`, three
+interleaved repetitions at 25s per arm. The control is the same architecture
+measured twice (unfused d256 against the 9M baseline) and reads **0.9984x**, so
+the noise floor for this pass is **+-0.5%**. Every number below clears it by an
+order of magnitude, which is the first time a cost claim in this project has
+been able to say that.
+
+**Arm C first, because nothing else is interpretable without it.** The engine
+runs TWO forward passes per node, sequentially, on the same tokenised tensor.
+Splitting them:
+
+    both nets   125.61 us/node     value only  72.00     policy only  72.47
+    tree 18.86     value fwd 53.14     policy fwd 53.61
+
+The policy forward is **42.7% of per-node cost** (41.6-43.5% across reps),
+against the plan's stated 25% kill condition, so the fusion case survives with
+room. Self-check that makes it credible: the two nets are the same architecture,
+and their independently measured forward costs agree to **0.9%**. The share
+holds across batch sizes too, 45.8% at batch 32 and 40.3% at 128, so it is not
+an artefact of the operating point.
+
+**The fused arms, which are the configuration actually proposed.** One shared
+trunk, a value head and a policy head, ONE forward per node:
+
+    shape   trunk    fused us/node   per-pass   vs today      sims-doublings
+    d256     6.3M        71.4          52.6      1.76x            +0.81
+    d320     9.8M        74.2          55.3      1.69x            +0.76
+    d384    14.2M        76.6          57.7      1.64x            +0.71
+    d448    19.3M        94.8          75.9      1.33x            +0.41
+    d512    25.2M       110.6          91.8      1.14x            +0.18
+
+**There is a knee, it is sharp, and it sits between d=384 and d=448.**
+
+    256 -> 320   time 1.052   FLOPs 1.562    9.3% of what the FLOPs imply
+    320 -> 384   time 1.043   FLOPs 1.440    9.9%
+    384 -> 448   time 1.315   FLOPs 1.361   87.1%
+    448 -> 512   time 1.209   FLOPs 1.306   68.3%
+
+The compute term is `6.29e-05` below d=384 and `2.97e-04` above it, **4.7x
+steeper**. Below the knee the trunk's matmuls at batch 64 are latency-bound, so
+the extra arithmetic is very nearly free: d=384 does **2.25x the FLOPs of d=256
+for 1.10x the time**. Above it, the card is doing real work and width is
+charged at close to full price.
+
+**So d=384 is the last rung before the cliff, and the Council picked it for a
+completely different reason.** Its argument was "the largest gain the
+acceptance instrument can actually see". The hardware's argument is "the widest
+trunk that is still latency-bound at batch 64". Two independent arguments, same
+answer. That is worth more than either one alone.
+
+**The refund nobody had priced.** Fused d=256 is **1.76x faster at identical
+capacity**. Same parameters, same architecture, +0.81 sims-doublings, purely
+from not launching the second forward pass. If the capacity case were abandoned
+entirely tomorrow, the fusion would still be the single largest measured speed
+win available to this project.
+
+**Three caveats, all load-bearing.**
+
+- **This is the COST side only.** Whether a wider trunk plays better per node is
+  a separate question that only a match answers, and PHILOSOPHY forbids
+  converting held-out loss into Elo to shortcut it. A cost win licenses the
+  acceptance match; it is not a result.
+- **The knee is a function of BATCH SIZE and will move.** Bigger batches
+  saturate the card sooner, so the latency-bound region shrinks. The sweep
+  already shows it: d384 against the 9M costs 1.055x per node at batch 64 and
+  **1.347x at batch 128**. If the engine's batch ever changes, this table is
+  void and must be re-measured.
+- **`compile` will move it too, and in the direction that hurts.** CUDA graphs
+  cut exactly the launch term that makes width free here. If plan 1.4 wins and
+  compile ships, the knee moves DOWN and d=384 stops being nearly free. That is
+  why the plan puts the compile gate before the width commitment, and the
+  ordering is now measured rather than argued.
+
+**How the earlier reading went wrong, since it nearly got written down.** A
+first pass at 12s per arm put the 9M baseline anywhere between 121.2 and 131.3
+us/node, a +-4% floor, and returned d=384 as FASTER than d=256 unfused, which is
+physically impossible. The fix was not more widths, it was three repetitions,
+longer arms, INTERLEAVED rep-major so GPU clock drift cannot alias onto width,
+and a same-shape control whose reading defines the floor. **A sweep that varies
+only the thing you care about cannot tell you how much of what it found was
+drift.** Cost 45 minutes and turned an unusable table into a decision.
