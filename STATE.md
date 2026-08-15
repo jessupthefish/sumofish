@@ -34,6 +34,55 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-08-14, session 11)
+
+**Read `docs/PLAN-2026-08-14.md` first.** It is the ordered plan, it came out of a
+three-agent audit plus an eleven-seat Council, and it carries a status block saying what
+is done. It did not exist on disk until this session: it was written into a session that
+was then closed, and was recovered from the subagent transcript. Everything below is
+committed; the working tree is clean.
+
+**RUNNING RIGHT NOW, and the bot is down for it.** `sumofish-compile-gate.service`,
+started 17:01, 600 games at `--time 0.5` on a drained exclusive box, ETA ~03:10.
+`journalctl --user -u sumofish-compile-gate -f` to watch. It restores the bot itself in a
+finally block. If it dies and needs resuming, its `config.json` records
+`code: 052a1ed+ee2e4a1ab896` and `code_fingerprint()` includes the bare git SHA, so a
+resume will refuse purely because HEAD has moved: check that SHA out, resume, come back.
+
+**`compile` is a large win and the -168 that kept it off is dead.** At 308/600 it is
+**+93.6 +-19.7, LOS 100%**, and the per-game search record settles the mechanism
+independently: compile ON gets **1.669 +-0.009** of OFF's evaluations in the same wall
+clock. Its entire evidence base for being switched off since 2026-07-30 was two arms of
+20 games with compile bundled with dedup, one of them named "contended". When it
+finishes, deploy it and correct the attribution at point of use: `PHILOSOPHY.md:169`,
+three places in this file, and the comment in `systemd/sumofish-bot.service`.
+
+**The cost side of the capacity decision is settled (plan 1.1).** Arm C: the policy
+forward is **42.7%** of per-node cost against a 25% kill threshold, self-checked by the
+two same-architecture nets agreeing to 0.9%. Fused arms against today's two d=256 passes:
+**d256 1.76x, d320 1.69x, d384 1.64x, d448 1.33x, d512 1.14x** faster per node, against a
++-0.5% noise floor from a same-shape control. There is a **sharp knee between d=384 and
+d=448**: below it width costs 9-10% of what its FLOPs imply, above it 68-87%. d=384 is the
+last rung before the cliff, which is the width the Council chose by an unrelated argument.
+Caveats that bound it: the knee moves DOWN with batch size, and `compile` cuts the launch
+term that makes width free, so re-read this after the gate lands.
+
+**The refund**: fused d=256 is 1.76x faster at IDENTICAL capacity. Even if the capacity
+case were dropped, the fusion is the largest measured speed win available here.
+
+**Three claims died on contact with the numbers**, all recorded in LAB-NOTES: "further
+training is worthless" was the cosine anneal, the calibration finding was the match
+result (R^2 = 0.90 on score alone), and the abandons are not stalled searches but engines
+handed the game 10s to 33 minutes late. The last one rescopes 0.9b: the mid-batch deadline
+fixes the forfeit population, not the abandons, and 186s and 1995s are still unexplained.
+
+**Next, in order.** Deploy compile when the gate lands. Then run
+`scripts/build_clean_indices.py` (written, positive control passes, needs an idle box for
+the 36 GB read). Then the fingerprint fix, which is deferred only because changing it is
+what breaks an in-flight resume. Phase 0 leftovers: 0.6 write-once run dirs, 0.12 heads
+and positional-buffer plumbing. Untested cheap idea worth an hour: overlap the two forward
+passes on separate CUDA streams, which would buy part of the fusion prize with no retrain.
+
 ## Where things stand (2026-08-11, session 10)
 
 > **The 2026-08-01 session-7 block that stood here is deleted, not demoted, per
