@@ -194,8 +194,94 @@ def make_loader(
     )
 
 
+class AlternatingLoader:
+    """Two bags, one trunk, alternating batches. Plan item 3.4.
+
+    **Why alternation and not one pass over both.** A fused two-head net wants
+    a value target and a policy target for the SAME position, so one forward
+    could train both heads. The bags do not permit it: 527,633,465 records in
+    behavioural cloning against 530,310,443 in state value, independently
+    shuffled, and 0 of 10 indices sampled from each hold the same position.
+    They are two datasets, not two columns of one. So each step draws from one
+    bag, trains the head that bag has a label for, and the shared trunk takes
+    gradient from both objectives on alternate steps.
+
+    This is ordinary multi-task learning. The AlphaZero/Leela precedent that
+    licenses the parameter count does NOT license this regime: those train both
+    heads on the same self-play position. Ours is closer to two tasks sharing
+    an encoder, and the known failure is one objective dominating the trunk.
+    The tripwire is per-head held-out loss logged from step 1; the lever is
+    `policy_every`, and the fix if it fires is a loss weight, not more steps.
+
+    **Host RAM is the binding resource here, not VRAM.** Two loaders means two
+    sets of DataLoader workers on a 31 GB box that has livelocked on memory
+    pressure before, so `num_workers` is the TOTAL across both bags and is
+    split between them, never doubled. The I/O does not double: alternating
+    draws the same ~210 KB/s from one bag or the other, and the cost is worker
+    RSS rather than bandwidth. Do not let "two 36 GB streams" become folklore.
+
+    `policy_every` is the alternation: 1 means strict A/B/A/B, 2 means two
+    value steps per policy step. It exists because the heads need not want the
+    same number of steps, and because setting it to a large number is the
+    cheapest way to test whether the policy objective is what is hurting the
+    trunk.
+    """
+
+    def __init__(
+        self,
+        value_path: str | Path,
+        policy_path: str | Path,
+        *,
+        batch_size: int = 512,
+        num_workers: int = 8,
+        shuffle_buffer: int = 131_072,
+        seed: int = 0,
+        policy_every: int = 1,
+        value_start_frac: float = 0.0,
+        policy_start_frac: float = 0.0,
+    ) -> None:
+        if policy_every < 1:
+            raise ValueError("policy_every must be >= 1")
+        # Split the worker budget rather than doubling it. Two workers minimum
+        # each when any are asked for, so neither bag is starved.
+        if num_workers:
+            v_workers = max(1, num_workers // 2)
+            p_workers = max(1, num_workers - v_workers)
+        else:
+            v_workers = p_workers = 0
+        self.policy_every = policy_every
+        self._value = make_loader(
+            value_path, policy="state_value", batch_size=batch_size,
+            num_workers=v_workers, shuffle_buffer=shuffle_buffer, seed=seed,
+            infinite=True, start_frac=value_start_frac)
+        self._policy = make_loader(
+            policy_path, policy="behavioral_cloning", batch_size=batch_size,
+            num_workers=p_workers, shuffle_buffer=shuffle_buffer,
+            # A DIFFERENT seed. With the same one both streams shuffle their
+            # reservoirs identically, which correlates the two objectives'
+            # batch composition for no reason and would be invisible in any
+            # loss curve.
+            seed=seed + 104_729,
+            infinite=True, start_frac=policy_start_frac)
+        self.workers = (v_workers, p_workers)
+
+    def __iter__(self) -> Iterator[tuple[str, torch.Tensor, torch.Tensor]]:
+        """Yields (head, tokens, targets) forever. `head` is 'value'|'policy'."""
+        vit, pit = iter(self._value), iter(self._policy)
+        step = 0
+        while True:
+            if step % (self.policy_every + 1) == self.policy_every:
+                tokens, targets = next(pit)
+                yield "policy", tokens, targets
+            else:
+                tokens, targets = next(vit)
+                yield "value", tokens, targets
+            step += 1
+
+
 __all__ = [
     "SEQUENCE_LENGTH",
+    "AlternatingLoader",
     "BehavioralCloningDataset",
     "StateValueDataset",
     "collate",

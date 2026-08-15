@@ -155,10 +155,33 @@ def shape(spec: str, out: int) -> ModelConfig:
                           "output_size": out})
 
 
-def search_nps(mcts_cls, value: ValuePolicy, policy, seconds: float, batch: int) -> float:
-    mcts = mcts_cls(value, policy=policy, simulations=10**9, batch=batch, reuse=False)
+def search_nps(mcts_cls, value: ValuePolicy, policy, seconds: float, batch: int,
+               compile_nets: bool = False) -> float:
+    # pad_batches is coupled to compile_nets for the same reason
+    # search_engine.py and match.py couple them: CUDA graphs need a static
+    # shape, and without padding the row count varies, the graph recaptures
+    # every batch, and the measurement is of the recapture.
+    kw = {"compile_nets": True, "pad_batches": True} if compile_nets else {}
+    mcts = mcts_cls(value, policy=policy, simulations=10**9, batch=batch,
+                    reuse=False, **kw)
     board = chess.Board(POSITION)
     mcts.search(board.copy(), deadline=time.perf_counter() + 3.0)   # warm
+    if compile_nets:
+        # torch.compile in reduce-overhead mode traces, then CAPTURES a CUDA
+        # graph, and neither is steady state. Measured 2026-08-15 with a single
+        # 5s warm search: three identical one-shape-per-process runs read
+        # 5,402 / 12,560 / 6,874 nps, a 2.3x spread, because the timed window
+        # sometimes still contained capture. Warm until two consecutive
+        # measurements agree within 5% instead of guessing a duration.
+        prev = None
+        for _ in range(8):
+            mcts.reset()
+            t = time.perf_counter()
+            mcts.search(board.copy(), deadline=t + 3.0)
+            cur = mcts.evaluations / (time.perf_counter() - t)
+            if prev is not None and abs(cur - prev) / max(cur, prev) < 0.05:
+                break
+            prev = cur
     best = 0.0
     for _ in range(3):
         mcts.reset()
@@ -189,6 +212,17 @@ def main() -> None:
                     help="model the shared-trunk two-head net: ONE forward of "
                          "the given shape with a bins+1968 wide head, against "
                          "today's two separate forwards.")
+    ap.add_argument("--compile", action="store_true",
+                    help="measure under torch.compile, the DEPLOYED config "
+                         "since 2026-08-15. It cuts per-launch overhead, which "
+                         "is exactly the term the fusion case rests on, so "
+                         "every cost number taken without it describes a "
+                         "configuration that no longer ships. Requires "
+                         "--single.")
+    ap.add_argument("--single", default=None, metavar="SPEC",
+                    help="measure ONE shape and print its nps instead of "
+                         "comparing two, leaving the arithmetic to the caller. "
+                         "Required with --compile.")
     ap.add_argument("--bins", type=int, default=64)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--seconds", type=float, default=6.0)
@@ -226,11 +260,45 @@ def main() -> None:
         pol = real_policy()
         if skip_policy or fused:
             pol.model = _FreeNet(NUM_ACTIONS, args.device).to(args.device).eval()
-        nps = search_nps(mcts_cls, value, pol, args.seconds, args.batch)
+        nps = search_nps(mcts_cls, value, pol, args.seconds, args.batch,
+                         compile_nets=args.compile)
         n = 0 if skip_value else model.num_parameters()
         del model, value, pol
         torch.cuda.empty_cache()
         return nps, n
+
+    if args.compile and not args.single:
+        raise SystemExit(
+            "--compile requires --single: one shape per process.\n"
+            "\n"
+            "Measured 2026-08-15. Two arms in ONE process, BOTH d=256, read\n"
+            "13,087 and 7,077 nps: the first captures a CUDA graph, the second\n"
+            "gets a fresh model object that never recaptures, so it is\n"
+            "effectively uncompiled. The same-shape control reads 1.85x where\n"
+            "it must read 1.00x, and on a re-run the fast and slow arms SWAP,\n"
+            "so it is not even a fixed bias. torch._dynamo.reset() between arms\n"
+            "makes it worse (4,991 nps), because the recompilation then lands\n"
+            "inside the timed window.\n"
+            "\n"
+            "There is no in-process fix. Run one arm per process and compare\n"
+            "across them; scripts/run_cost_under_compile.sh does that."
+        )
+
+    if args.single:
+        nps, params = arm(args.single, fused=args.fused)
+        tag = (" fused two-head" if args.fused else "") + (" +compile" if args.compile else "")
+        print(f"  {args.single:>10}  {nps:7.0f} nps in the search loop "
+              f"({params:,} params){tag}")
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.out).write_text(json.dumps(
+                {"mode": "single", "spec": args.single, "nps": round(nps),
+                 "params": params, "fused": bool(args.fused),
+                 "compile": bool(args.compile), "core": core_name,
+                 "batch": args.batch, "seconds": args.seconds,
+                 "position": POSITION}, indent=2))
+            print(f"  wrote {args.out}")
+        return
 
     if args.decompose:
         # Three arms at ONE shape. The point is the differences, not the levels.
