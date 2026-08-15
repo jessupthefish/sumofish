@@ -1999,3 +1999,51 @@ silent exactly when it matters. Both failures look like a working guard from
 the outside. When writing one, enumerate what actually changes the thing being
 protected, and check the predicate against that list rather than against what
 was convenient to hash.
+
+## 2026-08-14: the PGN archive was wrong in two directions that cancelled, and the ledger survived by luck
+
+Plan item 0.8's other half, the part the reliability rewrite did not do. The
+master `logs/games/SumoFish games.pgn` was **both** duplicated and incomplete:
+964 records for 945 distinct games (one game saved five times, and the two most
+duplicated are the two most argued-about games in the project's history), while
+**35 of the 42 individually-saved PGNs under `logs/` were absent from it
+entirely**. Counting records overstates, counting the master understates, and
+every forfeit-and-abandon number this project has quoted came from that file.
+
+`scripts/dedupe_pgn_archive.py` merges every PGN under `logs/` on `Site`, which
+is the lichess game URL and the only unique key available. Where a Site appears
+more than once the most COMPLETE copy wins, scored as decisive-result, then
+moves, then tags, then length: an abandoned game saved before its result was
+known and re-saved after must resolve to the version that knows, or the abandon
+ledger loses exactly the games it exists to count. 964 -> 980 records, 19
+duplicates removed, 35 games recovered, verified no Site lost and reverting from
+the backup if any would have been.
+
+**Then the numbers, and this is the part worth keeping.** The raw deduped
+archive reads 53 Abandoned and 41 Time forfeit. Both are roughly half somebody
+else's:
+
+- **26 of the 41 time forfeits are the OPPONENT flagging**, which is a win for
+  SumoFish, not a defect. Ours: 15, of which **11 at the deployed 900+10**.
+- **29 of the 51 abandons at 900+10 are the OPPONENT failing to move.** Attribute
+  by whose turn it was when the game died, which is `plies % 2`: an abandon at 0
+  plies is White's failure, at 1 ply it is Black's. Ours: **22**.
+
+So the corrected deployed-TC ledger is **11 self-forfeits + 22 self-abandons =
+33 events**, against the plan's recorded "10 forfeits + 23 abandons = 33". The
+total is right. It got there by two errors partly cancelling: the abandon count
+was inflated by charging the opponent's failures to us, and deflated by a master
+missing 35 games. **A number that survives for the wrong reasons is not
+confirmed, it is untested**, and this one was one bad merge away from reading 62
+events, or 92 if nobody attributed at all.
+
+**What it does establish, and it sharpens 0.9b.** 22 of our 33 events are
+"SumoFish accepted a rated game and never made a move". That isolates the
+FIRST-MOVE path, with no accumulated search state to confound it, which is the
+cheapest possible harness for reproducing the stall: accept a game, kill
+connectivity before the first move, assert a legal move inside the budget.
+
+**The rule.** Before deriving a count from an archive, check the archive is one
+copy of each thing, and attribute every event to a side. `Termination` says
+what happened, never to whom. `Result "*"` plus a ply count says whose turn it
+was, and that is the only thing that makes an abandon ours or theirs.
