@@ -2113,3 +2113,44 @@ genuine mid-search stall and is exactly what the archive does not contain.
 diagnosis. Before writing the fix, pull the per-event timeline and check the
 events actually share a shape. These did not, and the shape they do have was
 sitting in a log nobody had opened.
+
+## 2026-08-15: "the fused d=256 refund is free" is wrong, and I wrote it into four places
+
+**Retracted: "fused d=256 is 1.76x faster at IDENTICAL capacity, same
+parameters, same architecture."** It is 1.76x faster at **HALF** the
+parameters. Computed rather than asserted:
+
+    today   value net 8,421,696 + policy net 8,911,024 = 17,332,720
+    fused d=256    8,927,472    0.52x today
+    fused d=320   13,780,272    0.80x
+    fused d=384   19,681,648    1.14x
+    fused d=448   26,631,600    1.54x
+    fused d=512   34,630,128    2.00x
+
+Today's engine runs TWO trunks, one per task. A fused net at the same width
+runs ONE trunk serving both. That is not the same capacity wearing a cheaper
+coat; it is one set of weights doing two jobs. The speed is real and the
+parameter count halves with it, so fused d=256 should be expected to play
+WORSE per position, and the 1.76x has to pay for that before it is a win.
+
+**Where this leaves the ladder, and it is a better story than the wrong one.**
+d=384 is the rung where the fused net is **1.14x today's parameters AND 1.64x
+faster**. That is the free lunch, and it is free precisely because of the knee:
+below d=448 the card is latency-bound, so the width that restores the lost
+trunk capacity costs almost nothing. The Council picked d=384 for a third
+reason again -- "the largest gain the instrument can see" -- and this is now
+three independent arguments landing on one width.
+
+**How the error happened, because it is the same shape as the others.** The
+bench prints a param count per arm and I did not read it. "Same architecture,
+same width, so same capacity" is an inference, and it is wrong the moment one
+trunk serves two heads instead of one. I then wrote it into LAB-NOTES, a commit
+message, STATE.md and the plan, and said it out loud twice. Nobody checked it
+because it sounded like an observation.
+
+The tell was available the whole time and was in the output I was reading: the
+fused arm reports `params` and it says 8,927,472.
+
+**The rule, again.** A number you did not compute is a claim, however obvious
+it sounds. This project's own philosophy says a number without an interval is
+not a result; the corollary is that a number without a source is not a number.

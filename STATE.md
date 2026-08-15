@@ -70,8 +70,11 @@ last rung before the cliff, which is the width the Council chose by an unrelated
 Caveats that bound it: the knee moves DOWN with batch size, and `compile` cuts the launch
 term that makes width free, so re-read this after the gate lands.
 
-**The refund**: fused d=256 is 1.76x faster at IDENTICAL capacity. Even if the capacity
-case were dropped, the fusion is the largest measured speed win available here.
+**CORRECTED 2026-08-15**: the "refund at identical capacity" claim was wrong. Fused d=256
+is 8,927,472 params against today's two nets' 17,332,720, i.e. **0.52x**, because one trunk
+now serves both heads. It is 1.76x faster at HALF the parameters and should be expected to
+play worse per position. The rung that is actually free is **d=384: 1.14x the parameters
+AND 1.64x faster**, and it is free because of the knee. See LAB-NOTES 2026-08-15.
 
 **Three claims died on contact with the numbers**, all recorded in LAB-NOTES: "further
 training is worthless" was the cosine anneal, the calibration finding was the match
