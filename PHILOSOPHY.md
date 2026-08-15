@@ -163,13 +163,20 @@ This is the part of the file that most changes what you are allowed to claim.
 - **Select checkpoints on held-out loss, not on a noisy eval.** Best-of-twenty
   on a ±1.5% metric is biased upward by about two sigma, and it already
   promoted the marginally worse of two checkpoints once.
-- Report `unique/s`, never raw nps, for anything touching batched search. This
-  rule was already here on 2026-07-29 and was violated the same day: the
-  `dedup`+`compile` configuration was adopted on the strength of 1.75x the
-  simulations, and cost **-168 Elo**, because at a fixed clock it got 3,464
-  unique evaluations where plain got 4,160. More claimed search, 17% less
-  knowledge. The gap between `evaluations` and `unique_evaluations` is the part
-  that is not search, and both engines have always printed both.
+- Report `unique/s`, never raw nps, for anything touching batched search. The
+  rule stands and the example it used to carry does not, so here is what
+  actually happened. On 2026-07-29 the `dedup`+`compile` configuration was
+  adopted on the strength of 1.75x the simulations and read **-168 Elo**,
+  because at a fixed clock it got 3,464 unique evaluations where plain got
+  4,160: more claimed search, 17% less knowledge. That diagnosis is correct and
+  it is **dedup's**. The two flags were bundled, the reading was 20 games, and
+  `compile` was switched off for a fortnight on it.
+  **Isolated on 2026-08-15 it is +92.5 +-14.6 Elo over 600 games, LOS 100%**,
+  and it gets 1.6260 +-0.0039 of plain's evaluations in the same wall clock. It
+  cannot buy fake search: it sends the same rows. The lesson is unchanged and
+  sharper for it -- report `unique/s`, and **never measure two flags at once**,
+  because the bundle charged one flag's defect to the other and the bill was two
+  weeks of running at 62% of the available search.
 - **An identity proof at a fixed simulation count says nothing about strength at
   a fixed clock.** They are different experiments and only the second one is the
   one that gets played. A change that provably does not alter the tree still

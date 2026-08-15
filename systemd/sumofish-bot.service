@@ -34,13 +34,21 @@ Environment=CHESSGPU_SIMS=100000000
 # Rollback is `CHESSGPU_CORE=python` and a restart, not a revert.
 Environment=CHESSGPU_CORE=rust
 
-# NOT set, deliberately: CHESSGPU_DEDUP and CHESSGPU_COMPILE. Both are faster
-# per call and both preserve the tree at a fixed simulation count, and together
-# they measured -168 Elo at a fixed clock (2026-07-29, 20 games, W0 D11 L9,
-# LOS 0.0%). At 0.5s they bought 7,297 nominal simulations against plain's
-# 4,161 while getting 3,464 UNIQUE evaluations against plain's 4,160: 75% more
-# claimed search, 17% less knowledge of the position. Do not turn these on
-# because the nps number looks better. See PHILOSOPHY, measurement discipline.
+# NOT set, deliberately: CHESSGPU_DEDUP. It is faster per call and preserves the
+# tree at a fixed simulation count, and BUNDLED WITH COMPILE it measured -168
+# Elo at a fixed clock (2026-07-29, 20 games, W0 D11 L9, LOS 0.0%). At 0.5s the
+# pair bought 7,297 nominal simulations against plain's 4,161 while getting
+# 3,464 UNIQUE evaluations against plain's 4,160: 75% more claimed search, 17%
+# less knowledge of the position. That mechanism is dedup's -- it collapses
+# descents, so it can report search it did not do.
+#
+# CORRECTED 2026-08-15: the -168 was charged to both flags and belongs to one.
+# Isolated over 600 games, compile is +92.5 +-14.6 and is set below. dedup on
+# its own read +16.2 +-14.7 (LOS 0.985) but on a CONTENDED box, so it is
+# unresolved rather than refuted, and it stays off until it is measured on an
+# idle one. Do not turn it on because the nps number looks better; that is
+# exactly the trap the paragraph above describes. See PHILOSOPHY, measurement
+# discipline.
 
 # The virtual-loss fix. It earned its default the way search_engine.py's own
 # comment says it has to: a pair-match verdict, not a hunch. SPRT concluded
@@ -53,6 +61,24 @@ Environment=CHESSGPU_CORE=rust
 #
 # Rollback is CHESSGPU_VLOSS_FIX=0 (or unset) and a restart, not a revert.
 Environment=CHESSGPU_VLOSS_FIX=1
+# Deployed 2026-08-15 on runs/matches/compile-time: 600 games, --time 0.5, seed
+# 20260814, isolated (compile ONLY, not bundled with dedup), exclusive drained
+# box. 178W 400D 22L, +92.5 +-14.6 Elo, LOS 100.0%. The per-game search record
+# says why independently of the Elo: compile ON gets 1.6260 +-0.0039 of OFF's
+# evaluations in the same wall clock.
+#
+# This RETIRES the -168 Elo that kept the flag off from 2026-07-30. That figure
+# came from two arms of 20 games each, compile bundled with dedup in both, one
+# of them named "contended". Forty games, never isolated, against an instrument
+# this project's own philosophy prices at +-200 for 24 games. The diagnosed -168
+# mechanism was dedup's (fake search via collapsed descents); compile sends the
+# same rows and cannot buy fake search.
+#
+# Rollback is this one line: comment it out, `systemctl --user daemon-reload`,
+# drain and restart. Note the engine couples pad_batches to this flag, and it
+# MUST stay coupled: without padding the row count varies and CUDA graphs
+# recapture every batch.
+Environment=CHESSGPU_COMPILE=1
 
 # NOT set: CHESSGPU_MATE_DISTANCE. Already correctly implemented (confirmed
 # 2026-07-29), and as of 2026-08-13 confirmed SOUND against an exhaustive solver

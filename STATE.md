@@ -49,13 +49,16 @@ finally block. If it dies and needs resuming, its `config.json` records
 `code: 052a1ed+ee2e4a1ab896` and `code_fingerprint()` includes the bare git SHA, so a
 resume will refuse purely because HEAD has moved: check that SHA out, resume, come back.
 
-**`compile` is a large win and the -168 that kept it off is dead.** At 308/600 it is
-**+93.6 +-19.7, LOS 100%**, and the per-game search record settles the mechanism
-independently: compile ON gets **1.669 +-0.009** of OFF's evaluations in the same wall
-clock. Its entire evidence base for being switched off since 2026-07-30 was two arms of
-20 games with compile bundled with dedup, one of them named "contended". When it
-finishes, deploy it and correct the attribution at point of use: `PHILOSOPHY.md:169`,
-three places in this file, and the comment in `systemd/sumofish-bot.service`.
+**`compile` is DEPLOYED as of 2026-08-15 and the -168 that kept it off is retired.**
+Final: **600 games, 178W 400D 22L, +92.5 +-14.6 Elo, LOS 100%**, isolated, fresh seed,
+drained exclusive box. The per-game search record settles the mechanism independently:
+compile ON gets **1.6260 +-0.0039** of OFF's evaluations in the same wall clock, and
+`scripts/smoke.py` reproduces it on the live config at 9,827 nps against 6,073 with it
+off. Its entire evidence base for being off since 2026-07-30 was two arms of 20 games
+with compile bundled with dedup, one of them named "contended". The attribution is
+corrected at every point of use: `PHILOSOPHY.md`, two places in this file, and the
+comment in `systemd/sumofish-bot.service`. Rollback is one commented line plus a
+daemon-reload and a drain.
 
 **The cost side of the capacity decision is settled (plan 1.1).** Arm C: the policy
 forward is **42.7%** of per-node cost against a 25% kill threshold, self-checked by the
@@ -799,8 +802,10 @@ passes on separate CUDA streams, which would buy part of the fusion prize with n
 > once already (an unexplained bot start at 19:42:31 on 07-29, from outside the
 > repo -- the watchdog declined and nothing in-tree does it).
 
-**The engine is Rust, provably identically, and 3.6x faster. The two extra
-speed flags were measured and cost 168 Elo, so they are off.**
+**The engine is Rust, provably identically, and 3.6x faster. SUPERSEDED on the
+two extra speed flags: `compile` was isolated 2026-08-15 at +92.5 +-14.6 Elo
+over 600 games and is now DEPLOYED; the -168 was dedup's and the two were never
+measured apart.**
 
 **1. The Rust core is integrated and live-capable.** `CHESSGPU_CORE=rust`
 selects `sumofish/rust_mcts.py`; unset keeps Python, so rollback is an
@@ -830,10 +835,17 @@ survives:
   Not necessarily a contradiction -- different batch, different day -- but 3.6x
   has no artifact either. Re-earn it before quoting it again.
 
-**2. `dedup` and `compile` are OFF, and that is a measured decision, not
-caution.** Both are faster per call and both preserve the tree at a fixed
-simulation count. At a fixed *clock* they cost **-168 Elo** (20 games, W0 D11
-L9, LOS 0.0%). The diagnostic: at 0.5s the fast arm ran 7,297 nominal
+**2. SUPERSEDED 2026-08-15. `compile` is ON and deployed; `dedup` is still off
+and is a live question.** What stood here was "both are OFF and that is a
+measured decision, not caution", resting on **-168 Elo from 20 games (W0 D11 L9,
+LOS 0.0%) with the two flags BUNDLED**. Isolated over 600 games on a drained
+exclusive box, `compile` alone is **+92.5 +-14.6, LOS 100%**, and it takes
+1.6260 +-0.0039 of plain's evaluations in the same wall clock. The -168
+diagnosis below is sound and it belongs to **dedup**, which collapses descents
+and can therefore buy claimed search that is not search; compile sends the same
+rows and cannot. `dedup` measured +16.2 +-14.7 on its own at 0.5s (LOS 0.985),
+on a CONTENDED box, so it is unresolved rather than refuted. The original
+diagnostic, which is still worth reading: The diagnostic: at 0.5s the fast arm ran 7,297 nominal
 simulations against plain's 4,161 and got **3,464 unique evaluations against
 plain's 4,160**. It bought 75% more claimed search and 17% less knowledge,
 because dedup frees network time, the search spends it on more descents, and
