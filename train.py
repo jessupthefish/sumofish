@@ -30,7 +30,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from sumofish.data import make_loader
+from sumofish.data import AlternatingLoader, make_loader
 from sumofish.hlgauss import HLGauss
 from sumofish.hlgauss import loss as hl_loss
 from sumofish.evaluate import evaluate_puzzles, load_puzzles
@@ -39,6 +39,29 @@ from sumofish.policy import NeuralPolicy
 from sumofish.value_policy import ValuePolicy
 
 ROOT = Path(__file__).resolve().parent
+
+
+class _Head(torch.nn.Module):
+    """One head of a fused net, presented to code that expects a single head.
+
+    The fused model emits `value_bins + NUM_ACTIONS` columns. Everything
+    downstream -- HLGauss, the puzzle evaluator, the engine -- was written for
+    a model with exactly one output, and hands the whole tensor straight on.
+    That fails loudly (`size of tensor a (2032) must match tensor b (64)`),
+    which is the good case; the bad case would have been a silent broadcast.
+    Slicing here keeps every consumer unchanged.
+    """
+
+    def __init__(self, inner: torch.nn.Module, lo: int, hi: int | None) -> None:
+        super().__init__()
+        self.inner, self.lo, self.hi = inner, lo, hi
+        self.cfg = getattr(inner, "cfg", None)
+
+    def forward(self, tokens, **kw):                        # noqa: ANN001
+        return self.inner(tokens, **kw)[:, self.lo:self.hi]
+
+    def num_parameters(self) -> int:
+        return self.inner.num_parameters()
 
 
 def ladder_survivors(steps: list[int], keep_max: int) -> list[int]:
@@ -140,12 +163,19 @@ def main() -> None:
     ap.add_argument(
         "--target",
         default="behavioral_cloning",
-        choices=["behavioral_cloning", "state_value"],
+        choices=["behavioral_cloning", "state_value", "both"],
         help="what the model predicts. behavioral_cloning = which move Stockfish "
         "played (1968-way softmax). state_value = P(side to move wins), as an "
         "HL-Gauss histogram. The paper's ablation at identical architecture puts "
         "state-value at 77.5%% puzzle accuracy vs 65.7%% for behavioral cloning.",
     )
+    ap.add_argument("--policy-every", type=int, default=1,
+                    help="--target both only: value steps per policy step. 1 is "
+                         "strict alternation. Turning it UP is the cheapest "
+                         "test of whether the policy objective is what is "
+                         "hurting the shared trunk, which is the known failure "
+                         "mode of multi-task training and the reason per-head "
+                         "held-out loss is logged from step 1.")
     ap.add_argument("--value-bins", type=int, default=64,
                     help="HL-Gauss bins; the paper's ablation is flat above 32")
     ap.add_argument("--data", default=None,
@@ -231,13 +261,30 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    is_value = args.target == "state_value"
-    if args.data is None:
-        args.data = str(ROOT / f"data/train/{args.target}_data.bag")
-    if args.val_data is None:
-        args.val_data = str(ROOT / f"data/test/{args.target}_data.bag")
+    # `both` is the FUSED net: one shared trunk, a value head and a policy head.
+    # It needs no new module. A single output projection of width
+    # `value_bins + NUM_ACTIONS` IS two heads on a shared trunk, expressed as
+    # one matmul instead of two, which is also one kernel launch instead of two
+    # and therefore the point of the exercise. The heads are slices:
+    # [:, :bins] is the value distribution and [:, bins:] the policy logits.
+    is_fused = args.target == "both"
+    is_value = args.target == "state_value" or is_fused
+    if is_fused:
+        # Two bags, so the single --data/--val-data flags do not apply.
+        if args.data is not None or args.val_data is not None:
+            raise SystemExit("--target both draws from BOTH bags; use "
+                             "--value-data/--policy-data, not --data")
+        args.data = str(ROOT / "data/train/state_value_data.bag")
+        args.policy_data = str(ROOT / "data/train/behavioral_cloning_data.bag")
+        args.val_data = str(ROOT / "data/test/state_value_data.bag")
+        args.policy_val_data = str(ROOT / "data/test/behavioral_cloning_data.bag")
+    else:
+        if args.data is None:
+            args.data = str(ROOT / f"data/train/{args.target}_data.bag")
+        if args.val_data is None:
+            args.val_data = str(ROOT / f"data/test/{args.target}_data.bag")
 
-    run = args.run or f"{args.preset}-{'sv' if is_value else 'bc'}"
+    run = args.run or f"{args.preset}-{'fused' if is_fused else 'sv' if is_value else 'bc'}"
     out = ROOT / "runs" / run
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps(vars(args), indent=2))
@@ -259,7 +306,9 @@ def main() -> None:
 
     # The only architectural difference between the two targets is the width of
     # the output layer: 1968 moves, or `--value-bins` histogram buckets.
-    out_size = args.value_bins if is_value else None
+    from sumofish.tokenizer import NUM_ACTIONS
+    out_size = (args.value_bins + NUM_ACTIONS) if is_fused else (
+        args.value_bins if is_value else None)
     build_kwargs = {"causal": bool(args.causal)}
     if out_size:
         build_kwargs["output_size"] = out_size
@@ -354,16 +403,33 @@ def main() -> None:
     if args.compile:
         train_step = torch.compile(model)
 
-    loader = make_loader(
-        args.data,
-        policy=args.target,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        seed=args.seed + start_step,
-        start_frac=data_start_frac,
-    )
-    batches = iter(loader)
-    data_len = len(loader.dataset)
+    if is_fused:
+        alt = AlternatingLoader(
+            args.data, args.policy_data,
+            batch_size=args.batch_size,
+            # TOTAL across both bags, split inside, never doubled: two loaders
+            # means two sets of workers on a 31 GB box that has livelocked on
+            # memory pressure for 18 hours before.
+            num_workers=args.workers,
+            seed=args.seed + start_step,
+            policy_every=args.policy_every,
+            value_start_frac=data_start_frac,
+        )
+        batches = iter(alt)
+        data_len = len(alt._value.dataset)
+        print(f"  fused: alternating both bags, policy_every={args.policy_every}, "
+              f"workers (value, policy) = {alt.workers}")
+    else:
+        loader = make_loader(
+            args.data,
+            policy=args.target,
+            batch_size=args.batch_size,
+            num_workers=args.workers,
+            seed=args.seed + start_step,
+            start_frac=data_start_frac,
+        )
+        batches = iter(loader)
+        data_len = len(loader.dataset)
 
     puzzles = load_puzzles(ROOT / "data/puzzles.csv", limit=args.eval_puzzles)
 
@@ -451,13 +517,24 @@ def main() -> None:
     if args.val_positions > 0 and not val_path.exists():
         print(f"no held-out bag at {val_path}; validation disabled")
 
-    def validate(eval_model: ChessTransformer) -> float | None:
-        if args.val_positions <= 0 or not val_path.exists():
+    def validate(eval_model: ChessTransformer, head: str = "value") -> float | None:
+        """Held-out loss for one head.
+
+        Under --target both the model emits `bins + NUM_ACTIONS` columns and
+        each head is a slice, so the bag and the slice have to move together:
+        scoring the policy head against the state-value bag would silently
+        compare a 1968-way softmax to a win probability.
+        """
+        path = Path(args.policy_val_data) if (is_fused and head == "policy") else val_path
+        target = "behavioral_cloning" if (is_fused and head == "policy") else args.target
+        if is_fused and head != "policy":
+            target = "state_value"
+        if args.val_positions <= 0 or not path.exists():
             return None
         eval_model.eval()
         loader = make_loader(
-            args.val_data,
-            policy=args.target,
+            str(path),
+            policy=target,
             batch_size=VAL_BATCH,
             num_workers=0,
             shuffle_buffer=1,
@@ -473,6 +550,9 @@ def main() -> None:
                 targets = targets.to(device, non_blocking=True)
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     logits = eval_model(tokens)
+                if is_fused:
+                    logits = (logits[:, args.value_bins:] if head == "policy"
+                              else logits[:, :args.value_bins])
                 # The same objective the run is trained on, so the two numbers
                 # are directly comparable. A gap that opens between them is the
                 # signal this exists to catch.
@@ -480,9 +560,10 @@ def main() -> None:
                 # batch means only equals the mean over positions when every
                 # batch is the same size, and the last one need not be.
                 n = int(targets.shape[0])
+                use_value = (head == "value") if is_fused else is_value
                 total += float(
                     hl_loss(logits.float(), hl.targets(targets))
-                    if is_value
+                    if use_value
                     else F.cross_entropy(logits.float(), targets)
                 ) * n
                 rows_seen += n
@@ -490,6 +571,12 @@ def main() -> None:
 
     log_path = out / "log.jsonl"
     running = 0.0
+    # Per-head running loss. The known failure of a shared trunk is one
+    # objective dominating it, and the only thing that shows it is the two
+    # curves diverging, so they are logged from step 1 rather than added after
+    # something looks wrong.
+    running_head = {"value": 0.0, "policy": 0.0}
+    running_head_n = {"value": 0, "policy": 0}
     seen = 0
     t0 = time.perf_counter()
 
@@ -500,13 +587,30 @@ def main() -> None:
 
         opt.zero_grad(set_to_none=True)
         total_loss = 0.0
+        head_loss = {"value": 0.0, "policy": 0.0}
+        head_n = {"value": 0, "policy": 0}
         for _ in range(args.accum):
-            tokens, actions = next(batches)
+            if is_fused:
+                # Each accumulation micro-step may draw a different head, so a
+                # single optimizer step usually sees BOTH objectives. That is
+                # deliberate: it averages the two gradients instead of letting
+                # them alternate whole steps, which is the milder version of
+                # the trunk-domination failure.
+                head, tokens, actions = next(batches)
+            else:
+                head = "value" if is_value else "policy"
+                tokens, actions = next(batches)
             tokens = tokens.to(device, non_blocking=True)
             actions = actions.to(device, non_blocking=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits = train_step(tokens)
-            if is_value:
+            if is_fused:
+                # The heads are slices of one projection. Value first so that a
+                # value-only checkpoint of a fused net is a prefix, which keeps
+                # eval_heldout and the engine's HLGauss path unchanged.
+                logits = (logits[:, :args.value_bins] if head == "value"
+                          else logits[:, args.value_bins:])
+            if head == "value":
                 # Soft cross-entropy against a Gaussian smeared over the bins.
                 # Not MSE: Farebrother et al. measure HL-Gauss > C51 > MSE, and
                 # plain two-hot binning as WORSE than MSE, so the choice of
@@ -518,6 +622,8 @@ def main() -> None:
                 loss = F.cross_entropy(logits.float(), actions) / args.accum
             loss.backward()
             total_loss += loss.item()
+            head_loss[head] += loss.item() * args.accum
+            head_n[head] += 1
             seen += tokens.shape[0]
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -525,6 +631,10 @@ def main() -> None:
         ema.update(model)
 
         running += total_loss
+        for h in ("value", "policy"):
+            if head_n[h]:
+                running_head[h] += head_loss[h] / head_n[h]
+                running_head_n[h] += 1
 
         if (step + 1) % args.log_every == 0:
             dt = time.perf_counter() - t0
@@ -550,6 +660,13 @@ def main() -> None:
                 f"lr {lr:.2e}  gn {rec['grad_norm']:>6.2f}  "
                 f"clip x{rec['clip_mult']:.2f}  {rec['samples_per_s']:>7,}/s"
             )
+            if is_fused:
+                for h in ("value", "policy"):
+                    if running_head_n[h]:
+                        rec[f"loss_{h}"] = round(running_head[h] / running_head_n[h], 5)
+                        rec[f"steps_{h}"] = running_head_n[h]
+                running_head = {"value": 0.0, "policy": 0.0}
+                running_head_n = {"value": 0, "policy": 0}
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
             running = 0.0
@@ -563,15 +680,31 @@ def main() -> None:
             # evaluated, promoted and played, so a held-out number measured on
             # anything else would describe a model that never ships.
             val_loss = validate(eval_model)
+            # Per-head held-out, which is the tripwire that matters: training
+            # loss can look healthy while one head quietly stops generalising.
+            if is_fused:
+                val_policy = validate(eval_model, head="policy")
+                if val_policy is not None:
+                    rec_extra = {"val_loss_policy": round(val_policy, 5)}
+                else:
+                    rec_extra = {}
+            else:
+                rec_extra = {}
+            # The puzzle evaluator wants ONE head. For a fused net that is the
+            # value head, because that is what the search backs up and what the
+            # puzzle metric has always meant here.
+            puzzle_model = (_Head(eval_model, 0, args.value_bins)
+                            if is_fused else eval_model)
             evaluator = (
-                ValuePolicy(eval_model, HLGauss(bins=args.value_bins), device=device)
+                ValuePolicy(puzzle_model, HLGauss(bins=args.value_bins), device=device)
                 if is_value
-                else NeuralPolicy(eval_model, device=device)
+                else NeuralPolicy(puzzle_model, device=device)
             )
             result = evaluate_puzzles(evaluator, puzzles)
             val_note = f"  val {val_loss:.4f}" if val_loss is not None else ""
             print(f"  [eval] step {step+1:,}  puzzles {result}{val_note}  (BC ceiling ~0.657; 0.889 is the action-value model)")
             rec = {"step": step + 1, "puzzle_acc": result.accuracy}
+            rec.update(rec_extra)
             if val_loss is not None:
                 rec["val_loss"] = round(val_loss, 5)
                 # What the number is a mean OVER, and on which weights. Absent
