@@ -2047,3 +2047,69 @@ connectivity before the first move, assert a legal move inside the budget.
 copy of each thing, and attribute every event to a side. `Termination` says
 what happened, never to whom. `Result "*"` plus a ply count says whose turn it
 was, and that is the only thing that makes an abandon ours or theirs.
+
+## 2026-08-14: the abandons are not stalled searches, they are engines handed the game too late
+
+Plan 0.9 diagnoses all 33 deployed-TC events as one defect: `rust/src/tree.rs`
+checks the search deadline BETWEEN batches, so a stalled GPU callback means the
+check never runs. Its fix (b) is a hard engine-side per-move deadline that can
+interrupt a stalled batch. **That fix would not have prevented a single one of
+the abandons**, and the evidence was in `lichess-bot/lichess_bot_auto_logs/`
+the whole time.
+
+Nine of the 33 events fall inside the bot log's retention window. Measuring
+from `gameStart` for each:
+
+    kind      game       ->engine   ->search   ->finish   ->move    concurrent
+    forfeit   BiRpIlgf      +5.5s      +6.4s   +1102.7s    +17.1s        2
+    forfeit   JdNzAc2Q      +6.4s      +7.1s   +1212.3s    +17.7s        2
+    forfeit   9GCsTHnS      +4.2s      +4.9s   +1305.3s    +15.4s        2
+    forfeit   wLmtYB9m      +9.5s     +12.4s   +2350.9s    +22.9s        2
+    forfeit   EHmQfT83      +5.4s      +7.3s   +3213.8s    +18.1s        3
+    abandon   kpRjqdFM     +10.1s     +11.2s     +21.2s    +21.8s        3
+    abandon   cO1a6phK     +22.3s     +23.0s     +29.5s    +33.6s        2
+    abandon   M5dWGWri    +186.5s          -     +40.9s         -        4
+    abandon   OPvNwiQu   +1995.0s          -     +35.4s         -        3
+
+**They are two different populations and the plan treats them as one.**
+
+The **abandons** are engine-handoff latency. The engine is given the game 10
+seconds to 33 minutes after it starts, and in the last two cases it is handed a
+game that ENDED MINUTES EARLIER. Nothing stalls mid-search, because no search
+is running: for `kpRjqdFM` the engine searched its full 10-second budget
+correctly and POSTed `e2e4` 0.6 seconds after the game had already finished. A
+deadline that can interrupt a stalled batch has nothing to interrupt here.
+
+The **forfeits** are the opposite shape: engine ready in 4-10s, search starts
+immediately, first move posted at +15-23s, and then the game runs 1,100 to
+3,200 seconds before flagging. Whatever loses those games happens deep in a
+long game, not at its start, and nothing in this pass identifies it.
+
+**Where the handoff latency comes from, partly.** Every concurrent game spawns
+its OWN engine process, and each one loads two ~140 MB nets onto the same card.
+From `logs/engine.jsonl`, boot to first search is **2.8s median across 11
+processes, but 9.1s, 11.6s and 29.3s in three of them**, and the 29.3s case
+(pid 1280393) is one I caused myself by running a lab bench while the bot was
+up. So lab contention directly inflates it, which is what the GPU mutex (0.9a,
+already built) exists to stop. `challenge.concurrency` is 2 in
+`config/lichess-bot.yml` yet the logs show `Process Used. Count: 3` and `4`, and
+the two worst latencies are at counts 4 and 3.
+
+**What is NOT explained: 186 seconds and 1,995 seconds.** Model loading cannot
+account for those, contention at 2.8s median cannot stretch that far, and this
+pass does not identify what does. Do not write a fix for a mechanism nobody has
+seen; instrument the handoff first.
+
+**So 0.9b is rescoped.** The engine-side mid-batch deadline is still worth
+having for the forfeit population and is cheap, but it is not the abandon fix
+and must not be shipped as one. The abandon work is: log the handoff latency
+per game so the 186s and 1995s cases become diagnosable, then decide between
+capping concurrency at 1, pre-warming or pooling engine processes, and refusing
+a game whose first move cannot be made in time. Falsifier for the whole
+rescope: an abandon that shows a `think` record with no `move`, which would be a
+genuine mid-search stall and is exactly what the archive does not contain.
+
+**The rule.** 33 events with one plausible mechanism is a hypothesis, not a
+diagnosis. Before writing the fix, pull the per-event timeline and check the
+events actually share a shape. These did not, and the shape they do have was
+sitting in a log nobody had opened.
