@@ -64,14 +64,25 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Pinned so it cannot follow a training run's batch size. Two held-out numbers
+# are comparable only if they are means over the SAME positions, and the same
+# positions only arrive in the same batches if the batching is fixed. Matches
+# train.py's VAL_BATCH so the two tools agree by construction.
+VAL_BATCH = 1024
+
+# Two identical runs differ by this much on held-out loss, measured 2026-07.
+# Printed next to every delta, because a difference smaller than it is not a
+# measurement and this project has quoted several that were.
+VAL_FLOOR = 0.01370
+
 from sumofish.data import make_loader  # noqa: E402
 from sumofish.hlgauss import HLGauss  # noqa: E402
 from sumofish.hlgauss import loss as hl_loss  # noqa: E402
 from sumofish.model import PRESETS, ChessTransformer, ModelConfig  # noqa: E402
 
 
-def held_out_loss(ckpt_path: Path, target: str, val_data: Path, val_batches: int,
-                  batch_size: int, device: str,
+def held_out_loss(ckpt_path: Path, target: str, val_data: Path,
+                  val_positions: int, device: str,
                   calibration: bool = False) -> tuple[float, dict]:
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     cfg_saved = ckpt.get("cfg")
@@ -92,7 +103,7 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path, val_batches: int
     model.eval()
 
     hl = HLGauss(bins=bins, device=device) if is_value else None
-    loader = make_loader(str(val_data), policy=target, batch_size=batch_size,
+    loader = make_loader(str(val_data), policy=target, batch_size=VAL_BATCH,
                          num_workers=0, shuffle_buffer=1, seed=0, infinite=False)
     total, seen = 0.0, 0
     # Calibration accumulators. Kept as running sums rather than stored tensors
@@ -101,14 +112,18 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path, val_batches: int
            "bins": [[0.0, 0.0, 0] for _ in range(10)]}
     with torch.no_grad():
         for tokens, targets in loader:
-            if seen >= val_batches:
+            if seen >= val_positions:
                 break
             tokens = tokens.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits = model(tokens)
+            # Weighted by ROWS. A mean of batch means equals the mean over
+            # positions only when every batch is the same size, and the last
+            # one need not be.
+            rows = int(targets.shape[0])
             total += float(hl_loss(logits.float(), hl.targets(targets)) if is_value
-                           else F.cross_entropy(logits.float(), targets))
+                           else F.cross_entropy(logits.float(), targets)) * rows
             if calibration and is_value:
                 # The head's own point estimate, which is what the search reads.
                 pred = hl.expectation(logits.float()).flatten().double()
@@ -126,12 +141,12 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path, val_batches: int
                         cal["bins"][b][0] += float(pred[m].sum())
                         cal["bins"][b][1] += float(lab[m].sum())
                         cal["bins"][b][2] += k
-            seen += 1
+            seen += rows
     del model
     torch.cuda.empty_cache()
     meta = {"step": ckpt.get("step"), "preset": preset, "causal": causal,
             "used_ema": "ema" in ckpt and ckpt["ema"] is not None,
-            "batches": seen}
+            "positions": seen}
     if calibration and is_value and cal["n"]:
         n = cal["n"]
         meta["calibration"] = {
@@ -156,8 +171,13 @@ def main() -> None:
     ap.add_argument("--target", default="behavioral_cloning",
                     choices=["behavioral_cloning", "state_value"])
     ap.add_argument("--val-data", default=None)
-    ap.add_argument("--val-batches", type=int, default=32)
-    ap.add_argument("--batch-size", type=int, default=1024)
+    ap.add_argument("--val-positions", type=int, default=32_768,
+                    help="held-out POSITIONS to score. Positions, not batches: "
+                         "the old --val-batches multiplied by --batch-size, so "
+                         "the number scored moved with the batch size and two "
+                         "checkpoints' losses were not comparable.")
+    ap.add_argument("--val-batches", type=int, default=None,
+                    help=argparse.SUPPRESS)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--calibration", action="store_true",
                     help="value target only: Brier, bias and ECE against the "
@@ -165,21 +185,32 @@ def main() -> None:
                          "and read the difference, not the absolute number.")
     args = ap.parse_args()
 
+    if args.val_batches is not None:
+        raise SystemExit(
+            f"--val-batches is gone: it multiplied by --batch-size, so two "
+            f"checkpoints scored on different batch sizes were not comparable. "
+            f"Use --val-positions (you passed {args.val_batches} batches, which "
+            f"at the old default 1024 is --val-positions "
+            f"{args.val_batches * 1024})."
+        )
+
     val_data = Path(args.val_data) if args.val_data else \
         ROOT / f"data/test/{args.target}_data.bag"
     if not val_data.exists():
         sys.exit(f"no held-out bag at {val_data}")
-    print(f"held-out: {val_data.name}, first {args.val_batches} batches of "
-          f"{args.batch_size}, seed 0 (deterministic: every checkpoint sees the "
-          f"same batches in the same order)\n")
+    print(f"held-out: {val_data.name}, first {args.val_positions:,} positions "
+          f"in batches of {VAL_BATCH}, seed 0 (deterministic: every checkpoint "
+          f"sees the same positions in the same order)")
+    print(f"reproducibility floor {VAL_FLOOR}: a delta smaller than this is not "
+          f"a measurement.\n")
 
     results = []
     for path in args.checkpoints:
         p = Path(path)
         if not p.exists():
             print(f"  {path}: MISSING"); continue
-        loss, meta = held_out_loss(p, args.target, val_data, args.val_batches,
-                                   args.batch_size, args.device, args.calibration)
+        loss, meta = held_out_loss(p, args.target, val_data, args.val_positions,
+                                   args.device, args.calibration)
         results.append((str(p), loss, meta))
         print(f"  {p.name:<24} val {loss:.5f}   step {meta['step']}  "
               f"{meta['preset']}  ema={meta['used_ema']}")
@@ -195,9 +226,13 @@ def main() -> None:
     if len(results) >= 2:
         best = min(results, key=lambda r: r[1])
         worst = max(results, key=lambda r: r[1])
+        delta = worst[1] - best[1]
+        verdict = ("above the reproducibility floor" if delta > VAL_FLOOR
+                   else f"BELOW the {VAL_FLOOR} floor, so it is not a measurement")
         print(f"\n  lowest: {Path(best[0]).parent.name}/{Path(best[0]).name} "
-              f"at {best[1]:.5f}, better by {worst[1] - best[1]:.5f} than "
+              f"at {best[1]:.5f}, better by {delta:.5f} than "
               f"{Path(worst[0]).parent.name}/{Path(worst[0]).name}")
+        print(f"  that delta is {delta / VAL_FLOOR:.1f}x the floor: {verdict}.")
         print("  Held-out loss has no sigma quoted here: it is a mean over a FIXED "
               "deterministic set, so repeat runs give the same number. That makes it "
               "comparable, NOT free of the usual caveat -- it is still an instrument, "

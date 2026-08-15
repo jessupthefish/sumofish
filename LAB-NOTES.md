@@ -1942,3 +1942,60 @@ longer arms, INTERLEAVED rep-major so GPU clock drift cannot alias onto width,
 and a same-shape control whose reading defines the floor. **A sweep that varies
 only the thing you care about cannot tell you how much of what it found was
 drift.** Cost 45 minutes and turned an unusable table into a decision.
+
+## 2026-08-14: the provenance fingerprint freezes the repo to git for the length of a match, and still misses the harness
+
+Found by asking what was safe to touch while the 10-hour compile gate ran, not
+by anything going wrong. Both halves are real.
+
+`code_fingerprint()` returns `f"{git short sha}+{sha256 of sumofish/**/*.py}"`,
+and that string goes inside the resume fingerprint stored in a match's
+`config.json`. A resume recomputes it and refuses on mismatch.
+
+**Over-broad: ANY commit invalidates every in-flight match.** The running gate
+recorded `052a1ed+ee2e4a1ab896`. Committing a one-line edit to this very file
+moves the SHA, the package digest is byte-identical, and the fingerprint moves
+anyway. So a documentation commit makes a ten-hour match non-resumable. In
+practice that means the repository is **read-only to git for the duration of
+any long match**, which is not a rule anyone wrote down and is not one anybody
+would choose. Nothing about a note changes what a game is.
+
+**Under-broad: `scripts/match.py` is not in the digest.** Only `sumofish/**.py`
+is hashed. But match.py is what decides adjudication, drives the clock, picks
+the openings, writes the records and computes the result. It is the code that
+most directly determines what a game IS, and editing it mid-match is invisible
+to the guard that exists to catch exactly that. It fell through because the
+docstring's reasoning is "hash the source that actually gets imported", and
+match.py is the entry point rather than an import.
+
+So the guard fires on the one change that cannot matter and stays silent on one
+that can.
+
+**The fix, deliberately NOT applied while the gate is running**, because
+changing the formula is itself the thing that breaks the in-flight resume:
+hash the source that determines what a game is, `sumofish/**/*.py` plus
+`scripts/match.py`, and record the git SHA in `config.json` as METADATA beside
+the fingerprint rather than inside it. The SHA is what you want when reading an
+old result; it is not what you want when deciding whether two halves of a match
+are the same experiment.
+
+That change makes every archived match's stored `code` value unmatchable once,
+so nothing already on disk can be resumed under the new scheme. The only live
+partial is `matedist-time` at 314/600, which is a contended clock match that
+was already judged not quotable, so the real cost is zero. Take it now rather
+than carrying two schemes.
+
+**Escape hatch while the old scheme is in force**, worth knowing: a match whose
+resume is refused only because HEAD moved can be resumed by checking the
+recorded SHA back out (`git stash && git checkout <sha>`), resuming, and
+returning. The fingerprint is recomputed from the working tree, so it matches
+again. Do not reach for this after a real engine edit; there it is telling the
+truth.
+
+**The general shape, and it is the third instance today.** A guard whose
+predicate is broader than the property it defends produces false alarms that
+train people to route around it, and a guard narrower than that property is
+silent exactly when it matters. Both failures look like a working guard from
+the outside. When writing one, enumerate what actually changes the thing being
+protected, and check the predicate against that list rather than against what
+was convenient to hash.

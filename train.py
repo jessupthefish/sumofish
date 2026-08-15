@@ -75,6 +75,18 @@ def ladder_survivors(steps: list[int], keep_max: int) -> list[int]:
     return sorted(keep)
 
 
+# The eval batch size, pinned so it cannot follow --batch-size. Two held-out
+# numbers are only comparable if they are means over the SAME positions, and
+# the same positions only arrive in the same batches if the batching is fixed.
+# 1024 matches scripts/eval_heldout.py so the two agree by construction.
+VAL_BATCH = 1024
+
+# The reproducibility floor: two identical runs differ by this much on held-out
+# loss, measured 2026-07. Printed next to every delta because a difference
+# smaller than it is not a measurement, and this project has quoted several.
+VAL_FLOOR = 0.01370
+
+
 def data_frac_after(start_frac: float, records_consumed: int, total_records: int) -> float:
     """Where the data stream actually sits after consuming records_consumed more.
 
@@ -140,8 +152,16 @@ def main() -> None:
                     help="defaults to the bag matching --target")
     ap.add_argument("--val-data", default=None,
                     help="held-out bag; defaults to data/test/<target>_data.bag")
-    ap.add_argument("--val-batches", type=int, default=32,
-                    help="batches of held-out data per eval; 0 disables")
+    ap.add_argument("--val-positions", type=int, default=32_768,
+                    help="held-out POSITIONS per eval, 0 disables. Positions, "
+                         "not batches: the old --val-batches multiplied by "
+                         "--batch-size, so the width sweep scored 4,096 rows "
+                         "against every other run's 32,768 and the numbers were "
+                         "silently not comparable. The eval batch size is "
+                         "pinned separately (VAL_BATCH) so the batches "
+                         "themselves are identical across runs too.")
+    ap.add_argument("--val-batches", type=int, default=None,
+                    help=argparse.SUPPRESS)
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
@@ -413,27 +433,41 @@ def main() -> None:
     # Deliberately deterministic: one worker, a shuffle buffer of one, a fresh
     # iterator each time. The same held-out positions in the same order at every
     # eval, so two numbers from different steps differ because the model did.
+    if args.val_batches is not None:
+        # Silently accepting it would keep producing incomparable numbers under
+        # a flag that looks like it still works, which is the failure this
+        # replaces.
+        raise SystemExit(
+            f"--val-batches is gone. It multiplied by --batch-size, so the "
+            f"number of positions scored moved with the training batch and two "
+            f"runs' held-out losses were not comparable: the width sweep scored "
+            f"4,096 rows against everything else's 32,768.\n"
+            f"Use --val-positions instead. You passed --val-batches "
+            f"{args.val_batches}, which at --batch-size {args.batch_size} is "
+            f"--val-positions {args.val_batches * args.batch_size}."
+        )
+
     val_path = Path(args.val_data)
-    if args.val_batches > 0 and not val_path.exists():
+    if args.val_positions > 0 and not val_path.exists():
         print(f"no held-out bag at {val_path}; validation disabled")
 
     def validate(eval_model: ChessTransformer) -> float | None:
-        if args.val_batches <= 0 or not val_path.exists():
+        if args.val_positions <= 0 or not val_path.exists():
             return None
         eval_model.eval()
         loader = make_loader(
             args.val_data,
             policy=args.target,
-            batch_size=args.batch_size,
+            batch_size=VAL_BATCH,
             num_workers=0,
             shuffle_buffer=1,
             seed=0,
             infinite=False,
         )
-        total, batches_seen = 0.0, 0
+        total, rows_seen = 0.0, 0
         with torch.no_grad():
             for tokens, targets in loader:
-                if batches_seen >= args.val_batches:
+                if rows_seen >= args.val_positions:
                     break
                 tokens = tokens.to(device, non_blocking=True)
                 targets = targets.to(device, non_blocking=True)
@@ -442,13 +476,17 @@ def main() -> None:
                 # The same objective the run is trained on, so the two numbers
                 # are directly comparable. A gap that opens between them is the
                 # signal this exists to catch.
+                # Weighted by ROWS, not averaged over batches. A mean of
+                # batch means only equals the mean over positions when every
+                # batch is the same size, and the last one need not be.
+                n = int(targets.shape[0])
                 total += float(
                     hl_loss(logits.float(), hl.targets(targets))
                     if is_value
                     else F.cross_entropy(logits.float(), targets)
-                )
-                batches_seen += 1
-        return total / max(1, batches_seen)
+                ) * n
+                rows_seen += n
+        return (total / rows_seen) if rows_seen else None
 
     log_path = out / "log.jsonl"
     running = 0.0
@@ -536,6 +574,12 @@ def main() -> None:
             rec = {"step": step + 1, "puzzle_acc": result.accuracy}
             if val_loss is not None:
                 rec["val_loss"] = round(val_loss, 5)
+                # What the number is a mean OVER, and on which weights. Absent
+                # from every run before 2026-08-14, which is why the width
+                # sweep's 4,096-row evals were indistinguishable in the logs
+                # from everyone else's 32,768-row ones.
+                rec["val_positions"] = args.val_positions
+                rec["val_weights"] = "ema"
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
             # Select on held-out loss when there is one, and only fall back to
