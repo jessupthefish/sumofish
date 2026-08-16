@@ -261,15 +261,25 @@ def main() -> None:
         out = args.bins + NUM_ACTIONS if fused else args.bins
         cfg = shape(spec, out)
         model = ChessTransformer(cfg)
-        # A fused trunk emits bins + NUM_ACTIONS; the value path wants bins.
-        value = ValuePolicy(_FusedHead(model, args.bins) if fused else model,
-                            HLGauss(bins=args.bins), device=args.device)
+        value = ValuePolicy(model, HLGauss(bins=args.bins), device=args.device)
         if skip_value:
             # Keep the ValuePolicy wrapper (the search calls into it) but make
             # its forward free, so what is left is tree + policy forward.
             value.model = _FreeNet(args.bins, args.device).to(args.device).eval()
         pol = real_policy()
-        if skip_policy or fused:
+        if fused:
+            # The REAL fused path, not a simulation of it. Handing the same
+            # module to both wrappers is what `make_evaluator` detects, and it
+            # then does ONE forward and slices. The previous version stood a
+            # `_FreeNet` stub in for the policy net, which under --compile was
+            # a torch.compile'd module allocating inside a CUDA graph: it took
+            # every fused arm of the 2026-08-15 pass down, and once patched
+            # around it measured 7,783 nps against 13,983 for the SAME arm
+            # uncompiled. A stub that has to be special-cased for the flag
+            # under test is not standing in for the thing, it IS the thing
+            # being measured.
+            pol.model = model
+        elif skip_policy:
             pol.model = _FreeNet(NUM_ACTIONS, args.device).to(args.device).eval()
         nps = search_nps(mcts_cls, value, pol, args.seconds, args.batch,
                          compile_nets=args.compile)
