@@ -47,12 +47,41 @@ class ModelConfig:
     # seeing each other. Kept True to reproduce their checkpoints; flipping it
     # is the first experiment worth running.
     causal: bool = True
+    # The width the positional encoding was BUILT at, when that differs from
+    # embedding_dim. `pos` is a non-persistent buffer, so it is recomputed from
+    # the config on every load rather than restored from the checkpoint. That
+    # is fine while a net keeps its width and silently wrong the moment one is
+    # GROWN: a d=384 checkpoint grown from d=256 would come back with a d=384
+    # encoding where its weights expect the d=256 one interpolated, and nothing
+    # would raise. None means "same as embedding_dim", which is every net built
+    # before 2026-08-15.
+    pos_dim: int | None = None
 
     @property
     def head_dim(self) -> int:
         if self.embedding_dim % self.num_heads:
             raise ValueError("embedding_dim must be divisible by num_heads")
         return self.embedding_dim // self.num_heads
+
+    @property
+    def pos_width(self) -> int:
+        return self.pos_dim or self.embedding_dim
+
+
+def heads_for(embedding_dim: int, head_dim: int = 32) -> int:
+    """Head count at a fixed head_dim, which growth requires.
+
+    Function-preserving growth duplicates whole attention heads, so head_dim
+    must not move when width does: at head_dim 32, d=256 is 8 heads and d=384
+    is 12. `PRESETS` hardcodes 8 at every width, which silently makes head_dim
+    32 at d=256 and 128 at d=1024, and a grown checkpoint would then have to
+    reshape every attention projection rather than copy it.
+    """
+    if embedding_dim % head_dim:
+        raise ValueError(
+            f"embedding_dim {embedding_dim} is not a multiple of head_dim "
+            f"{head_dim}; growth duplicates whole heads and cannot split one")
+    return embedding_dim // head_dim
 
 
 # Parameter counts confirmed by building them: 9.0M / 136.2M / 270.0M.
@@ -146,7 +175,17 @@ class ChessTransformer(nn.Module):
 
         # Sequence is 77 state tokens plus one predicted token, and shift_right
         # keeps the length the same, so positions run to 78.
-        pos = sinusoid_position_encoding(SEQUENCE_LENGTH + 1, cfg.embedding_dim)
+        # Built at cfg.pos_width, not cfg.embedding_dim. They are equal for
+        # every net trained before 2026-08-15 and differ only for a grown one,
+        # where the encoding has to stay the donor's or the grown weights see a
+        # different signal than they were trained against.
+        pos = sinusoid_position_encoding(SEQUENCE_LENGTH + 1, cfg.pos_width)
+        if cfg.pos_width != cfg.embedding_dim:
+            # Tile the donor's encoding across the wider model, matching how
+            # growth duplicates channels. Truncated or zero-padded would both
+            # change what position 40 means to a weight that already learned it.
+            reps = -(-cfg.embedding_dim // cfg.pos_width)
+            pos = np.tile(pos, (1, reps))[:, :cfg.embedding_dim]
         self.register_buffer("pos", torch.from_numpy(pos).float(), persistent=False)
 
         self.apply(self._init)

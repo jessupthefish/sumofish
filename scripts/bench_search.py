@@ -121,6 +121,17 @@ class _FreeNet(torch.nn.Module):
         n = x.shape[0]
         t = self._cache.get(n)
         if t is None:
+            # `torch.compiler.cudagraph_mark_step_begin()` first, and the
+            # allocation OUTSIDE the graph's step. Under --compile the other
+            # net is a CUDA graph whose output buffer is reused on the next
+            # replay; allocating here without marking the step made the graph
+            # hand back "accessing tensor output of CUDAGraphs that has been
+            # overwritten by a subsequent run" and killed every fused arm of
+            # the 2026-08-15 pass after 42 minutes. The stub is supposed to
+            # cost nothing and it was corrupting the arm it stood in for.
+            mark = getattr(torch.compiler, "cudagraph_mark_step_begin", None)
+            if mark is not None:
+                mark()
             t = torch.zeros(n, self.out, device=self.device_)
             self._cache[n] = t
         return t

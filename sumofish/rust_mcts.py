@@ -53,6 +53,8 @@ import torch
 
 import sumofish_core as core
 
+from sumofish.tokenizer import NUM_ACTIONS
+
 
 def make_evaluator(policy, value_policy, compile_nets: bool = False,
                    pad_to: int | None = None):
@@ -83,9 +85,29 @@ def make_evaluator(policy, value_policy, compile_nets: bool = False,
     #    rows below 128 were free anyway. Without the padding, every new row count
     #    triggers a recompile, inside a search, on a running chess clock.
     pmodel, vmodel = policy.model, value_policy.model
+
+    # FUSED: one trunk, two heads, and therefore ONE forward pass per node
+    # instead of two. Detected from the output width rather than a flag,
+    # because a flag can disagree with the checkpoint and the width cannot:
+    # a fused net emits `bins + NUM_ACTIONS` columns where a value net emits
+    # `bins`. The heads are slices, value first.
+    #
+    # This is the whole point of fusing. Arm C measured the second forward at
+    # 42.7% of per-node cost (2026-08-14), and the two passes are sequential on
+    # one stream, so deleting one is worth more than any width this project can
+    # afford to train.
+    bins = getattr(value_policy.hl, "bins", None)
+    v_out = getattr(getattr(vmodel, "cfg", None), "output_size", None)
+    fused = bins is not None and v_out == bins + NUM_ACTIONS
+    if fused and pmodel is not vmodel:
+        # Both wrappers must be backed by the SAME module, or "fused" is a
+        # description of the checkpoint and a lie about what runs.
+        fused = False
+
     if compile_nets:
-        pmodel = torch.compile(pmodel, mode="reduce-overhead")
         vmodel = torch.compile(vmodel, mode="reduce-overhead")
+        if not fused:
+            pmodel = torch.compile(pmodel, mode="reduce-overhead")
 
     @torch.inference_mode()
     def evaluate(fens: list[str], actions: list[list[int]]):
@@ -112,11 +134,18 @@ def make_evaluator(policy, value_policy, compile_nets: bool = False,
         x = torch.from_numpy(tokens).long().to(device, non_blocking=True)
 
         with torch.autocast(dev_type, dtype=dtype):
-            # Same two models, same order, same `.float()` as
-            # `policy._logprobs` and `ValuePolicy.evaluate`. One input tensor
-            # rather than two identical ones.
-            plogits = pmodel(x).float()
-            vlogits = vmodel(x).float()
+            if fused:
+                # ONE forward. The columns are [value bins | policy logits],
+                # and the slices are views, so this costs nothing beyond the
+                # single pass.
+                both = vmodel(x).float()
+                vlogits, plogits = both[:, :bins], both[:, bins:]
+            else:
+                # Same two models, same order, same `.float()` as
+                # `policy._logprobs` and `ValuePolicy.evaluate`. One input
+                # tensor rather than two identical ones.
+                plogits = pmodel(x).float()
+                vlogits = vmodel(x).float()
 
         rows = plogits[:n].cpu().numpy()      # float32, as `.float()` gives
         values = value_policy.hl.expectation(vlogits[:n]).cpu().numpy()

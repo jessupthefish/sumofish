@@ -2154,3 +2154,57 @@ fused arm reports `params` and it says 8,927,472.
 **The rule, again.** A number you did not compute is a claim, however obvious
 it sounds. This project's own philosophy says a number without an interval is
 not a result; the corollary is that a number without a source is not a number.
+
+## 2026-08-15: growth is exact at 2x and only 3.3x better than noise at 1.5x
+
+Building `scripts/grow_net.py` (plan 3.2). The plan says growth at 1.5x is
+"approximate" and sets a recovery gate for it. It is approximate; the size of
+the approximation was never measured, and it is bigger than the word suggests.
+
+Over 256 real token sequences, against the deployed d=256 value net:
+
+    grown to d=512 (2x), fused       max|delta| 0.0000    MSE 0.0000
+    grown to d=384 (1.5x), fused                7.7036        1.0270
+    COLD START d=384, fused                    12.1778        3.4396
+    zero-padded to d=512                       18.1722             -
+
+**Zero-padding is worse than a cold start.** It changes no existing weight,
+which is exactly why it looks safe, and it is the worst of the four.
+
+**1.5x growth is real but weak.** MSE 1.03 against a cold start's 3.44, so it
+carries about 3.3x more of the donor than noise does, and it is nowhere near
+function-preserving. The consequence matters: **a grown d=384 net is not
+playable at step 0.** The whole argument for growth is that every checkpoint is
+deployable, so the 6-GPU-hour early probe exists; at 1.5x that argument only
+starts holding once recovery has happened, which is what the step-10k gate is
+for and is no longer a formality.
+
+**2x growth is exact.** A grown d=512 net reproduces the donor to float32
+noise and IS playable at step 0.
+
+So width is not purely a cost question any more. d=384 is the better operating
+point (1.14x parameters, and the last rung before the cost knee) but is only
+approximately grown. d=512 is the worse operating point (2.00x parameters, past
+the knee) but is exactly grown and deployable immediately. That trade needs the
+cost numbers under `compile` before it can be called.
+
+**The bug this found, which is the part worth keeping.** The first
+implementation failed its own positive control: 2x growth read **9.297** where
+the theory demands 0. Every weight tensor verified correct against the
+Net2Net formula -- `q' == q[idx][:,idx]/2` to 0.000000 -- and the model still
+diverged, first at the attention output of block 0.
+
+The cause was three layers away from the weights. `ChessTransformer.forward`
+multiplies the embedding by `sqrt(embedding_dim)`, so a d=512 net scales by
+22.63 where its d=256 donor scaled by 16. The duplicated residual stream came
+out sqrt(2) too large. **LayerNorm hides this everywhere it is applied**, which
+is why every normalised path looked right, and the residual path `x +
+attn(ln(x))` is not normalised, so only the ratio between the two terms was
+wrong. Compensating the embedding weights by `sqrt(old_d/new_d)` fixes it.
+
+**The lesson is about the control, not the bug.** Verifying every weight
+against the formula proved the formula was implemented, not that the model was
+preserved. What caught it was a case where theory demands an exact answer --
+duplicate everything at an integer multiple and the output must not move --
+run before the case anyone actually wanted. Build the positive control that
+must return a known constant, not just the measurement you are after.
