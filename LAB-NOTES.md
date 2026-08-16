@@ -2208,3 +2208,62 @@ preserved. What caught it was a case where theory demands an exact answer --
 duplicate everything at an integer multiple and the output must not move --
 run before the case anyone actually wanted. Build the positive control that
 must return a known constant, not just the measurement you are after.
+
+## 2026-08-16: compile ate the knee, and the width case is now a trade rather than a free lunch
+
+The 2026-08-14 cost pass was measured with `compile` OFF. `compile` shipped on
+08-15. The fusion prize is launch overhead and CUDA graphs delete launch
+overhead, so every number in that pass described a configuration that no longer
+runs. Re-measured on a drained box, one arm per process, three interleaved
+reps, control first in every rep.
+
+**Control: 0.9979x, so the noise floor is +-1.0%.** Everything below clears it.
+
+    shape   params vs today   nps      vs today    pre-compile
+    d256          0.52x     21,201      1.62x         1.76x
+    d320          0.80x     17,364      1.33x         1.69x
+    d384          1.14x     15,006      1.15x         1.64x
+    d448          1.54x     12,182      0.93x         1.33x
+    d512          2.00x     10,379      0.79x         1.14x
+
+**The knee is gone from the range.** Marginal cost of each width step as a
+share of what its FLOPs imply:
+
+    256 -> 320    65%   (was  9%)
+    320 -> 384    53%   (was 10%)
+    384 -> 448    90%   (was 87%)
+    448 -> 512    74%   (was 68%)
+
+Below d=384 width used to cost about a tenth of its arithmetic because the card
+was latency-bound; now it costs half to two thirds. That is precisely what
+compile was expected to do and the size of it was not: **d=384 falls from 1.64x
+to 1.15x, and d=448 and d=512 go from wins to LOSSES** (0.93x and 0.79x).
+
+**What survives.** d=384 is still better than today on both axes: 1.14x the
+parameters AND 1.15x the speed, with a +-1.0% floor, so the speed edge is 15
+times the noise. The plan's GO rule is "at least the acceptance instrument's
+resolution", which is +-5.3% in equivalent nodes, and 15% is ~3x that. So d=384
+still passes, by a much narrower margin than the plan believed.
+
+**What died.** d=448 and d=512 as free capacity. They now cost 7% and 21% of
+the search to buy 1.54x and 2.00x the parameters. That is a real trade and may
+still be worth taking, but it is no longer "bigger and faster".
+
+**Where that leaves the decision, with the growth numbers from 08-15.**
+
+    d=384   +14% capacity, +15% speed, growth is APPROXIMATE (MSE 1.03 vs a
+            cold start's 3.44), so it is NOT playable at step 0
+    d=512   +100% capacity, -21% speed, growth is EXACT (0.0000), so it IS
+            playable at step 0 and the 6-GPU-hour early probe works immediately
+
+The two axes now point different ways, which they did not before. d=384 is the
+better operating point and the worse warm start; d=512 is the reverse.
+
+**The lesson, and it is the reason the plan ordered these correctly.** A cost
+measurement is only valid for the configuration it was taken under, and this
+project changed that configuration by shipping a 92-Elo improvement in between.
+The plan said "measure compile before any capacity commitment" and the reason
+given was that compile cuts the term the fusion case rests on. It does, by
+enough to move two widths from win to loss. Re-run a cost basis after ANY
+change to the engine's operating point, and treat an old cost table the way
+this project treats an old Elo number.

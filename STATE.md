@@ -34,6 +34,26 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-08-16, session 11 continued)
+
+**The width decision, re-measured under `compile`, which is what ships since 08-15.**
+Control 0.9979x, floor +-1.0%. Fused against today's compiled two-net engine:
+**d256 1.62x, d320 1.33x, d384 1.15x, d448 0.93x, d512 0.79x.** The knee that made width
+nearly free below d=448 is GONE: marginal cost per width step went from 9/10/87/68% of
+what the FLOPs imply to 65/53/90/74%. CUDA graphs removed the launch overhead that was
+hiding it.
+
+d=384 still passes the plan's GO rule (1.14x parameters AND 1.15x speed, and 15% is ~3x
+the acceptance instrument's +-5.3% resolution) but by a far narrower margin than the plan
+believed. d=448 and d=512 are no longer free capacity: they cost 7% and 21% of the search.
+
+**The fused net is BUILT** (`--target both`, alternating loader, per-head held-out from
+step 1, engine collapses to one forward, `scripts/grow_net.py`). What is NOT decided is
+the width, and it is now a genuine trade with the axes pointing opposite ways:
+d=384 is +14% capacity / +15% speed but grows only APPROXIMATELY (MSE 1.03 against a cold
+start's 3.44, so not playable at step 0); d=512 is +100% capacity / -21% speed but grows
+EXACTLY (0.0000, playable at step 0, so the 6-GPU-hour early probe works immediately).
+
 ## Where things stand (2026-08-14, session 11)
 
 **Read `docs/PLAN-2026-08-14.md` first.** It is the ordered plan, it came out of a
@@ -60,7 +80,11 @@ corrected at every point of use: `PHILOSOPHY.md`, two places in this file, and t
 comment in `systemd/sumofish-bot.service`. Rollback is one commented line plus a
 daemon-reload and a drain.
 
-**The cost side of the capacity decision is settled (plan 1.1).** Arm C: the policy
+**SUPERSEDED 2026-08-16 by the re-measurement under compile: see the block below this
+one. d=384 falls from 1.64x to 1.15x, and d=448/d=512 go from wins to losses.** The
+structural findings (42.7% policy share, the self-check, the method) stand.
+
+**The cost side of the capacity decision, as measured BEFORE compile shipped (plan 1.1).** Arm C: the policy
 forward is **42.7%** of per-node cost against a 25% kill threshold, self-checked by the
 two same-architecture nets agreeing to 0.9%. Fused arms against today's two d=256 passes:
 **d256 1.76x, d320 1.69x, d384 1.64x, d448 1.33x, d512 1.14x** faster per node, against a
