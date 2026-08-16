@@ -692,23 +692,58 @@ def checkpoint_sha(path: str | None) -> str:
     return h.hexdigest()[:12]
 
 
-def code_fingerprint() -> str:
-    """git SHA plus a hash of the package, so a stale result can be spotted.
+def git_sha() -> str:
+    """The commit, recorded as METADATA and deliberately NOT in the fingerprint.
 
-    The SHA alone is not enough: this project's own Lab Notes record that
-    editing `sumofish/` mid-match makes the first half of the games play a
-    different engine than the second, and an uncommitted edit does not move the
-    SHA. Hashing the source that actually gets imported does.
+    It is what you want when reading an old result. It is not what you want
+    when deciding whether two halves of a match are the same experiment: it
+    moves on a one-line edit to a notes file, and it does not move on an
+    uncommitted edit to the engine.
     """
     try:
-        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                             capture_output=True, text=True, check=False).stdout.strip()
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                              capture_output=True, text=True,
+                              check=False).stdout.strip() or "?"
     except OSError:
-        sha = "?"
+        return "?"
+
+
+def code_fingerprint() -> str:
+    """A hash of the source that decides what a GAME IS.
+
+    Corrected 2026-08-15. This used to be `git short sha + sha256(sumofish/)`,
+    and it was wrong in both directions at once.
+
+    TOO BROAD: the bare SHA meant that committing anything at all invalidated
+    every in-flight match. A one-line edit to LAB-NOTES.md moves the SHA while
+    the package digest is byte-identical, so a ten-hour match became
+    non-resumable for a documentation commit. In practice that made the
+    repository read-only to git for the length of any long run, which is not a
+    rule anyone wrote down or would choose.
+
+    TOO NARROW: `scripts/match.py` was not hashed. But match.py decides
+    adjudication, drives the clock, picks the openings, writes the records and
+    computes the result. It is the code that most directly determines what a
+    game is, and editing it mid-match was invisible to the guard whose whole
+    job is catching that. It fell through because the old reasoning was "hash
+    the source that gets imported", and match.py is the entry point rather than
+    an import.
+
+    So: hash `sumofish/**/*.py` plus this file, and nothing else. The SHA rides
+    alongside in config.json where it belongs.
+
+    This changes the value for every match, so nothing recorded under the old
+    scheme can be resumed. The only live partial when it landed was
+    `matedist-time` at 314/600, a contended clock match already judged not
+    quotable, so the real cost was zero. Taking it once beats carrying two
+    schemes forever.
+    """
     digest = hashlib.sha256()
-    for path in sorted((ROOT / "sumofish").rglob("*.py")):
+    sources = sorted((ROOT / "sumofish").rglob("*.py"))
+    sources.append(Path(__file__).resolve())
+    for path in sources:
         digest.update(path.read_bytes())
-    return f"{sha or '?'}+{digest.hexdigest()[:12]}"
+    return digest.hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -1355,6 +1390,8 @@ def main() -> None:
     cfg_path.write_text(
         json.dumps(
             {"fingerprint": fingerprint, "code": code_fingerprint(),
+             # Metadata, not identity. See code_fingerprint's docstring.
+             "git_sha": git_sha(),
              # Machine state at launch. Absent from every archived match, which
              # is why the 2026-08-13 clock arms cannot be audited for
              # contention after the fact: seconds/ply is pinned at the movetime,
