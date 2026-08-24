@@ -206,6 +206,16 @@ def main() -> None:
                          "already cost 35 GPU-hours.")
     ap.add_argument("--ema-decay", type=float, default=0.999)
     ap.add_argument("--causal", type=int, default=1, help="1 = upstream, 0 = bidirectional")
+    ap.add_argument(
+        "--pos-dim", type=int, default=None,
+        help="the width the SINUSOIDAL POSITIONAL ENCODING is built at, when "
+        "that is not the model width. Only a grown net wants this: `pos` is a "
+        "non-persistent buffer, so it is rebuilt from the config on every "
+        "load, and a d=384 net grown from a d=256 donor whose config says 384 "
+        "silently gets an encoding its weights never saw. Pass the DONOR's "
+        "width. The init-from guard below refuses the mismatch rather than "
+        "trusting anyone to remember.",
+    )
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--eval-every", type=int, default=5000)
     ap.add_argument("--eval-puzzles", type=int, default=1000)
@@ -312,6 +322,8 @@ def main() -> None:
     build_kwargs = {"causal": bool(args.causal)}
     if out_size:
         build_kwargs["output_size"] = out_size
+    if args.pos_dim:
+        build_kwargs["pos_dim"] = args.pos_dim
     model = build(args.preset, **build_kwargs).to(device)
 
     hl = HLGauss(bins=args.value_bins, device=device) if is_value else None
@@ -363,6 +375,23 @@ def main() -> None:
 
     if args.init_from and not args.resume:
         donor = torch.load(args.init_from, map_location=device, weights_only=False)
+        # The positional encoding is a BUFFER, so it is absent from the state
+        # dict and cannot be caught by the shape check below: every weight
+        # transfers, the transfer fraction reads 100%, and the net is handed a
+        # different position signal than it was grown against. Nothing raises,
+        # nothing looks wrong, and the run is quietly training a different
+        # model. Refuse it here, where the donor's own config is in hand.
+        donor_cfg = donor.get("cfg")
+        if donor_cfg:
+            donor_pos = donor_cfg.get("pos_dim") or donor_cfg["embedding_dim"]
+            if donor_pos != model.cfg.pos_width:
+                raise SystemExit(
+                    f"refusing to start: {args.init_from} was built against a "
+                    f"pos_dim={donor_pos} encoding and this model builds a "
+                    f"pos_dim={model.cfg.pos_width} one.\n"
+                    f"  pass --pos-dim {donor_pos} to keep the donor's "
+                    f"encoding, which is what a GROWN checkpoint needs."
+                )
         src = donor.get("ema") or donor["model"]
         own = model.state_dict()
         taken, skipped = [], []
@@ -673,7 +702,8 @@ def main() -> None:
             seen = 0
             t0 = time.perf_counter()
 
-        if (step + 1) % args.eval_every == 0 or stopping:
+        # 0 means "never", same as --ckpt-every and --keep-every.
+        if (args.eval_every and (step + 1) % args.eval_every == 0) or stopping:
             eval_model = build(args.preset, **build_kwargs).to(device)
             ema.copy_into(eval_model)
             # Validate the EMA weights, not the raw ones: EMA is what gets
@@ -742,7 +772,9 @@ def main() -> None:
             torch.cuda.empty_cache()
             model.train()
 
-        if (step + 1) % args.ckpt_every == 0 or stopping:
+        # 0 means "never", matching --keep-every, rather than dividing by zero
+        # 40 steps into a smoke run and taking the whole process with it.
+        if (args.ckpt_every and (step + 1) % args.ckpt_every == 0) or stopping:
             save(step + 1)
 
         # A step-tagged copy that nothing overwrites. `latest.pt` is a moving

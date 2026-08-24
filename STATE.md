@@ -34,6 +34,67 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-08-24, session 12)
+
+**THE 19M IS TRAINING.** `sumofish-train-fused.service`, started 11:15 PDT,
+`19M-fused`: d=384, 8 layers, 12 heads at head_dim 32, one trunk, value logits
+in `[:, :64]` and policy logits in `[:, 64:]`. **19,681,648 parameters**, 1.14x
+the deployed two nets' 17,332,720 and 1.15x their speed under `compile`.
+1.2M steps at effective batch 1024 (512 x accum 2, because 1024 OOMs with the
+bot resident on a 16 GB card), ~3,000-5,800 positions/s alongside the live bot,
+so **roughly 60-70 GPU-hours**. Watch it with
+`tail -f runs/19M-fused/log.jsonl` or `journalctl --user -u sumofish-train-fused
+-f`; both heads' training loss is logged per `--log-every` and both heads'
+held-out loss every 5,000 steps.
+
+**It is a COLD start, which reverses plan 3.2, and the reason is a retraction.**
+The growth numbers that made a warm start look worth building were measured on
+`torch.randint` token ids, which are boards that cannot exist. On 4,096 real
+held-out positions:
+
+    donor (deployed d=256 value net)   2.0601
+    grown d=384, plan 3.2's scheme    10.6799   worse than random init
+    COLD START d=384                   4.6914
+    grown d=512 (2x, exact)            2.0601   wp delta 0.0000
+
+Growth at 1.5x does not merely fail to preserve the donor, it starts the run
+*confidently wrong*. Three repairs were measured and all helped in the
+predicted direction (halve the write side so LayerNorm's mean is preserved, a
+gain multiplier for the std shift, and the best of all 70 four-head duplication
+picks) but the best reachable was 4.28 against a cold start's 4.69. That is
+minutes of training on a 68-hour run, so it does not buy the thing growth was
+for: a deployable checkpoint at step 0 and therefore a free early probe. The
+early probe still happens, it is just an ordinary probe of an ordinary run.
+**d=384 as the width is unaffected**; the fusion was always the purchase.
+Full numbers and mechanism in LAB-NOTES 2026-08-24.
+
+**What is new in the tree.** `PRESETS["19M"]` (the only preset whose head count
+comes from `heads_for`, because head_dim must stay 32 across a growth step);
+`tests/identity_grow.py`, which carries the 2x positive control that catches
+this whole class of bug and asserts the step-10k recovery gate when pointed at
+a run; `train.py --pos-dim` plus a refusal when an `--init-from` donor was
+built against a different positional encoding, which is invisible to the
+existing shape check because `pos` is a non-persistent buffer;
+`sumofish-train-fused.service`. Three bugs fixed while here: `--eval-every 0`
+and `--ckpt-every 0` divided by zero where every other "0 disables" flag means
+never, and `scripts/train_watchdog.py` hardcoded `sumofish-lab.service` as the
+thing to restart on a stall, so a stall in THIS run would have restarted a unit
+that is not loaded and logged a repair that repaired nothing. It now reads the
+owning unit out of the training pid's cgroup.
+
+**Next, in order.** Watch the first held-out points: the value head should pass
+the donor's 2.0674 and the policy head the deployed policy net's 1.59138, and
+if either curve flattens above its incumbent the fused trunk is being fought
+over, which is what `--policy-every` exists for. Then
+`scripts/build_clean_indices.py` for the state-value bag, which is a hard
+prerequisite for the capacity decision and not hygiene: the policy bag has
+16.19% train/test overlap and contamination flatters the LARGER model on
+exactly the comparison this run exists to settle. Then the step-50k probe
+against the deployed engine, `--time 0.5`, 600 games, drained box. The plan's
+abort criterion stands unchanged: negative beyond its interval at the probe, or
+the value head not better than the deployed net's held-out by 0.014 at 600k
+steps, means stop and write it up.
+
 ## Where things stand (2026-08-16, session 11 continued)
 
 **The width decision, re-measured under `compile`, which is what ships since 08-15.**

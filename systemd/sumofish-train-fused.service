@@ -1,0 +1,77 @@
+[Unit]
+Description=SumoFish training: 19M-fused (d=384, two heads, alternating bags)
+After=network-online.target
+# The bot earns the rating, so it starts first and this is Niced below it. They
+# share the card by design: every training run this project has done has run
+# alongside the live bot. The exclusive box is for MATCHES, where contention
+# biases the number being measured.
+After=sumofish-bot.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/active/sumofish
+
+# Python block-buffers stdout when it is a socket, so the journal shows the
+# startup banner and then nothing for the length of the run. `runs/<run>/
+# log.jsonl` is still written per --log-every, but a quiet journal reads
+# exactly like a stalled run, and this project has already diagnosed one job
+# as running that had finished three days earlier.
+Environment=PYTHONUNBUFFERED=1
+
+# --target both IS the fusion: one trunk, one output projection of width
+# 64 + 1968, value logits in [:, :64] and policy logits in [:, 64:]. One matmul
+# and one kernel launch where the deployed engine does two of each.
+#
+# 19,681,648 parameters: 1.14x the deployed two nets' 17,332,720 and, measured
+# under `compile` on 2026-08-16, 1.15x their speed against a +-1.0% floor.
+# Positive on both axes is the whole case for this width. d=448 and d=512 buy
+# more capacity and COST search (0.93x and 0.79x), so they are a trade, not a
+# free lunch, and this is the rung that is not.
+#
+# COLD START, deliberately, and this reverses plan 3.2. Growing the deployed
+# d=256 value net into d=384 was supposed to make every checkpoint deployable.
+# Measured on 4,096 real held-out positions on 2026-08-24, the grown net reads
+# a value held-out loss of 10.68 against a COLD start's 4.69 and the donor's
+# 2.06: growth at 1.5x starts the run WORSE than random init. The 08-15 result
+# that made it look survivable was measured on uniformly random token ids.
+# Repairing the scheme (halving the write side so LayerNorm's mean is
+# preserved, a gain multiplier for the std shift, and the best of all 70
+# four-head duplication picks) got it to 4.28, which beats a cold start by too
+# little to matter after an hour of training. See LAB-NOTES 2026-08-24.
+#
+# --batch-size 512 --accum 2 is effective batch 1024, the 9M's batch, so the
+# curves are comparable. It is 512 rather than 1024 because 1024 OOMs with the
+# bot resident on a 16 GB card; accumulation is a measured 2.6% tax.
+#
+# --workers is the TOTAL across both bags and gets SPLIT, not doubled. Host RAM
+# is the binding resource here, not VRAM: two loaders on a 31 GB box that has
+# livelocked on memory pressure before.
+ExecStart=%h/dev/active/sumofish/.venv/bin/python train.py \
+    --preset 19M \
+    --target both \
+    --run 19M-fused \
+    --steps 1200000 \
+    --batch-size 512 \
+    --accum 2 \
+    --workers 8 \
+    --eval-every 5000 \
+    --ckpt-every 10000 \
+    --keep-max 16 \
+    --keep-every 100000 \
+    --auto-resume
+
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=no
+
+Nice=5
+OOMScoreAdjust=-200
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-train-fused
+
+[Install]
+WantedBy=default.target

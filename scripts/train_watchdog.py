@@ -42,6 +42,27 @@ ACTIVE = ROOT / "runs" / "active.json"
 # case it was written for. A green timer is indistinguishable from a working
 # watchdog, which is why this one now watches the PROCESS.
 LAB_UNIT = "sumofish-lab.service"
+
+
+def owning_unit(pid: int) -> str:
+    """The unit that ACTUALLY owns the training process, read from its cgroup.
+
+    A constant here is wrong for the third time in this file's history. The lab
+    is no longer the only thing that starts a training run: `19M-fused` runs
+    under `sumofish-train-fused.service`, so a stall would have been "handled"
+    by restarting `sumofish-lab.service` -- a unit that is not even loaded --
+    while the log recorded a restart that repaired nothing. The cgroup line
+    names the unit whatever started it, so this cannot go stale again.
+    """
+    try:
+        line = Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return LAB_UNIT
+    for part in reversed(line.strip().split("/")):
+        part = part.strip()
+        if part.endswith(".service"):
+            return part
+    return LAB_UNIT
 STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "sumofish/train_watchdog.json"
 
 # Generous: a puzzle eval plus a checkpoint write plus a torch.compile after a
@@ -171,9 +192,10 @@ def main() -> int:
     # run. Restarting the lab makes it resume its plan from runs/lab/state.json
     # and re-run the job, and train.py's --auto-resume picks up from the last
     # checkpoint. That is the recovery the two were designed for.
+    unit = owning_unit(pid)
     log(f"STALLED at step {step:,} for {stalled_for/60:.1f} min "
-        f"(pid {pid}); restarting {LAB_UNIT}")
-    subprocess.run(["systemctl", "--user", "restart", LAB_UNIT], check=False)
+        f"(pid {pid}); restarting {unit}")
+    subprocess.run(["systemctl", "--user", "restart", unit], check=False)
     state.update({"last_restart": now, "time": now})
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state))

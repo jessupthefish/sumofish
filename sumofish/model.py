@@ -84,9 +84,23 @@ def heads_for(embedding_dim: int, head_dim: int = 32) -> int:
     return embedding_dim // head_dim
 
 
-# Parameter counts confirmed by building them: 9.0M / 136.2M / 270.0M.
+# Parameter counts confirmed by building them: 9.0M / 136.2M / 270.0M, and
+# 19.7M for the fused 19M (d=384, two heads, 64 value bins + 1968 moves).
 PRESETS: dict[str, ModelConfig] = {
     "9M": ModelConfig(embedding_dim=256, num_layers=8, num_heads=8),
+    # The width Phase 3 buys, and the ONLY preset whose head count comes from
+    # `heads_for` rather than the hardcoded 8. head_dim must stay 32 across a
+    # growth step -- growth duplicates whole attention heads -- so d=384 is 12
+    # heads, not 8. Built as a value-head net here; `--target both` overrides
+    # output_size to bins + NUM_ACTIONS, which is what makes it fused.
+    #
+    # Fused at this width it is 19,681,648 parameters: 1.14x today's two d=256
+    # nets (17,332,720) and, measured under `compile` on 2026-08-16, 1.15x
+    # their speed against a +-1.0% floor. Both axes positive is the whole case
+    # for it, and it is a much narrower case than the pre-compile 1.64x that
+    # the plan was written around.
+    "19M": ModelConfig(embedding_dim=384, num_layers=8,
+                       num_heads=heads_for(384)),
     "136M": ModelConfig(embedding_dim=1024, num_layers=8, num_heads=8),
     "270M": ModelConfig(embedding_dim=1024, num_layers=16, num_heads=8),
     # Something small enough to iterate on in seconds while debugging.

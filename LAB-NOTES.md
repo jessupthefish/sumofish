@@ -2267,3 +2267,80 @@ given was that compile cuts the term the fusion case rests on. It does, by
 enough to move two widths from win to loss. Re-run a cost basis after ANY
 change to the engine's operating point, and treat an old cost table the way
 this project treats an old Elo number.
+
+## 2026-08-24: the growth numbers were measured on boards that cannot exist, and the answer reverses
+
+**Retracted: "1.5x growth carries 3.3x more of the donor than noise does, so a
+grown d=384 net is a better start than a cold one."** On the positions the net
+will actually see, a grown d=384 net is a WORSE start than random init.
+
+`scripts/grow_net.py` reports max|delta| over `torch.randint(0, vocab_size,
+...)` token ids. Its own docstring calls those "real token sequences" and
+LAB-NOTES 2026-08-15 repeats the phrase. They are not real: a uniform draw over
+the 31-token vocabulary is a board with no kings, thirty pieces on one square's
+worth of encoding, and nothing a game could produce. Measured instead on 4,096
+positions read out of `data/test/state_value_data.bag`, with the value head's
+own held-out loss rather than a logit distance:
+
+    donor (deployed d=256 value net)      2.0601
+    grown d=384, today's scheme          10.6799     mean|wp - donor wp| 0.2189
+    COLD START d=384                      4.6914     mean|wp - donor wp| 0.2295
+    grown d=512 (2x, exact)               2.0601     mean|wp - donor wp| 0.0000
+
+The 2x control still lands exactly on the donor, so growth is not broken; the
+1.5x case is. And 10.68 against a cold start's 4.69 is not "approximate", it is
+**confidently wrong**: the grown net's win probabilities sit as far from the
+donor's as a random net's do, and it is more certain about them.
+
+**The mechanism, and it is one line of arithmetic.** Duplicating channel c
+gives the residual stream two copies of the same value, which doubles c's
+contribution to LayerNorm's mean AND to its second moment. LN then normalises
+by statistics that no longer describe the donor's population, and every
+consumer downstream reads a differently-scaled vector. At an integer multiple
+every channel is duplicated equally, the statistics move by one constant
+factor, and LN's scale invariance absorbs it, which is exactly why 2x is exact
+and 1.5x is not.
+
+**Three repairs, each of which helped in the predicted direction, and none of
+which was enough.** `alpha` is the write-side scale on both copies of a
+duplicated channel, with the read-side divisor moved to `count * alpha` so the
+reconstruction stays exact whatever alpha is; only the LN statistics move.
+
+    alpha 1.000 (today)  gain 1.00   10.6799
+    alpha 0.707          gain 1.20    7.9373
+    alpha 0.500          gain 1.20    6.4934
+    alpha 0.500          gain 1.20    5.0397   picking heads (1,2,5,7)
+    alpha 0.500          gain 1.05    4.2842   best found
+
+alpha 0.5 is the value that makes a duplicated pair SUM to the donor's value,
+so LN's mean is preserved exactly, and it is the single largest improvement.
+`gain` is a global multiplier on every LN gain, compensating the std shift that
+alpha < 1 causes. The head pick matters as much as either: across all
+C(8,4) = 70 choices of which four heads to duplicate the loss runs from 5.04 to
+12.95, and the default (0,1,2,3) is the default only because `channel_map`
+walks in order, not because those four are representative of the population LN
+normalises over.
+
+**Best repaired 1.5x growth: 4.28 against a cold start's 4.69.** A 9% edge in
+starting loss, on a run whose first 1% reaches 97% of final quality. That is
+worth minutes, and the reason growth was in the plan at all was worth 60-90
+GPU-hours: "every checkpoint is deployable, so the step-50k probe exists".
+4.28 is not deployable. **So the 19M trains COLD**, and the early probe becomes
+an ordinary early probe of an ordinary run rather than a free one.
+
+**What this does NOT change.** d=384 is still the width: 1.14x the parameters
+and 1.15x the speed, both measured. The fusion, not the warm start, was always
+the thing being bought.
+
+**The lesson, and it is the third time this file has written a version of it.**
+An instrument evaluated off-distribution is not a weaker measurement of the
+same thing, it is a measurement of something else. The zero-padding result on
+2026-08-15 said padding was worse than a cold start and that ranking survives
+here; the growth-vs-cold ranking did not. Nothing in the numbers themselves
+said which of the two would hold. What separated them was running the
+comparison on the population the decision applies to, which cost one script and
+four minutes and was available the whole time.
+
+Also fixed while here: `--eval-every 0` and `--ckpt-every 0` divided by zero
+40 steps into a smoke run, where every other "0 disables" flag in `train.py`
+means never.
