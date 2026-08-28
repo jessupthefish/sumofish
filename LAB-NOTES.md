@@ -2344,3 +2344,77 @@ four minutes and was available the whole time.
 Also fixed while here: `--eval-every 0` and `--ckpt-every 0` divided by zero
 40 steps into a smoke run, where every other "0 disables" flag in `train.py`
 means never.
+
+## 2026-08-28: the 19M finished, the value head missed its gate, and the engine could not have run it anyway
+
+**The run.** `19M-fused` completed all 1,200,000 steps at 00:34 PDT, exit 0,
+13h32m for the final leg, ~5,780 positions/s. Final held-out against the two
+incumbents (`scripts/eval_heldout.py`, which reproduces train.py's own logged
+numbers to five places):
+
+    head     19M fused   incumbent   delta      clean subset (27.4k of 32.8k)
+    policy   1.45227     1.59138     -0.139     1.51540 vs 1.66039
+    value    2.08321     2.06744     +0.016     2.15613 vs 2.13892
+    calibration: brier 0.00343 both, ece 0.0014 vs 0.0013, bias -0.0002 vs 0.0
+
+The policy head is a clear win, 10x the reproducibility floor, and it holds on
+the clean subset. The value head is WORSE than the deployed 9M by 1.2x the
+floor, and that is the head the search backs up. Puzzles 0.753 final, peak
+0.758 at 1,055,000, flat over the last 200k (mean 0.748). `best.pt` is step
+1,185,000, selected on held-out value loss.
+
+**The abort criterion did not fire because nothing implemented it.** Plan 3.6
+said: at 600k steps the value head not better than the deployed net's by 0.014
+means stop. At 600k it read 2.13389, 0.066 the WRONG side of the incumbent, and
+the run spent another 6h48m closing three quarters of that gap without ever
+crossing. The criterion lived in a markdown file and in STATE.md; `train.py`
+has no `--abort-if` and `train_watchdog.py` only restarts stalls. A yardstick
+that is written down and not wired up is a yardstick that moves, in the
+direction of "let it run and see". If a future run carries an abort rule, put
+it in the unit's ExecStart as a flag the trainer enforces, or in the watchdog
+timer as a check that stops the unit.
+
+**The mechanism, read plainly, is the shared trunk being fought over.** The
+policy head took the capacity; the value head paid. `--policy-every` exists
+for exactly this and ran at the default 1 (one policy step per value step).
+The next run at this width should sweep it (2, 3) on a `tiny` smoke before
+committing 60 GPU-hours, with both per-head curves as the tripwire.
+
+**Three of four loaders would have run the fused net wrong, and none of them
+would have said so.** Every loader read the value bin count as
+`cfg["output_size"]`, which is 64 on a value net and 2032 on a fused one:
+
+1. `HLGauss(bins=2032)` raises on the first evaluate. Loud, therefore harmless.
+2. `NeuralPolicy` reads move `i` from column `i`. On a fused net the moves
+   start at column 64, so every prior is the logit of the move 64 places
+   earlier in the action space. The search still masks to legal moves, still
+   returns one, and plays worse for a reason nothing reports.
+   `tests/verify_fused_engine.py` shows the off-by-64 read picks a DIFFERENT
+   best move on 5/5 real positions, so the failure is total, not marginal.
+3. Loading the file twice (once per wrapper, as `match.py`'s two caches did)
+   hands `rust_mcts` two module objects that are equal and not identical, so
+   the one-forward collapse is skipped and the engine pays the full 2032-wide
+   forward twice per node. Slower than the two nets it replaced, and the whole
+   speed case for d=384 inverts.
+
+`sumofish/engines/loader.py` is now the single place that builds (value,
+policy) from files, fused or two-net, detected from the checkpoint width and
+cross-checked against the run's recorded `--target`. `search_engine.py`,
+`match.py`, `smoke.py`, `promote.py` and `eval_heldout.py` all go through it.
+Smoke: 12.6k nps fused against 7.8k for the two-net promotion and 9.8k with
+compile on.
+
+**Two traps hit while launching the gate.** `scripts/gpu_lock.py run -- 
+scripts/match.py` ran match.py under the SYSTEM python (shebang) and died on
+`No module named 'torch'` with the bot already drained; fixed so a bare `.py`
+runs under gpu_lock's own interpreter. And `scripts/smoke.py` printed
+`model.num_parameters()` from a variable the loader refactor had removed,
+after every check had passed, so the gate reported a NameError as a failure of
+a checkpoint that was fine.
+
+**Running now:** `sumofish-fused-gate.service` (transient), `fused-gate`,
+19M fused vs deployed two-net, `--time 0.5`, 600 games, seed 20260828, SPRT
+elo0=0 elo1=20, drained exclusive box. First game 49s, so ~9h if SPRT does not
+stop it. The value head being marginally worse and the policy head being much
+better and the whole thing being 1.3-1.6x faster per node is a genuinely open
+question at the clock, which is why it is a match and not a decision.

@@ -34,6 +34,53 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-08-28, session 13)
+
+**THE 19M IS TRAINED, THE ENGINE CAN RUN IT, AND THE GATE MATCH IS PLAYING.**
+`19M-fused` finished all 1.2M steps at 00:34 PDT, exit 0. `best.pt` is step
+1,185,000, selected on held-out value loss. Against the deployed nets
+(`scripts/eval_heldout.py`, full set / clean subset):
+
+    policy head   1.45227 vs 1.59138   (-0.139, 10x the floor)   clean 1.515 vs 1.660
+    value head    2.08321 vs 2.06744   (+0.016, 1.2x the floor)  clean 2.156 vs 2.139
+    calibration identical (brier 0.00343 both, ece 0.0014 vs 0.0013)
+
+**The value head missed plan 3.6's 600k gate** (needed 2.053, read 2.134) and
+the run continued because the criterion was never wired into anything; see
+LAB-NOTES 2026-08-28. Whether the net is stronger is therefore an open question
+at the clock: a marginally worse value head, a much better prior, and one
+forward per node at 12.6k nps against the two nets' 9.8k.
+
+**Running now: `sumofish-fused-gate.service`** (transient, `systemd-run`),
+`runs/matches/fused-gate`: 19M fused vs deployed, `--time 0.5`, 600 games,
+seed 20260828, SPRT elo0=0 elo1=20, drained box via `gpu_lock.py --drain-bot`,
+which brings the bot back when it ends. Watch with
+`journalctl --user -u sumofish-fused-gate -f`. ~50s a game, so ~9h to 600.
+
+**If it wins** (interval excludes zero, LOS >= 95%):
+`scripts/promote.py runs/19M-fused/best.pt --note "..."`. It goes into the
+VALUE slot; the engine detects fusion from the file, ignores `runs/policy.pt`
+and says so at boot; `runs/policy.pt` stays in place so `--rollback` restores
+the two-net engine exactly. Then plan 4.4, the Stockfish anchors, so the
+external ladder continues across the model change.
+**If it does not**, the 19M stays a result and not a deployment, and the next
+run at this width sweeps `--policy-every` (2, 3) on a `tiny` smoke first,
+because the trunk being fought over is the mechanism the numbers point at.
+
+**What is new in the tree.** `sumofish/engines/loader.py`, the one place that
+builds (value, policy) from files, fused or two-net, detected from the
+checkpoint width and cross-checked against the recorded `--target`.
+`search_engine.py`, `match.py`, `smoke.py`, `promote.py` and `eval_heldout.py`
+all go through it; three of them would otherwise have run a fused net with
+priors off by 64 columns (LAB-NOTES 2026-08-28, the three failure modes).
+`NeuralPolicy(offset=)` and `ValuePolicy` slicing, both on the SAME module so
+`rust_mcts` still collapses to one forward; `RustMCTS.fused` reports whether
+it did. `tests/verify_fused_engine.py` proves all three against a hand-sliced
+reference. `eval_heldout.py` now prints the clean subset next to every number,
+which was plan item 1.6's actual deliverable. `gpu_lock.py` runs a bare `.py`
+under its own interpreter. `scripts/train_done_notify.py` and its timer
+(desktop alarm when a training unit stops, however it stops) are committed.
+
 ## Where things stand (2026-08-24, session 12)
 
 **THE 19M IS TRAINING.** `sumofish-train-fused.service`, started 11:15 PDT,
