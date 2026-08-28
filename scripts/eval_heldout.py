@@ -75,8 +75,12 @@ VAL_BATCH = 1024
 # measurement and this project has quoted several that were.
 VAL_FLOOR = 0.01370
 
+import json  # noqa: E402
+
 from sumofish.data import make_loader  # noqa: E402
+from sumofish.engines.loader import build_model, fused_bins  # noqa: E402
 from sumofish.hlgauss import HLGauss  # noqa: E402
+from sumofish.tokenizer import NUM_ACTIONS  # noqa: E402
 from sumofish.hlgauss import loss as hl_loss  # noqa: E402
 from sumofish.model import PRESETS, ChessTransformer, ModelConfig  # noqa: E402
 
@@ -92,20 +96,51 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path,
     preset = args_saved.get("preset", "9M")
     is_value = target == "state_value"
     bins = args_saved.get("value_bins", 64)
-    overrides = {"output_size": bins} if is_value else {}
-    causal = str(args_saved.get("causal", "1")) in ("1", "True", "true")
-    cfg = ModelConfig(**{**PRESETS[preset].__dict__, **overrides, "causal": causal})
-    model = ChessTransformer(cfg).to(device)
+    # A FUSED checkpoint carries both heads on one trunk: `[value bins | move
+    # logits]`. Its architecture comes out of the saved cfg (the preset alone
+    # would build the wrong output width and load_state_dict would refuse it),
+    # and the loss is taken on the head this run is scoring, sliced the same
+    # way train.py's validate() slices it. The other head's columns are
+    # computed and discarded, as they are in play.
+    fused = fused_bins(ckpt) is not None
+    if fused:
+        bins = fused_bins(ckpt)
+        model = build_model(ckpt, device)
+        lo, hi = (0, bins) if is_value else (bins, bins + NUM_ACTIONS)
+    else:
+        overrides = {"output_size": bins} if is_value else {}
+        causal = str(args_saved.get("causal", "1")) in ("1", "True", "true")
+        cfg = ModelConfig(**{**PRESETS[preset].__dict__, **overrides, "causal": causal})
+        model = ChessTransformer(cfg).to(device)
 
-    # EMA if present, exactly as train.py's validate() does.
-    state = ckpt.get("ema") or ckpt["model"]
-    model.load_state_dict(state)
-    model.eval()
+        # EMA if present, exactly as train.py's validate() does.
+        state = ckpt.get("ema") or ckpt["model"]
+        model.load_state_dict(state)
+        model.eval()
+        lo, hi = None, None
 
     hl = HLGauss(bins=bins, device=device) if is_value else None
     loader = make_loader(str(val_data), policy=target, batch_size=VAL_BATCH,
                          num_workers=0, shuffle_buffer=1, seed=0, infinite=False)
     total, seen = 0.0, 0
+
+    # The CLEAN subset: held-out records whose position never appears in the
+    # training bag. `scripts/build_clean_indices.py` found 16.32% of the
+    # state-value test set and a similar share of the policy set in training,
+    # and contamination flatters the LARGER model on exactly the comparison a
+    # capacity decision rests on, so every number here is reported both ways.
+    # The stream is in file order (shuffle_buffer=1, seed 0, one worker: the
+    # buffer holds one item and always yields it), so the k-th row scored IS
+    # record k, and the mask is a lookup by row.
+    clean_path = val_data.parent / (
+        "clean_sv_indices.json" if is_value else "clean_bc_indices.json")
+    clean_mask = None
+    if clean_path.exists():
+        idx = json.loads(clean_path.read_text()).get("clean_record_indices")
+        if idx:
+            clean_mask = torch.zeros(max(idx) + 1, dtype=torch.bool)
+            clean_mask[torch.tensor(idx)] = True
+    clean_total, clean_seen = 0.0, 0
     # Calibration accumulators. Kept as running sums rather than stored tensors
     # so this stays O(1) in memory over any number of batches.
     cal = {"n": 0, "sum_p": 0.0, "sum_y": 0.0, "sq": 0.0,
@@ -118,12 +153,27 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path,
             targets = targets.to(device, non_blocking=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits = model(tokens)
+            if lo is not None:
+                logits = logits[:, lo:hi]
             # Weighted by ROWS. A mean of batch means equals the mean over
             # positions only when every batch is the same size, and the last
             # one need not be.
             rows = int(targets.shape[0])
             total += float(hl_loss(logits.float(), hl.targets(targets)) if is_value
                            else F.cross_entropy(logits.float(), targets)) * rows
+            if clean_mask is not None:
+                lo_row = seen
+                m = clean_mask[lo_row:lo_row + rows] if lo_row < len(clean_mask) \
+                    else torch.zeros(0, dtype=torch.bool)
+                if len(m) < rows:
+                    m = torch.cat([m, torch.zeros(rows - len(m), dtype=torch.bool)])
+                m = m.to(logits.device)
+                n_clean = int(m.sum())
+                if n_clean:
+                    lg, tg = logits[m].float(), targets[m]
+                    clean_total += float(hl_loss(lg, hl.targets(tg)) if is_value
+                                         else F.cross_entropy(lg, tg)) * n_clean
+                    clean_seen += n_clean
             if calibration and is_value:
                 # The head's own point estimate, which is what the search reads.
                 pred = hl.expectation(logits.float()).flatten().double()
@@ -142,11 +192,17 @@ def held_out_loss(ckpt_path: Path, target: str, val_data: Path,
                         cal["bins"][b][1] += float(lab[m].sum())
                         cal["bins"][b][2] += k
             seen += rows
+    if fused:
+        causal = bool(model.cfg.causal)
     del model
     torch.cuda.empty_cache()
-    meta = {"step": ckpt.get("step"), "preset": preset, "causal": causal,
+    meta = {"step": ckpt.get("step"),
+            "preset": f"{preset}{' fused' if fused else ''}",
+            "causal": causal,
             "used_ema": "ema" in ckpt and ckpt["ema"] is not None,
-            "positions": seen}
+            "positions": seen,
+            "clean_positions": clean_seen,
+            "clean_loss": (clean_total / clean_seen) if clean_seen else None}
     if calibration and is_value and cal["n"]:
         n = cal["n"]
         meta["calibration"] = {
@@ -214,6 +270,10 @@ def main() -> None:
         results.append((str(p), loss, meta))
         print(f"  {p.name:<24} val {loss:.5f}   step {meta['step']}  "
               f"{meta['preset']}  ema={meta['used_ema']}")
+        if meta.get("clean_loss") is not None:
+            print(f"  {'':<24} clean {meta['clean_loss']:.5f}  "
+                  f"({meta['clean_positions']:,} of {meta['positions']:,} "
+                  f"positions never seen in training)")
         c = meta.get("calibration")
         if c:
             print(f"  {'':<24} calib brier {c['brier']:.5f}  "
