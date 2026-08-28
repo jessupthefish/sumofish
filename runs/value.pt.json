@@ -1,9 +1,12 @@
 {
-  "source": "/home/nomad/dev/active/sumofish/runs/9M-sv-long/best.pt",
-  "promoted_at": 1786265394.7986913,
+  "net": "value",
+  "fused": true,
+  "policy_slot": "unused while a fused net is live; runs/policy.pt left in place so --rollback restores the two-net engine",
+  "source": "/home/nomad/dev/active/sumofish/runs/19M-fused/best.pt",
+  "promoted_at": 1787948227.8853421,
   "promoted_by": "scripts/promote.py (manual)",
-  "note": "9M-sv-long, step 900k: held-out val 2.0674 vs the outgoing 595k net's 2.1120 (-0.0446), puzzles 0.752 vs 0.700, flat over the last 70k steps so it is annealed rather than still moving. Selected on HELD-OUT LOSS per PHILOSOPHY point 4, the same rule and the same precedent as the 595k promotion this replaces. The match (runs/matches/lab-9m-long-vs-current, 100 games / 50 pairs at 3.0s/move, both arms vloss_fix on) returned +3.5 +-26.4 Elo, LOS 60%, LLR -1.24, NOT decisive, and its role here is the safety check that the net is not WORSE, which it passes. It cannot do more than that: 80 of the 100 games ended in threefold repetition, the mirror-match blindness PHILOSOPHY point 4 warns about and the same signature as the 07-31 pilot's 4/4 repetition draws. Resolving a modest gain against the previous net would need many hundreds of games at ~5.8 min each; the Stockfish anchor is the right instrument and is the next job.",
+  "note": "19M-fused step 1,185,000, one trunk two heads (d=384, 19,681,648 params). Gate: runs/matches/fused-gate, 19M fused vs the deployed two-net engine, --time 0.5, seed 20260828, drained exclusive box, SPRT elo0=0 elo1=20 alpha=beta=0.05: concluded after 48 pairs / 96 games, A better, LLR +2.96 (bound +2.94). W25 D62 L9, score 58.3%, +58.5 +-37.0 Elo, LOS 99.9%. Held-out: policy head 1.45227 vs 1.59138 (better), VALUE head 2.08321 vs 2.06744 (WORSE by 1.2x the floor), calibration identical. The strength comes from the prior and from one forward per node (12.6k vs 9.8k nps), not from the value head, which missed plan 3.6's 600k gate. Sequential test, so 96 games not the lab's 300; the Stockfish anchors (plan 4.4) are the next job.",
   "elo": null,
   "smoke": "passed",
-  "rollback": "scripts/promote.py --rollback"
+  "rollback": "scripts/promote.py --net value --rollback"
 }
