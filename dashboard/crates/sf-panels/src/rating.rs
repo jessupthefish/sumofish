@@ -32,7 +32,7 @@ pub static PANEL: Rating = Rating;
 pub struct Rating;
 
 /// Chess DB's actual verified LAN bind (gunicorn `-b 0.0.0.0:8000`, confirmed
-/// live 2026-07-30) -- not `spaceship.local`, which resolves to AAAA records
+/// live 2026-07-30) -- not `mothership.local`, which resolves to AAAA records
 /// only over mDNS on this network and gunicorn does not listen on IPv6, so
 /// that hostname silently fails to connect from any device but this one.
 const CHESS_DB_STATS_URL: &str = "http://10.0.0.106:8000/stats";

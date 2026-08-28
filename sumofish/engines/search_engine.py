@@ -47,7 +47,6 @@ like it ought to be.
 
 from __future__ import annotations
 
-import dataclasses
 import math
 import os
 import sys
@@ -57,14 +56,14 @@ from pathlib import Path
 import chess
 import torch
 
-from sumofish.engines.neural_engine import load_policy
-from sumofish.hlgauss import HLGauss
+# Model construction, bin counts and the fused/two-net decision all live in
+# `loader.py` now; this module used to duplicate them and the duplicate is what
+# broke on the first fused checkpoint.
+from sumofish.engines.loader import fused_bins, load_nets
 from sumofish.mcts import MCTS
 from sumofish.rust_mcts import select_mcts_class
-from sumofish.model import ChessTransformer, ModelConfig
 from sumofish.telemetry import Telemetry, perspective
 from sumofish.uci import Limits, run
-from sumofish.value_policy import ValuePolicy
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -253,35 +252,40 @@ def ignored_rust_flags(env: dict) -> list[str]:
 def main() -> None:
     policy_path = os.environ.get("CHESSGPU_POLICY", str(ROOT / "runs/policy.pt"))
     value_path = os.environ.get("CHESSGPU_VALUE", str(ROOT / "runs/value.pt"))
-    for label, path in (("policy", policy_path), ("value", value_path)):
-        if not Path(path).exists():
-            print(f"{label} checkpoint not found: {path}", file=sys.stderr)
-            sys.exit(1)
+    if not Path(value_path).exists():
+        print(f"value checkpoint not found: {value_path}", file=sys.stderr)
+        sys.exit(1)
 
-    policy, pinfo = load_policy(policy_path)
+    # One loader, shared with the match harness and the promotion gate, because
+    # this block used to be copied into all three and the copies disagreed the
+    # day a FUSED checkpoint appeared: every one of them read the bin count as
+    # `cfg["output_size"]`, which is 2032 on a fused net and 64 on a value net.
+    # `sumofish/engines/loader.py` carries the three ways that goes wrong.
+    #
+    # A fused checkpoint supplies BOTH heads, so CHESSGPU_POLICY is ignored
+    # when one is deployed -- announced below rather than left silent, because
+    # a stale `runs/policy.pt` sitting next to a fused `runs/value.pt` is
+    # exactly the situation where an operator needs to be told which file is
+    # playing.
+    ck_head = torch.load(value_path, map_location="cpu", weights_only=False)
+    is_fused = fused_bins(ck_head) is not None
+    del ck_head
+    if not is_fused and not Path(policy_path).exists():
+        print(f"policy checkpoint not found: {policy_path}", file=sys.stderr)
+        sys.exit(1)
 
-    ck = torch.load(value_path, map_location="cuda:0", weights_only=False)
-    bins = ck["cfg"]["output_size"]
-    # From the checkpoint's own config, never from a hardcoded preset name.
-    # This said `build("9M", ...)` and the width was therefore assumed rather
-    # than read: dropping any checkpoint that is not 9M into `runs/value.pt`
-    # made `load_state_dict` raise on a shape mismatch, which kills the engine
-    # at boot and leaves lichess-bot with nothing to play the game with. The
-    # checkpoint swap is advertised all over CLAUDE.md as a file copy needing
-    # no restart, and it would have been, right up until the first copy of a
-    # differently-shaped net.
-    # Filtered, because `ModelConfig(**cfg)` hard-binds every checkpoint ever
-    # written to the current dataclass signature: rename or drop one field and
-    # a TypeError kills the engine at boot for checkpoints that are otherwise
-    # perfectly loadable. The hardcoded preset it replaced was wrong but at
-    # least could not fail this way.
-    fields = {f.name for f in dataclasses.fields(ModelConfig)}
-    vmodel = ChessTransformer(
-        ModelConfig(**{k: v for k, v in ck["cfg"].items() if k in fields})
+    value, policy, ninfo = load_nets(
+        value_path, None if is_fused else policy_path, device="cuda:0"
     )
-    state = ck.get("ema") or ck["model"]
-    vmodel.load_state_dict({k: v.float() for k, v in state.items()})
-    value = ValuePolicy(vmodel, HLGauss(bins=bins), device="cuda:0")
+    pinfo = {"step": ninfo["step"], "params": ninfo["params"],
+             "device": "cuda:0", "ema": True}
+    if ninfo["fused"]:
+        print(
+            f"fused net: one trunk, two heads, {ninfo['params']:,} params, "
+            f"step {ninfo['step']}; CHESSGPU_POLICY "
+            f"({ninfo['policy_ignored'] or policy_path}) is not used",
+            file=sys.stderr,
+        )
 
     # High cap on purpose: the CLOCK should be what stops the search, not an
     # arbitrary simulation count. At ~0.5s per 800 simulations, a 12s budget is
@@ -357,9 +361,10 @@ def main() -> None:
     tele.emit(
         {
             "ev": "boot",
-            "policy_step": pinfo["step"],
-            "value_step": ck.get("step"),
-            "bins": bins,
+            "policy_step": ninfo["step"],
+            "value_step": ninfo["step"],
+            "bins": ninfo["bins"],
+            "fused": ninfo["fused"],
             "sims": sims,
             "batch": batch,
             "core": core_name,
@@ -369,7 +374,8 @@ def main() -> None:
     )
 
     print(
-        f"policy step={pinfo['step']} | value step={ck.get('step')} bins={bins} | "
+        f"{'fused' if ninfo['fused'] else 'two nets'} step={ninfo['step']} "
+        f"bins={ninfo['bins']} | "
         f"cap {sims} sims, batch {batch}, core={core_name} (clock-bound)",
         file=sys.stderr,
     )

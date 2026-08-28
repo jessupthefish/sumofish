@@ -83,10 +83,10 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from sumofish.engines.loader import fused_bins, load_nets  # noqa: E402
+from sumofish.engines.loader import load_value as _load_value_only  # noqa: E402
 from sumofish.engines.neural_engine import load_policy  # noqa: E402
-from sumofish.hlgauss import HLGauss  # noqa: E402
 from sumofish.mcts import MCTS  # noqa: E402
-from sumofish.model import ChessTransformer, ModelConfig  # noqa: E402
 from sumofish.rules import terminal_value, terminal_value_legacy  # noqa: E402
 from sumofish.rust_mcts import select_mcts_class
 from sumofish.uci import Limits
@@ -258,37 +258,68 @@ class Spec:
         )
 
 
-_MODEL_CACHE: dict[tuple[str, str], object] = {}
+_PAIR_CACHE: dict[tuple[str, str | None, str], tuple] = {}
 
 
-def load_value(path: str, device: str = "cuda:0") -> ValuePolicy:
-    """Load a state-value checkpoint, reusing it if both sides ask for it.
+def load_pair(value_path: str, policy_path: str | None, device: str = "cuda:0"):
+    """(value, policy) for one side, reusing them if both sides ask for the same.
 
-    A config-vs-config match (same net, different c_puct) would otherwise put
+    A config-vs-config match (same nets, different c_puct) would otherwise put
     two copies of the same weights on the card for no reason. The architecture
     comes out of the checkpoint rather than being assumed to be the 9M preset,
     so this keeps working the day a 136M net exists.
+
+    Cached as a PAIR rather than as two independent nets, which is not a tidying
+    change: a fused checkpoint's two heads must be backed by one module object
+    for `rust_mcts` to collapse the two forward passes into one, and two
+    separate caches keyed on the same path hand back two objects that are equal
+    and not identical. That arrangement runs, plays legal moves, and pays the
+    full fused-width forward TWICE per node.
+    """
+    key = (value_path, policy_path, device)
+    if key not in _PAIR_CACHE:
+        value, policy, info = load_nets(value_path, policy_path, device=device)
+        if info["fused"]:
+            print(f"  {value_path}: fused, one trunk "
+                  f"({info['params']:,} params); its policy arg is ignored")
+        _PAIR_CACHE[key] = (value, policy)
+    return _PAIR_CACHE[key]
+
+
+_VALUE_CACHE: dict[tuple[str, str], ValuePolicy] = {}
+_PRIOR_CACHE: dict[tuple[str, str], object] = {}
+
+
+def _is_fused(path: str) -> bool:
+    return fused_bins(
+        torch.load(path, map_location="cpu", weights_only=False)
+    ) is not None
+
+
+def load_value(path: str, device: str = "cuda:0") -> ValuePolicy:
+    """The value side alone, for callers that hold the two nets separately.
+
+    A fused path routes through `load_pair` so that a caller who asks for both
+    halves by name still gets ONE module back for the two of them.
     """
     key = (path, device)
-    if key not in _MODEL_CACHE:
-        ck = torch.load(path, map_location=device, weights_only=False)
-        model = ChessTransformer(ModelConfig(**ck["cfg"]))
-        state = ck.get("ema") or ck["model"]
-        model.load_state_dict({k: v.float() for k, v in state.items()})
-        vp = ValuePolicy(model, HLGauss(bins=ck["cfg"]["output_size"]), device=device)
-        vp.step = ck.get("step")
-        _MODEL_CACHE[key] = vp
-    return _MODEL_CACHE[key]  # type: ignore[return-value]
-
-
-_POLICY_CACHE: dict[tuple[str, str], object] = {}
+    if key not in _VALUE_CACHE:
+        _VALUE_CACHE[key] = (
+            load_pair(path, None, device)[0] if _is_fused(path)
+            else _load_value_only(path, device=device)
+        )
+    return _VALUE_CACHE[key]
 
 
 def load_prior(path: str, device: str = "cuda:0"):
+    """The priors alone. On a fused checkpoint they come from the value file."""
     key = (path, device)
-    if key not in _POLICY_CACHE:
-        _POLICY_CACHE[key] = load_policy(path, device=device)[0]
-    return _POLICY_CACHE[key]
+    if key not in _PRIOR_CACHE:
+        _PRIOR_CACHE[key] = (
+            load_pair(path, None, device)[1] if _is_fused(path)
+            else load_policy(path, device=device)[0]
+        )
+    return _PRIOR_CACHE[key]
 
 
 class Player:
@@ -339,7 +370,14 @@ class Player:
             self.value = None
             self.mcts = None
             return
-        self.value = load_value(spec.value, device)
+        # ONE call for both nets: a fused checkpoint's heads have to come back
+        # as one module, and `spec.policy` is ignored when it does.
+        ck = torch.load(spec.value, map_location="cpu", weights_only=False)
+        self.fused = fused_bins(ck) is not None
+        del ck
+        self.value, prior = load_pair(
+            spec.value, None if self.fused else spec.policy, device
+        )
         if spec.searchless:
             self.mcts = None
         elif spec.core == "rust":
@@ -347,7 +385,7 @@ class Player:
 
             self.mcts = RustMCTS(
                 self.value,
-                policy=load_prior(spec.policy, device),
+                policy=prior,
                 c_puct=spec.c_puct,
                 c_puct_init=spec.c_puct_init,
                 fpu=spec.fpu,
@@ -380,7 +418,7 @@ class Player:
         else:
             self.mcts = MCTS(
                 self.value,
-                policy=load_prior(spec.policy, device),
+                policy=prior,
                 c_puct=spec.c_puct,
                 c_puct_init=spec.c_puct_init,
                 fpu=spec.fpu,

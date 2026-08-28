@@ -147,30 +147,38 @@ def main() -> int:
 
     import torch
 
-    from sumofish.engines.neural_engine import load_policy
+    from sumofish.engines.loader import fused_bins, load_nets
     from sumofish.engines.search_engine import env_flag
-    from sumofish.hlgauss import HLGauss
-    from sumofish.model import ChessTransformer, ModelConfig
     from sumofish.rust_mcts import select_mcts_class
-    from sumofish.value_policy import ValuePolicy
 
     # Whichever slot the candidate fills, the OTHER slot comes from the live
     # file. Gating a policy candidate against the deployed value net is the
     # only arrangement in which its priors are exercised by a real search.
     value_path = path if args.net == "value" else ROOT / "runs/value.pt"
     policy_path = path if args.net == "policy" else ROOT / "runs/policy.pt"
-    if not Path(value_path).exists() or not Path(policy_path).exists():
-        print(f"FAIL: need both nets; missing one of {value_path}, {policy_path}")
+    if not Path(value_path).exists():
+        print(f"FAIL: value checkpoint missing: {value_path}")
         return 1
 
-    ck = torch.load(value_path, map_location="cuda:0", weights_only=False)
-    fields = {f.name for f in __import__("dataclasses").fields(ModelConfig)}
-    model = ChessTransformer(
-        ModelConfig(**{k: v for k, v in ck["cfg"].items() if k in fields}))
-    model.load_state_dict(
-        {k: v.float() for k, v in (ck.get("ema") or ck["model"]).items()})
-    value = ValuePolicy(model, HLGauss(bins=ck["cfg"]["output_size"]), device="cuda:0")
-    policy, _ = load_policy(str(policy_path))
+    # A FUSED candidate carries both heads, so there is no second file to pair
+    # it with and `--net policy` is meaningless for one. Constructed through
+    # the same loader the live engine uses, which is the whole point of a gate:
+    # it has to fail on what production would fail on.
+    fused = fused_bins(
+        torch.load(value_path, map_location="cpu", weights_only=False)) is not None
+    if fused and args.net == "policy":
+        print("FAIL: --net policy on a fused checkpoint; it has no separate "
+              "policy net to promote")
+        return 1
+    if not fused and not Path(policy_path).exists():
+        print(f"FAIL: need both nets; missing {policy_path}")
+        return 1
+
+    value, policy, ninfo = load_nets(
+        value_path, None if fused else policy_path, device="cuda:0")
+    if fused:
+        print(f"  fused checkpoint: one trunk, {ninfo['params']:,} params, "
+              f"{ninfo['bins']} value bins; runs/policy.pt is not used")
 
     # The same branch `search_engine.py::main()` takes, on the same flags, so
     # this constructs whichever engine is actually deployed rather than
@@ -229,7 +237,8 @@ def main() -> int:
     if not failures:
         print(f"  [ok] {len(POSITIONS)} positions, all legal, none overran, "
               f"report() clean on every one")
-        print(f"  {model.num_parameters():,} parameters, step {ck.get('step')}")
+        print(f"  {ninfo['params']:,} parameters, step {ninfo['step']}"
+              f"{', fused' if fused else ''}")
         print("PASS")
         return 0
     print("FAIL:")

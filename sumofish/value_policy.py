@@ -62,6 +62,14 @@ class ValuePolicy:
         x = torch.from_numpy(tokens).long().to(self.device, non_blocking=True)
         with torch.autocast(self.device.split(":")[0], dtype=self.dtype):
             logits = self.model(x).float()
+        # A FUSED net emits `[value bins | move logits]`, so the value head is
+        # the first `bins` columns and the rest belong to the policy. Slicing
+        # here rather than in a wrapper module keeps `self.model` the same
+        # object the policy side holds, which is the condition `rust_mcts`
+        # checks before collapsing two forward passes into one. A plain value
+        # net is already exactly `bins` wide and the slice is a no-op.
+        if logits.shape[-1] != self.hl.bins:
+            logits = logits[:, : self.hl.bins]
         return (
             self.hl.expectation(logits).cpu().numpy(),
             self.hl.confidence(logits).cpu().numpy(),

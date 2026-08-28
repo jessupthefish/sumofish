@@ -153,6 +153,11 @@ def make_evaluator(policy, value_policy, compile_nets: bool = False,
         priors = [_softmax_over_legal(rows[i], actions[i]) for i in range(n)]
         return priors, [float(v) for v in values]
 
+    # Reported rather than inferred. "Is this engine actually running one
+    # forward per node?" is the difference between a fused net being worth its
+    # width and being strictly worse than the two nets it replaced, and until
+    # this attribute existed the only way to answer it was to read the closure.
+    evaluate.fused = fused
     return evaluate
 
 
@@ -207,6 +212,7 @@ class RustMCTS:
             # the one the search asks for most of the time.
             pad_to=batch if pad_batches else None,
         )
+        self.fused = getattr(self._evaluate, "fused", False)
         self._core = core.Mcts(
             c_puct=c_puct,
             c_puct_base=c_puct_base,

@@ -26,11 +26,22 @@ class NeuralPolicy:
         device: str = "cuda:0",
         temperature: float = 0.0,
         dtype: torch.dtype = torch.bfloat16,
+        offset: int = 0,
     ) -> None:
         self.model = model.to(device).eval()
         self.device = device
         self.temperature = temperature
         self.dtype = dtype
+        # Where this net's move logits START. Zero for a policy net, whose
+        # output IS the action space. On a FUSED net the trunk emits
+        # `[value bins | move logits]`, so the priors live at `bins:` and
+        # reading from column 0 would score move `i` with the logit of move
+        # `i - bins` -- a prior over the wrong moves, which produces a legal
+        # move every time and simply plays worse. Held here rather than in a
+        # wrapper module so that `self.model` stays the SAME object the value
+        # side holds, which is what lets `rust_mcts` collapse the two forward
+        # passes into one.
+        self.offset = offset
 
     @torch.inference_mode()
     def _logprobs(self, boards: list[chess.Board]) -> torch.Tensor:
@@ -44,7 +55,7 @@ class NeuralPolicy:
         tokens = np.stack([tokenize_board(b) for b in boards])
         x = torch.from_numpy(tokens).long().to(self.device, non_blocking=True)
         with torch.autocast(self.device.split(":")[0], dtype=self.dtype):
-            return self.model(x).float()
+            return self.model(x).float()[:, self.offset:]
 
     # Rough piece values, used only to decide whether a draw is good for us.
     _VALUE = {
