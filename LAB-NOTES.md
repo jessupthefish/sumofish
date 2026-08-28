@@ -2412,9 +2412,33 @@ runs under gpu_lock's own interpreter. And `scripts/smoke.py` printed
 after every check had passed, so the gate reported a NameError as a failure of
 a checkpoint that was fine.
 
-**Running now:** `sumofish-fused-gate.service` (transient), `fused-gate`,
-19M fused vs deployed two-net, `--time 0.5`, 600 games, seed 20260828, SPRT
-elo0=0 elo1=20, drained exclusive box. First game 49s, so ~9h if SPRT does not
-stop it. The value head being marginally worse and the policy head being much
-better and the whole thing being 1.3-1.6x faster per node is a genuinely open
-question at the clock, which is why it is a match and not a decision.
+**The gate.** `sumofish-fused-gate.service` (transient), `fused-gate`, 19M
+fused vs deployed two-net, `--time 0.5`, seed 20260828, SPRT elo0=0 elo1=20
+alpha=beta=0.05, drained exclusive box. **SPRT concluded after 48 pairs / 96
+games: A better, LLR +2.96 (bound +2.94). W25 D62 L9, 58.3%, +58.5 +-37.0
+Elo, LOS 99.9%.** 1h30m of wall clock instead of the ~9h a full 600 would
+have taken. Search record: 1.105 +-0.005 of the incumbent's evaluations per
+game, so the one-forward collapse is real at the clock and worth about what
+the 08-16 bench said (1.15x).
+
+**Read it carefully.** A value head that is worse on held-out won at the
+clock, and won clearly. Two things carry it: the prior (0.139 better, 10x the
+floor) and 10% more search. That ordering is a fact about THIS engine at THIS
+time control, where the prior shapes every expansion and the value head is
+consulted through a 0.5s tree; it is not evidence that value-head quality does
+not matter, and it is not a licence to stop selecting on it. It is evidence
+that the plan's 3.6 gate was written for the wrong head. 62 of 96 games were
+threefold repetitions, the mirror-match blindness, so the +58 is softer than
+its interval and the Stockfish anchors are what settle the size of it.
+
+**Deployed 13:17 PDT** via `scripts/promote.py`, smoke passed, bot back up and
+connected on `fused step=1185000 bins=64`. `runs/policy.pt` is dead weight
+now, kept for `--rollback`.
+
+**Monitor trap.** A `journalctl -f | grep --line-buffered` monitor armed on
+the transient unit never fired once in 96 games, not even on `SPRT concluded`,
+which its pattern matched. `journalctl -f` on a unit that is later restarted
+under the same name from a fresh `systemd-run` (the first launch had failed on
+the python trap) evidently does not follow the new invocation. Poll
+`is-active` plus the games file instead of tailing the journal of a unit that
+has been re-created.

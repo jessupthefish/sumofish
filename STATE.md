@@ -36,7 +36,7 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
 ## Where things stand (2026-08-28, session 13)
 
-**THE 19M IS TRAINED, THE ENGINE CAN RUN IT, AND THE GATE MATCH IS PLAYING.**
+**THE 19M IS TRAINED, GATED AND DEPLOYED.**
 `19M-fused` finished all 1.2M steps at 00:34 PDT, exit 0. `best.pt` is step
 1,185,000, selected on held-out value loss. Against the deployed nets
 (`scripts/eval_heldout.py`, full set / clean subset):
@@ -51,21 +51,30 @@ LAB-NOTES 2026-08-28. Whether the net is stronger is therefore an open question
 at the clock: a marginally worse value head, a much better prior, and one
 forward per node at 12.6k nps against the two nets' 9.8k.
 
-**Running now: `sumofish-fused-gate.service`** (transient, `systemd-run`),
-`runs/matches/fused-gate`: 19M fused vs deployed, `--time 0.5`, 600 games,
-seed 20260828, SPRT elo0=0 elo1=20, drained box via `gpu_lock.py --drain-bot`,
-which brings the bot back when it ends. Watch with
-`journalctl --user -u sumofish-fused-gate -f`. ~50s a game, so ~9h to 600.
+**The gate is decided and the 19M is DEPLOYED (13:17 PDT).**
+`runs/matches/fused-gate`, 19M fused vs deployed two-net, `--time 0.5`, seed
+20260828, drained box, SPRT elo0=0 elo1=20: **concluded after 48 pairs / 96
+games, A better, LLR +2.96 against a +2.94 bound. W25 D62 L9, 58.3%,
++58.5 +-37.0 Elo, LOS 99.9%.** Per-game search record: the fused net got
+1.105 +-0.005 of the two-net engine's evaluations in the same clock. So the
+win is the prior plus one forward per node, carried in spite of a value head
+that is marginally worse. 62 of 96 games were threefold repetitions, the
+mirror-match signature PHILOSOPHY warns about, so the +58 is a lower-confidence
+number than its interval says; the Stockfish anchors are what settle it.
 
-**If it wins** (interval excludes zero, LOS >= 95%):
-`scripts/promote.py runs/19M-fused/best.pt --note "..."`. It goes into the
-VALUE slot; the engine detects fusion from the file, ignores `runs/policy.pt`
-and says so at boot; `runs/policy.pt` stays in place so `--rollback` restores
-the two-net engine exactly. Then plan 4.4, the Stockfish anchors, so the
-external ladder continues across the model change.
-**If it does not**, the 19M stays a result and not a deployment, and the next
-run at this width sweeps `--policy-every` (2, 3) on a `tiny` smoke first,
-because the trunk being fought over is the mechanism the numbers point at.
+`scripts/promote.py runs/19M-fused/best.pt` ran: smoke passed, `runs/value.pt`
+is the fused net, `runs/value.pt.previous` is the 9M, `runs/policy.pt` is left
+in place and IGNORED (the engine says so at boot: `fused step=1185000
+bins=64`). `sumofish-bot.service` is up and connected on it. Rollback is
+`scripts/promote.py --rollback`, one file copy, the two-net engine exactly.
+
+**Next, in order.** Plan 4.4, the continuity anchors (700n and 1600n vs
+Stockfish, 400 sims, ~1.9h each, drained box), so the external ladder crosses
+the model change; run them under `gpu_lock.py --drain-bot` when the bot is not
+in a game worth keeping. Then watch the rapid rating against the 2626 it was
+frozen at (peak 2663). Then, before any further run at this width, the
+`--policy-every` sweep on a `tiny` smoke, because the value head losing the
+trunk is the mechanism the held-out numbers point at.
 
 **What is new in the tree.** `sumofish/engines/loader.py`, the one place that
 builds (value, policy) from files, fused or two-net, detected from the
