@@ -496,6 +496,11 @@ class Player:
             # play() changes, so a fresh token per game clears the hash and
             # makes every game start identically.
             self._game_token = object()
+            # The search record is written for BOTH sides of every game, so a
+            # Stockfish side needs the counters too, at zero. They were added
+            # below this return on 08-13 and every Stockfish-backed arm has
+            # crashed on its first game since; the anchors last ran 08-11.
+            self.evals = self.unique_evals = self.searches = 0
             return
         # Tree reuse, once it exists, must not carry a subtree from the
         # previous game into this one.
