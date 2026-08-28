@@ -68,13 +68,23 @@ in place and IGNORED (the engine says so at boot: `fused step=1185000
 bins=64`). `sumofish-bot.service` is up and connected on it. Rollback is
 `scripts/promote.py --rollback`, one file copy, the two-net engine exactly.
 
-**Next, in order.** Plan 4.4, the continuity anchors (700n and 1600n vs
-Stockfish, 400 sims, ~1.9h each, drained box), so the external ladder crosses
-the model change; run them under `gpu_lock.py --drain-bot` when the bot is not
-in a game worth keeping. Then watch the rapid rating against the 2626 it was
-frozen at (peak 2663). Then, before any further run at this width, the
-`--policy-every` sweep on a `tiny` smoke, because the value head losing the
-trunk is the mechanism the held-out numbers point at.
+**The continuity anchors are in (plan 4.4), and they agree with the gate.**
+`anchor-v7-700nodes` / `anchor-v7-1600nodes`, 400 sims, 2000 games each,
+fixed harness, same rungs as the incumbent's 08-11 anchors:
+
+    rung        incumbent (v6, 9M x2)      v7 (19M fused)          gain
+    SF@700n     +30.5   (54.4%)            +111.0 +-12  (65.5%)    +80
+    SF@1600n    -162.4  (28.2%)            -101.3 +-12  (35.8%)    +61
+
+Both gains are five times the interval, on an external opponent, at fixed
+sims, so this is judgement per node and not the speed: the clock gain from
+one forward per node sits on top of it. The +58 at the clock against the
+incumbent was, if anything, understated by the repetition draws.
+
+**Next, in order.** Watch the rapid rating (frozen at 2626, peak 2663; v7's
+record starts from zero). Wire the training abort criterion so the next run
+cannot repeat 08-24's overrun. Then the `--policy-every` sweep on a `tiny`
+fused smoke before any further run at d=384.
 
 **What is new in the tree.** `sumofish/engines/loader.py`, the one place that
 builds (value, policy) from files, fused or two-net, detected from the

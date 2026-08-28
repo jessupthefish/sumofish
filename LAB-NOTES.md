@@ -2442,3 +2442,12 @@ under the same name from a fresh `systemd-run` (the first launch had failed on
 the python trap) evidently does not follow the new invocation. Poll
 `is-active` plus the games file instead of tailing the journal of a unit that
 has been re-created.
+
+**Anchors, same day.** v7 vs Stockfish on the fixed harness, 400 sims, 2000
+games a rung: **+111.0 +-12 at 700n (was +30.5), -101.3 +-12 at 1600n (was
+-162.4).** +80 and +61 Elo on an external ladder at fixed simulations, so
+the 19M is better per node as well as faster per node. The value head being
+0.016 worse on held-out did not show up anywhere a game was played. Also:
+every Stockfish-backed `Player` had crashed on its first game since 08-13
+(search counters initialised below the Stockfish early return); nothing
+noticed because nothing had played Stockfish since 08-11. Fixed.
