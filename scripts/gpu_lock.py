@@ -246,6 +246,12 @@ def main() -> int:
     if a.mode == "status":
         return status()
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+    # A bare `scripts/match.py` runs under the script's shebang, which is the
+    # SYSTEM python and has no torch. The docstring's own examples are written
+    # that way, and the first fused gate died on `No module named 'torch'`
+    # with the bot already drained. Route a .py through this interpreter.
+    if cmd and cmd[0].endswith(".py"):
+        cmd = [sys.executable, *cmd]
     return run(cmd, a.drain_bot, a.wait, a.drain_timeout)
 
 
