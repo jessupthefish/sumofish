@@ -26,7 +26,7 @@ was playing.
 
   VERSIONS.jsonl           the registry, tracked in git
   a git tag                v1, v2, ... on the released commit
-  an Obsidian note         Steven/22 Efforts/Software/SumoFish Releases/
+  an Obsidian note         10 Steven/13 Efforts/Software/SumoFish Releases/
 
 The Obsidian note is written twice over in the same file: a technical section
 listing what actually changed, and a plain-English one that does not assume you
@@ -47,7 +47,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "VERSIONS.jsonl"
-VAULT = Path.home() / "Documents" / "Uno" / "Steven" / "22 Efforts" / "Software" / "SumoFish Releases"
+VAULT = Path.home() / "Documents" / "Uno" / "10 Steven" / "13 Efforts" / "Software" / "SumoFish Releases"
 
 
 def git(*args: str, check: bool = True) -> str:
