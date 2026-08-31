@@ -176,6 +176,17 @@ def main() -> None:
                          "hurting the shared trunk, which is the known failure "
                          "mode of multi-task training and the reason per-head "
                          "held-out loss is logged from step 1.")
+    ap.add_argument("--abort-if", default=None, metavar="STEP:LOSS[,STEP:LOSS...]",
+                    help="stop the run if held-out loss (the SELECTION head: "
+                         "value, on a fused run) is still above LOSS at any "
+                         "eval at or after STEP. This is plan 3.6's abort "
+                         "criterion as a wire instead of a sentence: the "
+                         "19M-fused run had '2.053 by 600k' written in two "
+                         "markdown files, read 2.134 at 600k, and ran 6h48m "
+                         "more because nothing enforced it. The run exits "
+                         "cleanly with checkpoints intact and an 'aborted' "
+                         "record in log.jsonl; a gate that fires is a result, "
+                         "not a failure.")
     ap.add_argument("--value-bins", type=int, default=64,
                     help="HL-Gauss bins; the paper's ablation is flat above 32")
     ap.add_argument("--data", default=None,
@@ -270,6 +281,18 @@ def main() -> None:
         "restartable by a supervisor without losing the run",
     )
     args = ap.parse_args()
+
+    # Parsed up front so a typo dies at launch, not at the first eval hours in.
+    abort_gates: list[tuple[int, float]] = []
+    if args.abort_if:
+        try:
+            for part in args.abort_if.split(","):
+                step_s, loss_s = part.split(":")
+                abort_gates.append((int(step_s), float(loss_s)))
+        except ValueError:
+            raise SystemExit(f"bad --abort-if {args.abort_if!r}: want "
+                             f"STEP:LOSS[,STEP:LOSS...], e.g. 600000:2.053")
+        abort_gates.sort()
 
     # `both` is the FUSED net: one shared trunk, a value head and a policy head.
     # It needs no new module. A single output projection of width
@@ -745,6 +768,23 @@ def main() -> None:
                 rec["val_weights"] = "ema"
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
+            # The abort gates. Checked on the same number selection uses, at
+            # the same cadence, so the yardstick cannot drift from the trigger.
+            if val_loss is not None and not stopping:
+                tripped = [(gs, gl) for gs, gl in abort_gates
+                           if step + 1 >= gs and val_loss > gl]
+                if tripped:
+                    gs, gl = tripped[-1]
+                    print(f"  [abort] held-out {val_loss:.5f} is above the "
+                          f"{gl} gate set for step {gs:,} -- stopping. This "
+                          f"is the criterion firing, not a crash; write it up.")
+                    with log_path.open("a") as f:
+                        f.write(json.dumps({
+                            "step": step + 1, "aborted": True,
+                            "gate_step": gs, "gate_loss": gl,
+                            "val_loss": round(val_loss, 5)}) + "\n")
+                    stopping = True
+
             # Select on held-out loss when there is one, and only fall back to
             # puzzle accuracy when there is not.
             #
