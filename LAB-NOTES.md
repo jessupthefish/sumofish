@@ -2451,3 +2451,32 @@ the 19M is better per node as well as faster per node. The value head being
 every Stockfish-backed `Player` had crashed on its first game since 08-13
 (search counters initialised below the Stockfish early return); nothing
 noticed because nothing had played Stockfish since 08-11. Fixed.
+
+## 2026-08-31: the abort criterion is a flag now, and --policy-every saturates at 2
+
+**`train.py --abort-if STEP:LOSS[,...]`.** Plan 3.6's gate, enforced by the
+trainer at every eval on the selection head's held-out, exiting cleanly with
+checkpoints intact and an `{"aborted": true, ...}` record in log.jsonl. A bad
+spec dies at launch, not at the first eval hours in. Smoke-tested end to end
+on a tiny fused run. The next long run should carry it in its unit file; a
+criterion in markdown is a criterion that does not fire (2026-08-28).
+
+**The --policy-every sweep, tiny fused smokes, 8000 steps, batch 256, seed
+1234, per-head held-out on 8192 positions.** `policy_every` = value steps per
+policy step; at equal TOTAL steps the policy head sees 1/2 (pe=1), 1/3 (pe=2),
+1/4 (pe=3) of the batches.
+
+    pe   value head   policy head
+    1    3.31371      5.73411
+    2    3.23761      5.93287      value -0.076, policy +0.199
+    3    3.23681      6.02109      value -0.001 vs pe=2, policy +0.088 more
+
+The value gain SATURATES at pe=2: pe=3 buys 0.0008 more, which is nothing,
+while the policy head keeps paying. So if the next d=384 run needs a better
+value head, `--policy-every 2` is the whole knob: -0.076 value for +0.199
+policy at this scale. Caveats, both real: tiny-scale ratios need not transfer
+to d=384, and v7 WON on its policy head while its value head lost -- the
+sweep says how to trade, not that trading is right. The honest read is that
+pe=2 is worth trying on the next full run only if the goal is value-head
+parity with the 9M; if v7's rating holds up, the trade may not be wanted at
+all. `runs/_pe-sweep-{1,2,3}/log.jsonl` holds the curves.

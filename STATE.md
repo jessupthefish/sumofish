@@ -81,10 +81,20 @@ sims, so this is judgement per node and not the speed: the clock gain from
 one forward per node sits on top of it. The +58 at the clock against the
 incumbent was, if anything, understated by the repetition draws.
 
-**Next, in order.** Watch the rapid rating (frozen at 2626, peak 2663; v7's
-record starts from zero). Wire the training abort criterion so the next run
-cannot repeat 08-24's overrun. Then the `--policy-every` sweep on a `tiny`
-fused smoke before any further run at d=384.
+**Three days in, v7 is +81 on the ladder.** Rapid 2707, new peak 2720 (v6
+froze at 2626/2663); v7's own record 77W 48D 24L, 68%, through 2026-08-31.
+
+**Both follow-ups are done (2026-08-31).** `train.py --abort-if STEP:LOSS`
+enforces plan 3.6-style gates at every eval; put it in the next run's unit
+file. And the `--policy-every` sweep ran on tiny fused smokes: the value-head
+gain saturates at pe=2 (-0.076 value for +0.199 policy at 8000 steps; pe=3
+buys nothing more). Full table and the caveat that v7 won ON its policy head
+in LAB-NOTES 2026-08-31.
+
+**Next.** Nothing is urgent. If the rating plateaus and the value head looks
+like the ceiling, the next d=384 run is `--policy-every 2` with
+`--abort-if` set from the 9M donor's 2.0674. The 136M question (plan phase 5)
+is still open and now has a clean instrument: eval_heldout's clean subset.
 
 **What is new in the tree.** `sumofish/engines/loader.py`, the one place that
 builds (value, policy) from files, fused or two-net, detected from the
