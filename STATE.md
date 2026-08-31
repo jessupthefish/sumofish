@@ -91,10 +91,23 @@ gain saturates at pe=2 (-0.076 value for +0.199 policy at 8000 steps; pe=3
 buys nothing more). Full table and the caveat that v7 won ON its policy head
 in LAB-NOTES 2026-08-31.
 
-**Next.** Nothing is urgent. If the rating plateaus and the value head looks
-like the ceiling, the next d=384 run is `--policy-every 2` with
-`--abort-if` set from the 9M donor's 2.0674. The 136M question (plan phase 5)
-is still open and now has a clean instrument: eval_heldout's clean subset.
+**THE NEXT RUN IS TRAINING (launched 2026-08-31 evening, session 14).**
+`sumofish-train-fused-pe2.service`, run `19M-fused-pe2`: identical recipe to
+v7 with exactly one variable changed, `--policy-every 2`, and the abort gate
+wired into the unit file as `--abort-if 600000:2.0674`. If the value head has
+not beaten the 9M donor by 600k the run stops itself; v7 already exists and
+won without that, so a run that merely matches it has no purpose. Decided
+against waiting out the rating plateau because the box training is free
+(PHILOSOPHY line one) and the bot shares the card by design. ~60-70
+GPU-hours. `sumofish-train-done.service` repointed at this unit.
+A counter that looks wrong and is not: with `--accum 2`, `steps_value`/
+`steps_policy` count optimizer steps CONTAINING that head, so pe=2 logs
+100/66 per window, not 67/33 (that was the sweep at accum=1). The micro-batch
+ratio is the intended 2:1; verified against the loop at train.py:686-719.
+
+**Gating when it lands, same as v7:** SPRT at the clock vs deployed, then the
+two anchor rungs at fixed sims. The 136M question (plan phase 5) stays open
+behind it and now has a clean instrument: eval_heldout's clean subset.
 
 **What is new in the tree.** `sumofish/engines/loader.py`, the one place that
 builds (value, policy) from files, fused or two-net, detected from the

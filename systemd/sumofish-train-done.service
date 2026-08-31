@@ -5,7 +5,7 @@ Description=Notify when the SumoFish training run stops, however it stops
 Type=oneshot
 WorkingDirectory=%h/dev/active/sumofish
 ExecStart=%h/dev/active/sumofish/.venv/bin/python scripts/train_done_notify.py \
-    --unit sumofish-train-fused.service --run 19M-fused --steps 1200000
+    --unit sumofish-train-fused-pe2.service --run 19M-fused-pe2 --steps 1200000
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sumofish-train-done

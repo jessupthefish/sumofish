@@ -1,0 +1,67 @@
+[Unit]
+Description=SumoFish training: 19M-fused-pe2 (d=384, --policy-every 2, abort-gated)
+After=network-online.target
+# The bot earns the rating, so it starts first and this is Niced below it. They
+# share the card by design: every training run this project has done has run
+# alongside the live bot. The exclusive box is for MATCHES, where contention
+# biases the number being measured.
+After=sumofish-bot.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/active/sumofish
+
+# Python block-buffers stdout when it is a socket; without this the journal
+# shows the banner and then nothing for the length of the run.
+Environment=PYTHONUNBUFFERED=1
+
+# Same recipe as 19M-fused (v7) with exactly one variable changed:
+# --policy-every 2, i.e. two value steps per policy step. v7 won its gate ON
+# its policy head while its value head finished 0.016 WORSE than the 9M donor
+# on held-out (2.083 vs 2.067); the 2026-08-31 tiny sweep says pe=2 buys
+# -0.076 value for +0.199 policy and saturates there (pe=3 adds 0.0008).
+# This run exists to find out whether that trade holds at d=384 and whether a
+# value head that finally beats the donor is worth what it costs the prior.
+#
+# --abort-if is plan 3.6's criterion as a wire: if the value head has not
+# beaten the 9M donor's 2.0674 by step 600k, the run has failed its one
+# purpose (v7 already exists and won without it) and stops itself cleanly,
+# checkpoints intact, {"aborted": true} in log.jsonl. v7 read 2.134 at 600k
+# and 2.083 at 1.2M, so this gate is strict on purpose: pe=2's whole pitch is
+# a materially better value curve, and a run merely matching v7's is 60
+# GPU-hours spent learning nothing.
+#
+# COLD START: growth at 1.5x starts worse than random init (LAB-NOTES
+# 2026-08-24). Batch 512 x accum 2 = effective 1024 because 1024 OOMs with
+# the bot resident. --workers is the TOTAL across both bags and gets split.
+ExecStart=%h/dev/active/sumofish/.venv/bin/python train.py \
+    --preset 19M \
+    --target both \
+    --policy-every 2 \
+    --abort-if 600000:2.0674 \
+    --run 19M-fused-pe2 \
+    --steps 1200000 \
+    --batch-size 512 \
+    --accum 2 \
+    --workers 8 \
+    --eval-every 5000 \
+    --ckpt-every 10000 \
+    --keep-max 16 \
+    --keep-every 100000 \
+    --auto-resume
+
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=no
+
+Nice=5
+OOMScoreAdjust=-200
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-train-fused-pe2
+
+[Install]
+WantedBy=default.target
