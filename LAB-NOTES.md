@@ -2480,3 +2480,19 @@ sweep says how to trade, not that trading is right. The honest read is that
 pe=2 is worth trying on the next full run only if the goal is value-head
 parity with the 9M; if v7's rating holds up, the trade may not be wanted at
 all. `runs/_pe-sweep-{1,2,3}/log.jsonl` holds the curves.
+
+## 2026-08-31: a journalctl-parsing waiter stopped the bot mid-game
+
+A background script meant to stop `sumofish-bot` after the current game ended
+instead stopped it DURING the game, ~50 seconds in the red, because its game-id
+extraction ran on default `journalctl` output, whose syslog prefix
+(`Aug 31 15:07 mothership sumofish-bot[pid]:`) means no line ever matches
+`^\s*[A-Za-z0-9]{8}\s*$`. Empty id read as "idle", so it stopped the bot with a
+game on the clock. Two mitigations already in place saved it: the watchdog (or
+`Restart=always`) brought the bot back within 45s, and lichess-bot resumes
+in-progress games on startup ("first wait for all running games"), so game
+Na2sXpfe continued with clock loss only. Rules: parse journal output with
+`-o cat`, never the default format; verify a `systemctl stop` took with
+`is-active` afterwards (the first script reported success without checking);
+and when taking the bot down on purpose, stop `sumofish-watchdog.timer` FIRST
+or it resurrects the bot.
