@@ -23,13 +23,17 @@ Environment=PYTHONUNBUFFERED=1
 # This run exists to find out whether that trade holds at d=384 and whether a
 # value head that finally beats the donor is worth what it costs the prior.
 #
-# --abort-if is plan 3.6's criterion as a wire: if the value head has not
-# beaten the 9M donor's 2.0674 by step 600k, the run has failed its one
-# purpose (v7 already exists and won without it) and stops itself cleanly,
-# checkpoints intact, {"aborted": true} in log.jsonl. v7 read 2.134 at 600k
-# and 2.083 at 1.2M, so this gate is strict on purpose: pe=2's whole pitch is
-# a materially better value curve, and a run merely matching v7's is 60
-# GPU-hours spent learning nothing.
+# --abort-if, RECALIBRATED 2026-09-01 at step 413k. The original single gate
+# (600000:2.0674) demanded the donor's FINAL value-only number at the halfway
+# point of a cosine schedule and would have aborted a run that was working:
+# pe2 holds a steady ~0.035 lead over v7 at matched steps, projecting ~2.10
+# at 600k (gate fires) and ~2.05 at 1.2M (beats the donor, the run's whole
+# purpose). v7's own curve dropped 0.051 from 600k to 1.2M; the anneal does
+# its work late. Two gates that encode the intent instead:
+#   600000:2.11    = still clearly ahead of v7's 2.134 there (lead >= 0.024;
+#                    if the pe=2 lead has collapsed, the trade failed)
+#   1150000:2.0674 = the donor is beaten by effectively the end
+# Restart cost: auto-resume from latest.pt, <=3k steps replayed.
 #
 # COLD START: growth at 1.5x starts worse than random init (LAB-NOTES
 # 2026-08-24). Batch 512 x accum 2 = effective 1024 because 1024 OOMs with
@@ -38,7 +42,7 @@ ExecStart=%h/dev/active/sumofish/.venv/bin/python train.py \
     --preset 19M \
     --target both \
     --policy-every 2 \
-    --abort-if 600000:2.0674 \
+    --abort-if 600000:2.11,1150000:2.0674 \
     --run 19M-fused-pe2 \
     --steps 1200000 \
     --batch-size 512 \
