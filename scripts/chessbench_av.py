@@ -58,25 +58,34 @@ def shard_name(i: int) -> str:
 
 
 class BagWriter:
-    """Append-only writer for the bagz container format."""
+    """Append-only writer for the bagz container format.
+
+    Limits are spooled to a sidecar file, not held in RAM: a Python list of
+    733M ints is ~20 GB and got the first 100-shard merge OOM-killed at
+    close() (2026-09-01). O(1) memory regardless of record count.
+    """
 
     def __init__(self, path: str) -> None:
         self._f = open(path, "wb")
-        self._limits: list[int] = []
+        self._limits_path = path + ".limits"
+        self._limits = open(self._limits_path, "wb")
         self._pos = 0
 
     def write(self, record: bytes) -> None:
         self._f.write(record)
         self._pos += len(record)
-        self._limits.append(self._pos)
+        self._limits.write(struct.pack("<q", self._pos))
 
     def close(self) -> None:
         # The last limit equals the offset where the limits array begins, and
         # the reader finds the array by reading the file's final 8 bytes, so
         # the array is self-terminating with no separate footer.
-        for end in self._limits:
-            self._f.write(struct.pack("<q", end))
+        self._limits.close()
+        with open(self._limits_path, "rb") as lf:
+            while chunk := lf.read(1 << 22):
+                self._f.write(chunk)
         self._f.close()
+        os.unlink(self._limits_path)
 
 
 def encode_state_value(fen: str, win_prob: float) -> bytes:
