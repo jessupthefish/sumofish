@@ -105,9 +105,41 @@ A counter that looks wrong and is not: with `--accum 2`, `steps_value`/
 100/66 per window, not 67/33 (that was the sweep at accum=1). The micro-batch
 ratio is the intended 2:1; verified against the loop at train.py:686-719.
 
-**Gating when it lands, same as v7:** SPRT at the clock vs deployed, then the
-two anchor rungs at fixed sims. The 136M question (plan phase 5) stays open
-behind it and now has a clean instrument: eval_heldout's clean subset.
+**THE PE2 RUN COMPLETED AND FAILED ITS GATE (2026-09-03). v7 STAYS DEPLOYED.**
+All 1.2M steps, no abort, both training gates passed (600k read 2.1025 vs the
+2.11 bar). Final held-out: value **2.0570** (beats the 9M donor's 2.0674, the
+first fused net to do so, and v7's 2.0832), policy 1.4742 (worse than v7's
+1.4523, the priced-in cost), puzzles 0.756, the project's best. Then the clock
+match erased it: `runs/matches/pe2-gate`, pe2 best.pt vs deployed v7, --time
+0.5, seed 20260903, drained box, SPRT 0/20: **concluded A NOT better after
+272 pairs / 544 games, W102 D338 L104, 49.8%, -1.3 +-16.7, LLR -3.10.** The
+value-head gain and the policy-head cost cancel exactly at the clock. 338/544
+draws is the usual mirror blindness, but the SPRT bound was hit, not timed
+out. **What this buys as knowledge:** held-out value loss parity with the
+donor is achievable (pe=2 works as measured) and is worth ~0 Elo against a
+sibling whose policy head is better. v7 won on its prior; the prior is where
+the Elo lives at this scale. The anchors were NOT run for pe2 (a net that
+failed its gate does not earn 8 GPU-hours of yardstick). Checkpoints kept in
+`runs/19M-fused-pe2/`. Bot restarted on v7 the same hour, watchdog re-armed.
+
+**Data: the 100-shard ChessBench action-value tranche is converted.**
+`scripts/chessbench_av.py` pulls shards (md5-verified), converts each
+(fen, move, Q) record to (apply(fen,move), 1-Q), a per-record flip whose
+perspective convention was verified on the test bags (mean |V - max_a Q| =
+0.0126 over 62,561 shared states), and merges to one bag in our exact
+state_value encoding. 733,250,069 records, ~3.4x the original bag, at
+`/mnt/storage/chess/chessbench-av/av_state_value_data.bag`. The first merge
+was OOM-killed holding 733M limit offsets in a Python list (LAB-NOTES
+2026-09-01); BagWriter now spools limits to a sidecar and a `salvage`
+subcommand rebuilt the index. Yardstick discipline: held-out evals stay on
+`data/test/state_value_data.bag`, and the new bag needs the contamination
+check against it before any capacity comparison uses it.
+
+**Next.** The value head is no longer the lever; the prior is. The untried
+axes, in order of promise: train on the 733M-record bag (data was the one
+axis never expanded), the constants re-sweep for v7 (0.875/-0.05 was tuned on
+v5/v6 nets), and pondering/tree-reuse between moves in the Rust core. The
+136M question (plan phase 5) still open, clean instrument ready.
 
 **What is new in the tree.** `sumofish/engines/loader.py`, the one place that
 builds (value, policy) from files, fused or two-net, detected from the

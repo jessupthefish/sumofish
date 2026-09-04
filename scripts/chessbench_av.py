@@ -209,6 +209,62 @@ def cmd_merge(args: argparse.Namespace) -> None:
     print(f"done: {total:,} records -> {args.out}", flush=True)
 
 
+def cmd_salvage(args: argparse.Namespace) -> None:
+    """Rebuild the index of a .part file whose merge died before/while writing
+    limits (the 2026-09-01 OOM). Record bytes are intact and sequentially
+    parseable; parse them, truncate any partial limits tail, append a fresh
+    limits array, rename."""
+    part = args.part
+    expected = args.records
+    size = os.path.getsize(part)
+    limits_path = part + ".limits"
+    n = 0
+    pos = 0
+    buf = b""
+    cur = 0  # cursor into buf; compacted when the tail runs low, never sliced
+             # per record (a per-record slice of a 4MB buffer 733M times is
+             # O(n^2) and would never finish)
+    with open(part, "rb") as f, open(limits_path, "wb") as lf:
+        pack = struct.pack
+        while n < expected:
+            if len(buf) - cur < 256:
+                buf = buf[cur:] + f.read(1 << 22)
+                cur = 0
+                if len(buf) < 10:
+                    raise SystemExit(f"ran out of bytes at record {n:,}, pos {pos:,}")
+            fen_len, consumed = read_varint(buf, cur)
+            rec = consumed + fen_len + 8
+            if len(buf) - cur < rec:
+                buf = buf[cur:] + f.read(1 << 22)
+                cur = 0
+                if len(buf) < rec:
+                    raise SystemExit(f"truncated record {n:,} at pos {pos:,}")
+            pos += rec
+            cur += rec
+            n += 1
+            lf.write(pack("<q", pos))
+            if n % 50_000_000 == 0:
+                print(f"{n:,} records parsed, offset {pos:,}", flush=True)
+    print(f"parsed {n:,} records, records end at {pos:,} of {size:,} "
+          f"({size - pos:,} partial-limits bytes to truncate)", flush=True)
+    with open(part, "r+b") as f:
+        f.truncate(pos)
+        f.seek(pos)
+        with open(limits_path, "rb") as lf:
+            while chunk := lf.read(1 << 22):
+                f.write(chunk)
+    os.unlink(limits_path)
+    out = part[:-5] if part.endswith(".part") else part + ".bag"
+    os.rename(part, out)
+    r = BagReader(out)
+    assert len(r) == expected, (len(r), expected)
+    from sumofish.bagz import decode_state_value
+    for i in (0, len(r) // 2, len(r) - 1):
+        fen, wp = decode_state_value(r[i])
+        assert 0.0 <= wp <= 1.0 and fen.count("/") == 7, (i, fen, wp)
+    print(f"salvaged: {out} with {len(r):,} records, spot-checks pass", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -224,8 +280,12 @@ def main() -> None:
     m.add_argument("--src", required=True)
     m.add_argument("--out", required=True)
     m.add_argument("--delete-parts", action="store_true")
+    s = sub.add_parser("salvage")
+    s.add_argument("--part", required=True)
+    s.add_argument("--records", type=int, required=True)
     args = ap.parse_args()
-    {"download": cmd_download, "convert": cmd_convert, "merge": cmd_merge}[args.cmd](args)
+    {"download": cmd_download, "convert": cmd_convert, "merge": cmd_merge,
+     "salvage": cmd_salvage}[args.cmd](args)
 
 
 if __name__ == "__main__":
