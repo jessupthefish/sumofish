@@ -191,6 +191,15 @@ def main() -> None:
                     help="HL-Gauss bins; the paper's ablation is flat above 32")
     ap.add_argument("--data", default=None,
                     help="defaults to the bag matching --target")
+    ap.add_argument("--value-data", default=None,
+                    help="--target both only: the state-value training bag "
+                         "(default data/train/state_value_data.bag). The "
+                         "fused-mode error message has promised this flag "
+                         "since 08-24; it exists as of the 2026-09-07 "
+                         "data-expansion run.")
+    ap.add_argument("--policy-data", default=None,
+                    help="--target both only: the behavioral-cloning training "
+                         "bag (default data/train/behavioral_cloning_data.bag)")
     ap.add_argument("--val-data", default=None,
                     help="held-out bag; defaults to data/test/<target>_data.bag")
     ap.add_argument("--val-positions", type=int, default=32_768,
@@ -307,8 +316,9 @@ def main() -> None:
         if args.data is not None or args.val_data is not None:
             raise SystemExit("--target both draws from BOTH bags; use "
                              "--value-data/--policy-data, not --data")
-        args.data = str(ROOT / "data/train/state_value_data.bag")
-        args.policy_data = str(ROOT / "data/train/behavioral_cloning_data.bag")
+        args.data = args.value_data or str(ROOT / "data/train/state_value_data.bag")
+        args.policy_data = args.policy_data or str(
+            ROOT / "data/train/behavioral_cloning_data.bag")
         args.val_data = str(ROOT / "data/test/state_value_data.bag")
         args.policy_val_data = str(ROOT / "data/test/behavioral_cloning_data.bag")
     else:

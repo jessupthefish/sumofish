@@ -1,0 +1,59 @@
+[Unit]
+Description=SumoFish training: 19M-fused-data (v7 recipe, 2.4x the value data)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/active/sumofish
+Environment=PYTHONUNBUFFERED=1
+
+# THE DATA RUN. v7's exact recipe (strict alternation, pe=1, the recipe that
+# won; pe=2 was disproven at the clock on 2026-09-03) with ONE variable
+# changed: the value bag is 1,263,560,512 positions instead of 530,310,443.
+# The extra 733M are ChessBench action-value records converted per-record to
+# state-value ((fen, move, Q) -> (apply(fen, move), 1-Q); conversion verified
+# against the test bags, see scripts/chessbench_av.py). At 1.2M steps x pe=1
+# the value head sees ~614M positions = 0.49 epochs of the combined bag, so
+# no position is seen twice; v7 saw 1.16 epochs of the old bag.
+#
+# The children-of-all-moves records include positions after bad moves, which
+# game-position bags never contain and which MCTS evaluates constantly.
+# Whether that distribution helps or hurts is what this run measures.
+#
+# --abort-if is deliberately lenient (v7 read 2.134 at 600k): this run only
+# needs to not be WORSE than v7's curve to be worth finishing, since its
+# policy exposure is identical to v7's and the value data is the experiment.
+# Held-out evals stay on the untouched data/test bags; contamination of the
+# new bag against the test set is being measured separately and any
+# cross-run comparison must quote the clean subset.
+ExecStart=%h/dev/active/sumofish/.venv/bin/python train.py \
+    --preset 19M \
+    --target both \
+    --value-data /mnt/storage/chess/chessbench-av/sv_combined_data.bag \
+    --abort-if 600000:2.15 \
+    --run 19M-fused-data \
+    --steps 1200000 \
+    --batch-size 512 \
+    --accum 2 \
+    --workers 8 \
+    --eval-every 5000 \
+    --ckpt-every 10000 \
+    --keep-max 16 \
+    --keep-every 100000 \
+    --auto-resume
+
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=no
+
+Nice=5
+OOMScoreAdjust=-200
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sumofish-train-fused-data
+
+[Install]
+WantedBy=default.target
