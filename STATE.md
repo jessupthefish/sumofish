@@ -34,6 +34,60 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-09-11, session 15)
+
+**THE DATA RUN IS TRAINING AGAIN, resumed 01:41 PDT from step 750,000.**
+`sumofish-train-fused-data.service`, run `19M-fused-data`, launched 2026-09-07
+02:48: v7's exact recipe with one variable changed, the value bag is the
+1.26B-position `sv_combined_data.bag` (the unit file carries the reasoning).
+Two power losses on 2026-09-08 (17:16 at step 752,500 and 17:49 at step
+750,800, both unclean, nothing in the kernel log, Steven confirms the mains
+went) and the takedown in between removed the only thing that would have
+restarted it, so it sat dead 2 days 8 hours. LAB-NOTES 2026-09-11 has the
+sequence. `--auto-resume` picked up `latest.pt` at 750,000 with the data
+stream at frac=0.6078; the three resumes from that checkpoint logged 1.8574 /
+1.8574 / 1.8572 at step 750,200, so the resume is deterministic to the third
+decimal and each crash cost under three minutes of steps. Rate 5,660
+samples/s, the same as with the bot up. 450k steps remain, about 22.5
+GPU-hours, so it should finish around 2026-09-12 00:00 PDT.
+`sumofish-train-done.timer` and `sumofish-train-watchdog.timer` are re-armed
+and ENABLED, so they come back after the next power loss, and the watchdog
+restarts the unit about 25 minutes after boot if it finds the run dead, as it
+did on 09-08. The unit itself is still linked, not enabled.
+
+**The gate passed and the curve is a hair ahead of v7 on both heads.**
+`--abort-if 600000:2.15` read 2.129. Held-out at matching steps, EMA weights,
+full test set (the clean subset is what settles any cross-run claim, see
+08-28):
+
+    step    v7 value  data value   v7 policy  data policy   v7 puz  data puz
+    600k    2.1339    2.1290       1.5313     1.5091        0.714   0.712
+    650k    2.1262    2.1224       1.5196     1.4964        0.722   0.716
+    700k    2.1182    2.1173       1.5072     1.4892        0.722   0.719
+    750k    2.1128    2.1101       1.4973     1.4801        0.728   0.726
+
+The value gap is 0.003, inside the floor, so 2.4x the data has not moved the
+value head yet. The policy gap of 0.017 is the surprise, since policy exposure
+is identical to v7's and the only mechanism is the shared trunk. None of this
+is a result until the end-of-run eval and the clock gate.
+
+**The bot is DOWN, deliberately, since the 2026-09-08 takedown ("take
+sumofish down").** `sumofish-bot.service` no longer resolves, because
+`disable` on a linked unit deletes the symlink (~/CLAUDE.md lab notes).
+`sumofish-watchdog.timer` and `sumofish-rating.timer` are gone the same way,
+and the temporary drop-in
+`~/.config/systemd/user/sumofish-bot.service.d/99-drain-takedown.conf`
+(TimeoutStopSec=1800) is still in place. To bring it back: delete the drop-in,
+`systemctl --user link ~/dev/active/sumofish/systemd/sumofish-bot.service`,
+`daemon-reload`, `start`, then `enable --now` the two timers from `systemd/`
+by absolute path. v7 is still `runs/value.pt`. The last rated game before the
+takedown, HdwcV2Or, was lost on time when the stop did not drain it.
+
+**When the run finishes (the done-notify timer raises a desktop alarm):**
+`scripts/eval_heldout.py runs/19M-fused-data/best.pt` quoting the clean
+subset, then the clock gate against v7 on a drained box exactly as `pe2-gate`
+was run (`--time 0.5`, SPRT 0/20, a fresh seed), anchors only if it wins.
+
 ## Where things stand (2026-08-28, session 13)
 
 **THE 19M IS TRAINED, GATED AND DEPLOYED.**

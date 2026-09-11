@@ -2496,3 +2496,59 @@ Na2sXpfe continued with clock loss only. Rules: parse journal output with
 `is-active` afterwards (the first script reported success without checking);
 and when taking the bot down on purpose, stop `sumofish-watchdog.timer` FIRST
 or it resurrects the bot.
+
+## 2026-09-11: two power losses, and the takedown removed the only thing that restarted training
+
+The sequence, from `journalctl --list-boots` and the unit journals in boots
+-2, -1 and 0:
+
+- 09-08 17:16:40, boot -2 ends at step 752,500 of `19M-fused-data`. No
+  shutdown record, no Xid, MCE or OOM in the last minutes. `latest.pt` was
+  step 750,000 (17:09). Power loss, confirmed by Steven.
+- 17:19:58 boot -1. The training unit is `linked`, not `enabled`, so nothing
+  starts it at login. `sumofish-train-watchdog.timer` (OnBootSec=10min, then
+  every 5min) WAS enabled: at 17:44:52 it found a 28-minute-stale log and
+  restarted the owning unit, which `--auto-resume`d from 750,000 and was
+  "progressing: step 750,100" by 17:45:46. The stall watchdog was the run's
+  real boot-survival mechanism, and nothing in STATE said so.
+- 17:44:21 a session opened with "take sumofish down". At 17:45:21 it ran
+  `disable --now` on the watchdog, rating, train-watchdog and train-done
+  timers. All four are linked units, so `disable` deleted their symlinks
+  (the ~/CLAUDE.md trap), and the training unit, which it had not stopped
+  yet, was now unsupervised.
+- 17:49:17 boot -1 ends at step 750,800. Second power loss.
+- 18:25:51 boot 0. The superseded `sumofish-train-fused.service` (v7's unit,
+  still enabled from August) autostarted, resumed `19M-fused` at 1,200,000,
+  printed `done` and exited in 8 s, but not before rewriting
+  `runs/active.json` to point at the finished v7 run. Every reader of that
+  file (dashboard, watchdog, done-notify) then saw the wrong run for 2 days
+  8 hours. The data run had nothing left to start it. The bot autostarted at
+  18:28 and was stopped mid-game at 18:29:36 (HdwcV2Or, lost on time; the
+  drain lesson is in ~/CLAUDE.md).
+- 09-11 01:41 resumed by hand: `systemctl --user start`, auto-resume at
+  750,000, then `enable --now` on the two training timers by absolute path,
+  which recreates both the unit link and the `timers.target.wants` link.
+
+What to do differently:
+
+1. **A training run's power-loss survival is a property of the unit list,
+   and it must be written down at launch.** This run survived boot -1 only
+   because a timer written for stalls happens to restart dead units too.
+   Either `enable` the training unit (harmless once the run is done: the v7
+   unit proved that by exiting in 8 s) or state in STATE.md that the
+   train-watchdog timer is what brings it back. "Take X down" then knows
+   what it is removing.
+2. **Disable a training unit the day its run finishes.** The enabled v7 unit
+   did no GPU damage but it clobbered `active.json`, and a stale
+   `active.json` is exactly the failure the watchdog docstring already warns
+   about from the other direction. `train.py` could also refuse to rewrite
+   `active.json` when it is about to exit with nothing to do.
+3. **The resume itself is not the cost.** Three resumes from one checkpoint
+   logged 1.8574 / 1.8574 / 1.8572 at step 750,200; each crash lost 800 to
+   2,500 steps, under three minutes. With `--ckpt-every 10000` the exposure
+   is bounded at about 30 minutes, so do not shorten it.
+4. Samples/s with the bot down (5,660) equals samples/s with the bot up and
+   mid-game (5,670 at 17:48). The bot's search was never the trainer's
+   bottleneck at this batch size, so draining the box buys the trainer
+   nothing; draining is for matches, where it is the BOT's clock that
+   sharing distorts.
