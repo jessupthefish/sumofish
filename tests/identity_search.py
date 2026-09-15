@@ -154,6 +154,14 @@ def corpus(n: int, seed: int) -> list[list[str]]:
     out = []
     # The startpos, so the simplest case is covered first and fails loudest.
     out.append([])
+    # Roots that are ALREADY a threefold repetition. Random play never reaches
+    # one, and both implementations used to return an empty visit vector here
+    # (identical, so this test passed while the live engine played the first
+    # legal move, 2026-09-15). `run_one` now also requires a non-empty vector.
+    shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"]
+    out.append(shuffle * 2)                             # startpos, third time
+    out.append(["e2e4", "e7e5"] + shuffle * 2)          # after 1.e4 e5, third time
+    out.append(["e2e4", "e7e5"] + shuffle * 2 + ["g1f3"])  # one ply past it
     for _ in range(n - 1):
         board = chess.Board()
         moves: list[str] = []
@@ -200,6 +208,8 @@ def run_one(moves: list[str], sims: int, batch: int) -> str | None:
     rs_pairs = rs_mcts.search(rs_pos, sims, rust_evaluate)
 
     if rs_pairs == py_pairs:
+        if not rs_pairs and any(py_board.generate_legal_moves()):
+            return f"both returned NO visits with legal moves available\n  fen: {py_board.fen()}"
         return None
 
     # Report the first divergence in a form that points at a cause.

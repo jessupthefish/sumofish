@@ -271,6 +271,16 @@ impl Position {
     /// move. That is a property of a child, the search is about to visit that
     /// child, and treating it as terminal here prunes the line before the search
     /// can decide whether the draw is even wanted. See `rules.py`'s docstring.
+    /// `terminal_value` for the ROOT of a search: only the absence of a legal
+    /// move ends the game there. See the root-expansion comment in
+    /// `tree.rs::Mcts::search` for why claimable draws do not.
+    pub fn root_terminal_value(&self) -> Option<f64> {
+        if !self.board.has_any_legal_move() {
+            return Some(if self.board.is_check() { 0.0 } else { 0.5 });
+        }
+        None
+    }
+
     pub fn terminal_value(&self) -> Option<f64> {
         // `any()` short-circuits, so this is cheap in the ~99.9% of positions
         // that have a legal move. Generating the full list twice would not be.

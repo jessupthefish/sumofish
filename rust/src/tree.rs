@@ -690,8 +690,16 @@ impl Mcts {
         // why it is not optional. Note the Python discards the returned value
         // but DOES count the evaluation, so the node budget is off by one from
         // the simulation count. Reproduced.
+        //
+        // The ROOT asks only whether a legal move exists, never about claimable
+        // draws. `terminal_value` treats threefold and fifty-move as game over
+        // because a player who wants the draw can have it, which is right for
+        // every node BELOW the root. At the root nobody has claimed anything: we
+        // were asked for a move, so we owe one. Twice on 2026-09-15 a live game
+        // reached a repeated root, the search returned an empty visit vector,
+        // and `uci.py` fell back to the first legal move.
         if !self.nodes[root_ix].expanded() {
-            if let Some(tv) = pos.terminal_value() {
+            if let Some(tv) = pos.root_terminal_value() {
                 self.nodes[root_ix].terminal_value = Some(tv);
             } else {
                 let moves = crate::movegen::generate_legal_moves(&pos.board);

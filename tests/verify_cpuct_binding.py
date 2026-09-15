@@ -122,6 +122,10 @@ def main() -> int:
         device = "cpu"
         dtype = None
         model = None
+        # `make_evaluator` reads `value_policy.hl.bins` to detect a fused net
+        # (2026-08-14). Without it the build raised and this check reported
+        # FAIL for a month on a binding that was fine. None = not fused.
+        hl = None
 
     def _visits(c_init: float):
         import chess

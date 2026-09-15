@@ -283,9 +283,19 @@ class MCTS:
         row = self.policy._logprobs([board])[0].cpu().numpy()
         return dict(zip(legal, _softmax_over_legal(row, legal), strict=True))
 
-    def _expand(self, node: Node, board: chess.Board) -> float:
-        """Create children and return this node's value, side-to-move relative."""
-        value = self.terminal(board)
+    def _expand(self, node: Node, board: chess.Board, at_root: bool = False) -> float:
+        """Create children and return this node's value, side-to-move relative.
+
+        At the root only a position with no legal move is terminal: a claimable
+        draw (threefold, fifty-move) ends the game below the root because a
+        player who wants it gets it, but at the root we were asked for a move,
+        so the search must produce one. Mirrored in Rust as
+        `Position::root_terminal_value`.
+        """
+        if at_root:
+            value = None if any(board.generate_legal_moves()) else self.terminal(board)
+        else:
+            value = self.terminal(board)
         if value is not None:
             node.terminal_value = value
             return value
@@ -533,7 +543,7 @@ class MCTS:
         if root is None:
             root = Node(prior=1.0, to_move=board.turn)
         if not root.expanded:
-            self._expand(root, board)
+            self._expand(root, board, at_root=True)
 
         if self.dirichlet_weight > 0 and root.children:
             noise = np.random.dirichlet([self.dirichlet_alpha] * len(root.children))
