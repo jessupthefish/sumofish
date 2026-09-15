@@ -182,6 +182,21 @@ def main() -> int:
         f"why={pond['why']}, evaluations={pond['evaluations']}",
     ))
 
+    # ---- 5b: the tree cap -----------------------------------------------
+    # max_nodes bounds one ponder; this bounds the tree reuse carries between
+    # moves, which is what actually runs out of memory.
+    g = make_mcts(BATCH, S1)
+    g.search(start)
+    g.simulations = 100_000_000
+    stop = threading.Event()
+    limit = g._core.node_count + 5_000
+    pond = g.ponder(after, stop, slice_s=0.01, max_tree_nodes=limit)
+    results.append(check(
+        "max_tree_nodes ends the ponder once the tree is that big",
+        pond["why"] == "tree" and g._core.node_count >= limit,
+        f"why={pond['why']}, nodes={g._core.node_count}, limit={limit}",
+    ))
+
     # ---- 6: the UCI hooks -----------------------------------------------
     events: list[str] = []
     def chooser(board, limits):

@@ -278,6 +278,14 @@ PONDER_SLICE_SECONDS = 0.1      # the most a `go` can wait for the ponder to yie
 # box where training peaks near 16 GB. At the live ~12k evals/s a million is
 # about 80 s of opponent think, which covers nearly every rapid move.
 PONDER_MAX_NODES_DEFAULT = 1_000_000
+# ...but that bounds ONE ponder, not the tree. Reuse keeps the tree across
+# moves, and when the opponent keeps playing the reply the search expected,
+# little is thrown away at each reroot: the second live game (2026-09-15) had
+# 2.3M inherited visits and 11.5 GB RSS and was still climbing. Measured 97
+# bytes a node and ~35 nodes a visit, so 25M nodes is ~2.4 GB. The ponder
+# stops there; the move's own search adds at most ~18M more (500k evals at the
+# longest rapid budgets), and the next reroot shrinks it again.
+PONDER_MAX_TREE_NODES_DEFAULT = 25_000_000
 
 
 class Ponderer:
@@ -291,10 +299,12 @@ class Ponderer:
     `quit` included.
     """
 
-    def __init__(self, mcts, tele, *, max_nodes: int, slice_s: float) -> None:
+    def __init__(self, mcts, tele, *, max_nodes: int, slice_s: float,
+                 max_tree_nodes: int | None = None) -> None:
         self.mcts = mcts
         self.tele = tele
         self.max_nodes = max_nodes
+        self.max_tree_nodes = max_tree_nodes
         self.slice_s = slice_s
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -323,7 +333,8 @@ class Ponderer:
     def _run(self, after: chess.Board) -> None:
         try:
             self._result = self.mcts.ponder(
-                after, self._stop, slice_s=self.slice_s, max_nodes=self.max_nodes
+                after, self._stop, slice_s=self.slice_s, max_nodes=self.max_nodes,
+                max_tree_nodes=self.max_tree_nodes,
             )
         except Exception:  # noqa: BLE001 -- a ponder that dies costs the ponder, never the move
             self._result = {"error": traceback.format_exc()}
@@ -475,6 +486,9 @@ def main() -> None:
     ponder_max_nodes = int(
         os.environ.get("CHESSGPU_PONDER_MAX_NODES", str(PONDER_MAX_NODES_DEFAULT))
     )
+    ponder_max_tree_nodes = int(
+        os.environ.get("CHESSGPU_PONDER_MAX_TREE_NODES", str(PONDER_MAX_TREE_NODES_DEFAULT))
+    )
 
     tele = Telemetry(
         os.environ.get("CHESSGPU_TELEMETRY", str(ROOT / "logs/engine.jsonl"))
@@ -511,7 +525,8 @@ def main() -> None:
     instamove = env_flag("CHESSGPU_INSTAMOVE")
     early_stop = env_flag("CHESSGPU_EARLY_STOP") and core_name == "rust"
     ponderer = (
-        Ponderer(mcts, tele, max_nodes=ponder_max_nodes, slice_s=PONDER_SLICE_SECONDS)
+        Ponderer(mcts, tele, max_nodes=ponder_max_nodes, slice_s=PONDER_SLICE_SECONDS,
+                 max_tree_nodes=ponder_max_tree_nodes)
         if ponder_on else None
     )
 

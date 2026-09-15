@@ -355,9 +355,11 @@ class RustMCTS:
         return max(visits.items(), key=lambda kv: kv[1])[0]
 
     def ponder(self, board: chess.Board, stop, *, slice_s: float = 0.1,
-               max_nodes: int | None = None) -> dict:
+               max_nodes: int | None = None,
+               max_tree_nodes: int | None = None) -> dict:
         """Search `board` until `stop` (a `threading.Event`) is set or the
-        core has paid for `max_nodes` evaluations, and leave the tree rooted
+        core has paid for `max_nodes` evaluations, or the tree holds
+        `max_tree_nodes` nodes, and leave the tree rooted
         there.
 
         This is what the engine does on the opponent's clock. `board` is the
@@ -400,6 +402,13 @@ class RustMCTS:
         while not stop.is_set():
             if max_nodes is not None and self._core.evaluations >= max_nodes:
                 why = "cap"
+                break
+            # `max_nodes` bounds one ponder, not the tree: reuse carries the
+            # tree from move to move, and when the search keeps predicting the
+            # reply little is discarded at each reroot. Live on 2026-09-15 that
+            # grew one game's engine to 11.5 GB. ~97 bytes a node.
+            if max_tree_nodes is not None and self._core.node_count >= max_tree_nodes:
+                why = "tree"
                 break
             self._core.continue_search(pos, self.simulations, self._evaluate, slice_s)
         self.reused = reused
