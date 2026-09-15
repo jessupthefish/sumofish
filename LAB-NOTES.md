@@ -2582,3 +2582,20 @@ And a session that dies mid-verification leaves its unit and config edits
 unapplied too: the 09-11 transcript's last call held the `concurrency: 1` and
 `CHESSGPU_PONDER=1` edits and they never ran, so re-check every intended edit
 against the tree, not the transcript.
+
+## 2026-09-15: 8 minutes of flat RSS is not a memory bound; pondering needs a tree cap
+
+Declared the pondering engine's memory bounded after sampling game one for 8
+minutes (3.4 to 7.5 GB, falling at each reroot). Game two grew to 11.5 GB and
+pushed the box into swap, because reuse keeps the subtree of the reply that
+was played and a search that keeps predicting correctly discards almost
+nothing: 3.0M inherited visits by mid-game. The per-ponder evaluation cap
+(`max_nodes`) never bounded that. The tree is what needs the cap, in nodes
+(`node_count` is already a getter on the core): 97 bytes a node, ~35 nodes a
+visit. `max_tree_nodes` at 25M held game three at 2.1 to 5.1 GB.
+
+What to do differently: a memory bound is a claim about the worst game, so
+either derive it (what stops growth, and what number bounds it) or observe a
+whole game where the thing that frees memory is not happening. Growth that
+depends on whether the opponent does what you expected cannot be sampled
+safely from one opponent.

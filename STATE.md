@@ -66,10 +66,18 @@ top of the 28,480 it searched itself. `isready` mid-ponder answered in 76 ms,
 paid 623,365 ponder evals; moves searched 370-510k evals in their ~34 s
 budgets and started with 530k to 1.23M inherited visits, several times what
 the move bought itself. A reply the search had not expected still reroots
-(reused 4,899 and 7,130 on two moves). Engine RSS sampled every 30 s for 8
-minutes swung 3.4 to 7.5 GB and fell at every reroot, so discarded subtrees
-are freed and the tree does not accumulate across a game; 18 GB stayed
-available.
+(reused 4,899 and 7,130 on two moves). Engine RSS over its first 8 minutes swung 3.4
+to 7.5 GB and fell at every reroot, which I read as bounded. **It was not.**
+Game two, `mohQ5jG5` (a draw with atwell-chess-bot, 2228, as black), kept
+landing its predictions, so little was discarded per reroot: 3.0M inherited
+visits, 11.5 GB RSS, the box ~9 GB into swap and the per-move search visibly
+slower. `CHESSGPU_PONDER_MAX_NODES` bounds one ponder, not the tree. Fix
+f402e95: the ponder also stops at `CHESSGPU_PONDER_MAX_TREE_NODES` (default
+25M nodes, measured 97 bytes a node, ~35 nodes a visit, so ~2.4 GB). Game
+three, `cwYmwbD1`, the first on the fix: RSS 2.1 to 5.1 GB over 9 minutes,
+`(tree)` stops every second or third move, ~19 GB available throughout.
+If the cap proves to cut too much ponder time, 40M is affordable on this box,
+but measure RSS over a whole game first, not 8 minutes of one.
 
 **The 19M-fused-data run FINISHED (2026-09-12 03:08, step 1,200,000) and is
 NOT gated.** Its end-of-run held-out eval and the clock gate against v7 are
