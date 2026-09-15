@@ -36,6 +36,9 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
 ## Where things stand (2026-09-15, session 16)
 
+**The ordered plan is `docs/PLAN-2026-09-15.md`** (throughput, time management,
+ponder pricing, then the net). Read it before choosing work.
+
 **THE BOT IS BACK UP, ONE GAME AT A TIME, WITH PONDERING.** v7 is still the
 deployed net (`runs/value.pt`, fused 19M, step 1,185,000). `CHESSGPU_PONDER=1`
 and `CHESSGPU_PONDER_MAX_NODES=1000000` in `systemd/sumofish-bot.service`,
