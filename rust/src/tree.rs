@@ -592,16 +592,44 @@ impl Mcts {
     /// the thing being kept, and far below the cost of rebuilding it.
     ///
     /// Recursion is on tree DEPTH, not size, so a large subtree is fine.
-    fn extract_subtree(old: &[Node], ix: usize, out: &mut Vec<Node>) -> usize {
+    ///
+    /// MOVES nodes out of `old` rather than cloning them (2026-09-15). Cloning
+    /// allocated a fresh `children` Vec for every retained expanded node and then
+    /// a second one for the remapped list, millions of allocations per move in a
+    /// 400k-visit search. Moving reuses each node's own Vec and rewrites the
+    /// child indices in place. Output order is unchanged (preorder, parent
+    /// first), so the arena layout is identical to the cloning version's.
+    fn extract_subtree(old: &mut [Node], ix: usize, out: &mut Vec<Node>) -> usize {
         let new_ix = out.len();
-        out.push(old[ix].clone());
-        let mut children = Vec::with_capacity(old[ix].children.len());
-        for &(mv, child_ix) in &old[ix].children {
-            let n = Self::extract_subtree(old, child_ix, out);
-            children.push((mv, n));
+        let placeholder = Node::new(0.0, old[ix].to_move);
+        let mut node = std::mem::replace(&mut old[ix], placeholder);
+        out.push(Node::new(0.0, node.to_move)); // reserves new_ix; overwritten below
+        for c in 0..node.children.len() {
+            let child_ix = node.children[c].1;
+            node.children[c].1 = Self::extract_subtree(old, child_ix, out);
         }
-        out[new_ix].children = children;
+        out[new_ix] = node;
         new_ix
+    }
+
+    /// Free a discarded arena without making the search wait for it.
+    ///
+    /// Dropping a `Vec<Node>` visits every node to free its `children` Vec, so
+    /// the cost is O(OLD arena), not O(what was kept): measured 571 ms to
+    /// reroot a 27M-node tree down to 4.7M and 106 ms for 4.7M down to 1.75M,
+    /// ~21 ns per discarded node either way. A pondering engine reroots right
+    /// after every bestmove, and a ponder cannot stop until that call returns,
+    /// so this was up to 2.9 s of our own clock per move against an opponent
+    /// who replies instantly (live, 2026-09-15). Small arenas are dropped
+    /// inline; if a thread cannot be created, the closure (and the Vec) is
+    /// dropped right here, which is merely the old behaviour.
+    fn drop_arena(old: Vec<Node>) {
+        if old.len() < 100_000 {
+            return; // dropped inline at the end of this scope
+        }
+        let _ = std::thread::Builder::new()
+            .name("tree-drop".to_string())
+            .spawn(move || drop(old));
     }
 
     /// The stored node for this position, or `None` to start fresh.
@@ -647,10 +675,12 @@ impl Mcts {
         }
 
         // It is a root now, so nothing scores it by its prior any more.
-        let mut fresh = Vec::with_capacity(self.nodes.len());
-        Self::extract_subtree(&self.nodes, ix, &mut fresh);
+        let mut old = std::mem::take(&mut self.nodes);
+        let mut fresh = Vec::with_capacity(old.len());
+        Self::extract_subtree(&mut old, ix, &mut fresh);
         fresh[0].prior = 1.0;
         self.nodes = fresh;
+        Self::drop_arena(old);
         Some(0)
     }
 
@@ -679,7 +709,12 @@ impl Mcts {
             None => 0,
         };
         if reused_root.is_none() {
-            self.nodes.clear();
+            // Not `clear()`: that drops every node inline, O(arena), the same
+            // stall `drop_arena` exists to avoid. Keep the capacity, as `clear`
+            // did, so the arena does not regrow by doubling.
+            let cap = self.nodes.capacity();
+            let old = std::mem::replace(&mut self.nodes, Vec::with_capacity(cap));
+            Self::drop_arena(old);
             self.nodes.push(Node::new(1.0, pos.board.turn));
         }
         let root_ix = 0usize;
