@@ -50,7 +50,9 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
+import traceback
 from pathlib import Path
 
 import chess
@@ -161,7 +163,7 @@ def env_flag(name: str) -> bool:
 # CHESSGPU_CORE=python from crashing the bot.
 RUST_ONLY_FLAGS = ("CHESSGPU_DEDUP", "CHESSGPU_COMPILE",
                     "CHESSGPU_MATE_DISTANCE", "CHESSGPU_VLOSS_FIX",
-                    "CHESSGPU_EARLY_STOP")
+                    "CHESSGPU_EARLY_STOP", "CHESSGPU_PONDER")
 
 # --- time management --------------------------------------------------------
 #
@@ -247,6 +249,120 @@ def ignored_rust_flags(env: dict) -> list[str]:
             f"yes/no, or on/off)."
         )
     return [name for name in RUST_ONLY_FLAGS if flag(name)]
+
+
+# --- pondering ---------------------------------------------------------------
+#
+# The engine used to sit idle on the opponent's clock. In a 15+10 game the
+# opponent's think is the same order as ours, so idling threw away roughly
+# half the wall time the search could have had, and the exchange ladder
+# prices a doubling of search at about +230 Elo at its top rung (STATE.md).
+#
+# This is ROOT pondering, not the UCI `go ponder` / `ponderhit` exchange:
+# after `bestmove X` the search keeps running on the position after X, over
+# every reply, and when the opponent's reply Z arrives the next search reroots
+# into Z's subtree exactly as tree reuse always has. There is no predicted
+# move and so no "miss" that throws the work away; the reply the opponent
+# chose has a subtree in proportion to how plausible the search thought it
+# was. lichess-bot's own `ponder:` stays false. Nothing on the protocol
+# changes except that the process is busy between commands, which is why the
+# UCI loop stops it before acting on ANY command (`before_command`).
+#
+# Gated on CHESSGPU_PONDER, default off, Rust core only, like every flag
+# here. Its yardstick is the lichess rating rather than a pair match: on one
+# GPU a pondering opponent steals from the other arm's search, and a
+# fixed-node Stockfish replies in milliseconds and hands a ponder nothing.
+PONDER_SLICE_SECONDS = 0.1      # the most a `go` can wait for the ponder to yield
+# Memory, not time, is what the cap is for: a simulation expands one leaf into
+# ~30 child nodes of ~90 bytes, so a million simulations is roughly 3 GB on a
+# box where training peaks near 16 GB. At the live ~12k evals/s a million is
+# about 80 s of opponent think, which covers nearly every rapid move.
+PONDER_MAX_NODES_DEFAULT = 1_000_000
+
+
+class Ponderer:
+    """Runs `RustMCTS.ponder` on a thread between `bestmove` and the next command.
+
+    One thread at a time, always joined before the core is touched again:
+    `_core` is `&mut self` on the Rust side and PyO3 refuses a second borrow,
+    so a `report()` from the main thread while a slice is in flight would
+    raise rather than race. The UCI loop's `before_command` hook is what
+    guarantees the ordering, and it runs for every command, `isready` and
+    `quit` included.
+    """
+
+    def __init__(self, mcts, tele, *, max_nodes: int, slice_s: float) -> None:
+        self.mcts = mcts
+        self.tele = tele
+        self.max_nodes = max_nodes
+        self.slice_s = slice_s
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._result: dict = {}
+        self._ply = 0
+        self.last: dict | None = None
+
+    def start(self, board: chess.Board, move: chess.Move) -> None:
+        if self._thread is not None:
+            # Two bestmoves with no command between them cannot come through
+            # the UCI loop. If it happens anyway, the running ponder is on the
+            # older position and goes first.
+            self.stop()
+        after = board.copy()
+        after.push(move)
+        if after.is_game_over():
+            return                  # nothing to think about
+        self._ply = after.ply()
+        self._stop.clear()
+        self._result = {}
+        self._thread = threading.Thread(
+            target=self._run, args=(after,), name="ponder", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self, after: chess.Board) -> None:
+        try:
+            self._result = self.mcts.ponder(
+                after, self._stop, slice_s=self.slice_s, max_nodes=self.max_nodes
+            )
+        except Exception:  # noqa: BLE001 -- a ponder that dies costs the ponder, never the move
+            self._result = {"error": traceback.format_exc()}
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None
+
+    def stop(self) -> dict | None:
+        """Stop the thread and wait for it. Returns what the ponder did, or
+        None if nothing was running. Bounded by one slice plus one batch."""
+        if self._thread is None:
+            return None
+        self._stop.set()
+        self._thread.join()
+        self._thread = None
+        r = self._result
+        self.last = r
+        if "error" in r:
+            print(f"[ponder] died; the move is unaffected:\n{r['error']}",
+                  file=sys.stderr, flush=True)
+            return r
+        self.tele.emit(
+            {
+                "ev": "ponder",
+                "ply": self._ply,
+                "nodes": r["evaluations"],
+                "elapsed": round(r["elapsed"], 3),
+                "reused": r["reused"],
+                "why": r["why"],
+            },
+            durable=True,
+        )
+        print(
+            f"info string ponder {r['evaluations']} evals in {r['elapsed']:.1f}s ({r['why']})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return r
 
 
 def main() -> None:
@@ -355,6 +471,11 @@ def main() -> None:
             )
         mcts = MCTS(value, policy=policy, simulations=sims, batch=batch)
 
+    ponder_on = env_flag("CHESSGPU_PONDER") and core_name == "rust"
+    ponder_max_nodes = int(
+        os.environ.get("CHESSGPU_PONDER_MAX_NODES", str(PONDER_MAX_NODES_DEFAULT))
+    )
+
     tele = Telemetry(
         os.environ.get("CHESSGPU_TELEMETRY", str(ROOT / "logs/engine.jsonl"))
     )
@@ -369,6 +490,7 @@ def main() -> None:
             "batch": batch,
             "core": core_name,
             "params": pinfo["params"],
+            "ponder": ponder_on,
         },
         durable=True,
     )
@@ -376,7 +498,8 @@ def main() -> None:
     print(
         f"{'fused' if ninfo['fused'] else 'two nets'} step={ninfo['step']} "
         f"bins={ninfo['bins']} | "
-        f"cap {sims} sims, batch {batch}, core={core_name} (clock-bound)",
+        f"cap {sims} sims, batch {batch}, core={core_name} (clock-bound), "
+        f"ponder={'on' if ponder_on else 'off'}",
         file=sys.stderr,
     )
 
@@ -387,6 +510,10 @@ def main() -> None:
     # not, see RUST_ONLY_FLAGS above.
     instamove = env_flag("CHESSGPU_INSTAMOVE")
     early_stop = env_flag("CHESSGPU_EARLY_STOP") and core_name == "rust"
+    ponderer = (
+        Ponderer(mcts, tele, max_nodes=ponder_max_nodes, slice_s=PONDER_SLICE_SECONDS)
+        if ponder_on else None
+    )
 
     def choose(board: chess.Board, limits: Limits) -> chess.Move:
         budget = think_time(limits, board.turn)
@@ -420,6 +547,7 @@ def main() -> None:
                 "wp": round(wp, 4),
                 "wp_white": round(perspective(wp, white_to_move), 4),
                 "nodes": r["evaluations"],
+                "reused": r["reused"],
                 "nps": int(r["evaluations"] / elapsed) if elapsed > 0 else 0,
                 "sims": done,
                 "elapsed": round(elapsed, 3),
@@ -473,7 +601,7 @@ def main() -> None:
         # and how much of it the search actually used.
         print(
             f"info string budget {budget:.2f}s used {elapsed:.2f}s "
-            f"evals {final['nodes']} wp {final['wp']:.3f}",
+            f"evals {final['nodes']} reused {final['reused']} wp {final['wp']:.3f}",
             file=sys.stderr,
             flush=True,
         )
@@ -491,6 +619,10 @@ def main() -> None:
                  # from extra_game_handlers.py (patches/0003).
                  ("option name GameId type string default ", "")],
         on_option=_option_handler(mcts, tele),
+        # Pondering lives entirely in these two hooks: stop before any command
+        # is acted on, start once bestmove is out. See `Ponderer`.
+        before_command=(lambda _cmd: ponderer.stop()) if ponderer else None,
+        after_move=ponderer.start if ponderer else None,
     )
 
 

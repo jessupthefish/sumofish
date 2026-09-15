@@ -34,6 +34,48 @@ the starting point and is no longer the design.
 This file is the operational layer: how to run things and what not to retry.
 See `PHILOSOPHY.md` for why the project is shaped the way it is.
 
+## Where things stand (2026-09-15, session 16)
+
+**THE BOT IS BACK UP, ONE GAME AT A TIME, WITH PONDERING.** v7 is still the
+deployed net (`runs/value.pt`, fused 19M, step 1,185,000). `CHESSGPU_PONDER=1`
+and `CHESSGPU_PONDER_MAX_NODES=1000000` in `systemd/sumofish-bot.service`,
+`concurrency: 1` in `config/lichess-bot.yml`. Rollback is `CHESSGPU_PONDER=0`
+and a restart. The takedown's restore steps below (session 15) were followed:
+drop-in deleted, unit re-linked, watchdog and rating timers re-enabled.
+
+**Pondering, what it is.** Root pondering, not UCI `go ponder`: after
+`bestmove X` a thread keeps searching the position after X over every reply,
+and the next `search` reroots into whichever reply was played. The UCI loop's
+`before_command` hook joins that thread before acting on any command, so the
+Rust core is never borrowed twice. Within a game python-chess sends nothing
+between our `bestmove` and the opponent's reply (checked in chess 1.11.2's
+`UciProtocol.play`), so the ponder runs for the opponent's whole think.
+
+**Verified before deploy:** `tests/verify_ponder.py` 13/13 (identity: ponder +
+search is visit-for-visit equal to search + search; reuse equals the reply's
+visits at stop; an unexpanded reply gets a fresh tree; stop latency 40 ms;
+cap; UCI hook ordering; a dying ponder never costs the move), plus
+rust_flag_guard, progress_slicing, search, time_management and think_time all
+green. On the real net over UCI: move 1 searched 29,313 evals in its 2.0 s
+budget, an 8 s ponder paid 115,131, and move 2 inherited **16,577 visits** on
+top of the 28,480 it searched itself. `isready` mid-ponder answered in 76 ms,
+`quit` exited in 1.2 s. RSS grows ~46 MB/s while pondering, hence the 1M cap
+(~3.3 GB).
+
+**The 19M-fused-data run FINISHED (2026-09-12 03:08, step 1,200,000) and is
+NOT gated.** Its end-of-run held-out eval and the clock gate against v7 are
+still owed, exactly as session 15 describes below. The gate needs a drained
+box, so it means taking the bot down for its duration (drain first: stopping
+the bot does not drain a live game, ~/CLAUDE.md lab notes).
+`sumofish-train-fused-data.service` is still linked and enabled; per LAB-NOTES
+2026-09-11 item 2 it should be retired now that the run is done, by `mask` or
+by re-linking after `disable`, since `disable` deletes a linked unit's link.
+
+**Yardstick for pondering is the lichess rating**, not a pair match (on one
+GPU a pondering arm steals from the other; a fixed-node Stockfish replies
+instantly and leaves nothing to ponder). Read the `"ev":"ponder"` records in
+`logs/engine.jsonl` against the `reused` field on the following move.
+
 ## Where things stand (2026-09-11, session 15)
 
 **THE DATA RUN IS TRAINING AGAIN, resumed 01:41 PDT from step 750,000.**
@@ -182,7 +224,7 @@ failed its gate does not earn 8 GPU-hours of yardstick). Checkpoints kept in
 perspective convention was verified on the test bags (mean |V - max_a Q| =
 0.0126 over 62,561 shared states), and merges to one bag in our exact
 state_value encoding. 733,250,069 records, ~3.4x the original bag, at
-`/mnt/storage/chess/chessbench-av/av_state_value_data.bag`. The first merge
+`/mnt/storage/datasets/chessbench/av_state_value_data.bag`. The first merge
 was OOM-killed holding 733M limit offsets in a Python list (LAB-NOTES
 2026-09-01); BagWriter now spools limits to a sidecar and a `salvage`
 subcommand rebuilt the index. Yardstick discipline: held-out evals stay on

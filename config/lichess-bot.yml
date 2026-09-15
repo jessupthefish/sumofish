@@ -11,7 +11,13 @@ engine:
   name: "sumofish-search"
   working_dir: ""
   protocol: "uci"
-  ponder: false                    # Nothing to ponder with; the engine is stateless.
+  ponder: false                    # Stays false ON PURPOSE. The engine ponders by
+                                   # itself (CHESSGPU_PONDER=1 in the unit): after
+                                   # bestmove it keeps searching the position over
+                                   # every reply and reuses whichever subtree the
+                                   # opponent enters. UCI `go ponder`/`ponderhit`
+                                   # would commit it to ONE predicted reply and
+                                   # throw the tree away on a miss, so it is off.
   debug: false
 
   polyglot:
@@ -47,9 +53,12 @@ engine:
   engine_options:
 
 challenge:
-  concurrency: 2                   # Two at once, for throughput. #1101 (restart
-                                   # loses in-progress games) gets much worse with
-                                   # high concurrency, and it is closed unfixed.
+  concurrency: 1                   # One game at a time, since 2026-09-15. Was 2
+                                   # for throughput; with pondering the engine is
+                                   # busy for the WHOLE game, not just its own
+                                   # moves, so two games would halve each other's
+                                   # search on one GPU. #1101 (restart loses
+                                   # in-progress games) is also milder with one.
   games_reserved_for_humans: 0
   sort_by: "best"
   preference: "none"

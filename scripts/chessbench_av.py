@@ -25,7 +25,7 @@ the bagz container format (records, then int64 end-offsets; the final offset
 doubles as the index_start footer).
 
 Usage:
-    chessbench_av.py download --shards 1-99 --dest /mnt/storage/chess/chessbench-av/raw
+    chessbench_av.py download --shards 1-99 --dest /mnt/storage/datasets/chessbench/raw
     chessbench_av.py convert  --src .../raw --dest .../converted [--workers 6] [--delete-src]
     chessbench_av.py merge    --src .../converted --out .../av_state_value_data.bag
 """

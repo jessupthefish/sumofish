@@ -149,8 +149,19 @@ def run(
     author: str,
     options: list[tuple[str, str]] | None = None,
     on_option: OptionHandler | None = None,
+    before_command: Callable[[str], None] | None = None,
+    after_move: Callable[[chess.Board, chess.Move], None] | None = None,
 ) -> None:
-    """`options` is a list of (uci_option_declaration, ...) lines to advertise."""
+    """`options` is a list of (uci_option_declaration, ...) lines to advertise.
+
+    `before_command(cmd)` runs before ANY command is acted on, and
+    `after_move(board, move)` runs once `bestmove` has been written. Together
+    they are what lets an engine keep working between commands (pondering on
+    the opponent's clock): whatever it started after the last bestmove has to
+    be stopped before the next command touches the search, and this loop is
+    the only place that sees every command, `isready` and `quit` included.
+    Neither hook may write to stdout; that is protocol.
+    """
     board: chess.Board | None = chess.Board()
 
     for raw in sys.stdin:
@@ -159,6 +170,9 @@ def run(
             continue
         tokens = line.split()
         cmd, args = tokens[0], tokens[1:]
+
+        if before_command is not None:
+            before_command(cmd)
 
         if cmd == "uci":
             print(f"id name {name}", flush=True)
@@ -197,6 +211,8 @@ def run(
                     continue
                 move = legal[0]
             print(f"bestmove {move.uci()}", flush=True)
+            if after_move is not None:
+                after_move(board, move)
 
         elif cmd in ("quit", "stop"):
             if cmd == "quit":

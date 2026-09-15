@@ -29,7 +29,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/dev/active/sumofish/.venv/bin/python train.py \
     --preset 19M \
     --target both \
-    --value-data /mnt/storage/chess/chessbench-av/sv_combined_data.bag \
+    --value-data /mnt/storage/datasets/chessbench/sv_combined_data.bag \
     --abort-if 600000:2.15 \
     --run 19M-fused-data \
     --steps 1200000 \

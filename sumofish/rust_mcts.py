@@ -354,6 +354,63 @@ class RustMCTS:
             raise ValueError(f"no legal moves in {board.fen()}")
         return max(visits.items(), key=lambda kv: kv[1])[0]
 
+    def ponder(self, board: chess.Board, stop, *, slice_s: float = 0.1,
+               max_nodes: int | None = None) -> dict:
+        """Search `board` until `stop` (a `threading.Event`) is set or the
+        core has paid for `max_nodes` evaluations, and leave the tree rooted
+        there.
+
+        This is what the engine does on the opponent's clock. `board` is the
+        position after the move it just sent, so the first call is a real
+        `search`: it reroots into that move's subtree (one ply, which
+        `reroot` accepts) or starts fresh if it must, and every slice after it
+        is a plain `continue_search`. When the opponent's reply arrives, the
+        next `search` reroots one ply further, into whichever reply was
+        actually played. Nothing is predicted, so there is no "miss" that
+        throws the work away: every reply the search thought plausible has a
+        subtree waiting, in proportion to how plausible it looked.
+
+        Identity: a ponder of N simulations followed by a search is
+        byte-identical to one N-simulation `search` of `board` followed by
+        the same search, because a slice is `continue_search`, proven
+        identical to an unsliced call in `rust::tree::continue_search_tests`.
+        `tests/verify_ponder.py` checks that end to end from Python.
+
+        `search` resets the core's evaluation counter and `continue_search`
+        accumulates into it, so at the end `evaluations` is the price of this
+        whole ponder and nothing else; the next `search` resets it again, so
+        the following move's nps stays honest.
+
+        Not safe while another thread is inside `search`/`continue_search`
+        on the same object: `_core` is `&mut self` on the Rust side and PyO3
+        refuses a second borrow. The engine guarantees this by joining the
+        ponder thread before it touches the core (`Ponderer.stop`).
+
+        Returns what happened, for the telemetry: evaluations paid for, the
+        visits inherited when it started, wall time, and why it stopped.
+        """
+        import time as _time
+
+        pos = self._position(board)
+        start = _time.perf_counter()
+        slice_s = max(0.01, slice_s)
+        self._core.search(pos, self.simulations, self._evaluate, slice_s)
+        reused = self._core.reused
+        why = "stopped"
+        while not stop.is_set():
+            if max_nodes is not None and self._core.evaluations >= max_nodes:
+                why = "cap"
+                break
+            self._core.continue_search(pos, self.simulations, self._evaluate, slice_s)
+        self.reused = reused
+        return {
+            "evaluations": self._core.evaluations,
+            "unique_evaluations": self._core.unique_evaluations,
+            "reused": reused,
+            "elapsed": _time.perf_counter() - start,
+            "why": why,
+        }
+
     def report(self, root, board: chess.Board, top_n: int = 5, pv_max: int = 12) -> dict:
         """The same shape `mcts.MCTS.report` returns, for the telemetry."""
         c = self._core

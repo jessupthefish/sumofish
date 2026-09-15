@@ -2552,3 +2552,33 @@ What to do differently:
    bottleneck at this batch size, so draining the box buys the trainer
    nothing; draining is for matches, where it is the BOT's clock that
    sharing distorts.
+
+## 2026-09-15: the ponder tests were wrong three ways, and the harness deadlocked on its own pipes
+
+The pondering code written in session 15 was correct. Every failure between
+09-11 and 09-15 was in the code that tested it, and each one read like an
+engine bug.
+
+- **The real-net end-to-end "timed out waiting for uciok" because the harness
+  mixed `select()` with a buffered `readline()`.** The engine printed
+  `id name`, `id author` and `uciok` at once; the first `readline` pulled all
+  three into the TextIOWrapper buffer, the OS pipe went empty, and `select`
+  never reported the stream readable again. The engine sat booted and idle in
+  `anon_pipe_read` for ten minutes. Read child pipes with one thread per
+  stream into a queue, never `select` on a text-mode file object.
+- **`verify_ponder.py` check 3 could never find an unexpanded reply**: its
+  first slice was capped at 96 simulations on a 20-reply position, so every
+  reply was visited. Lower `simulations` to one batch for that slice.
+- **Checks 4 and 5 hung forever** calling `search()` with the 100M-simulation
+  default and no deadline. Search at S1, then raise the cap before pondering.
+- **Two expectations were guesses**: the hook test hard-coded `a2a3`/`g1f3`
+  where python-chess's first legal move is `g1h3`, and the Ponderer stop test
+  used a 10k-node cap that fires in under 50 ms, before its own 150 ms sleep.
+  Read the move back from the `bestmove` line; put the cap out of reach.
+
+What to do differently: when a new test fails on its first run, prove the
+fixture can produce the state it asserts before touching the code under test.
+And a session that dies mid-verification leaves its unit and config edits
+unapplied too: the 09-11 transcript's last call held the `concurrency: 1` and
+`CHESSGPU_PONDER=1` edits and they never ran, so re-check every intended edit
+against the tree, not the transcript.

@@ -89,6 +89,26 @@ Environment=CHESSGPU_COMPILE=1
 # gain, so that arm is a lower bound and a fixed-time arm is the one that
 # answers deployment.
 
+# Pondering, added 2026-09-15. The engine used to idle on the opponent's clock;
+# with this on it keeps searching the position after its own move, over every
+# reply, and the next move starts from whichever subtree the opponent entered
+# (root pondering, `Ponderer` in sumofish/engines/search_engine.py). Measured on
+# the live net before deploy: 8 s of ponder paid 115k evals and the next move
+# inherited 16,577 visits on top of the 28k it searched itself.
+# lichess-bot's own `ponder:` stays false: the UCI ponder protocol commits to
+# ONE predicted reply and discards the tree on a miss. The cap is memory, not
+# time: RSS grew ~46 MB/s pondering at ~14k evals/s, so the default 1,000,000
+# (~70 s of opponent think) is ~3.3 GB on a 31 GB box.
+# concurrency went 2 -> 1 in config/lichess-bot.yml at the same time, because a
+# pondering engine is busy for the whole game and two would halve each other.
+#
+# Yardstick is the lichess rating, not a pair match: on one GPU a pondering
+# opponent steals from the other arm, and a fixed-node Stockfish replies
+# instantly and hands a ponder nothing to use. Rollback is CHESSGPU_PONDER=0
+# and a restart, not a revert.
+Environment=CHESSGPU_PONDER=1
+Environment=CHESSGPU_PONDER_MAX_NODES=1000000
+
 # NOT set: CHESSGPU_INSTAMOVE and CHESSGPU_EARLY_STOP. Added 2026-08-13 after
 # scripts/operating_point.py measured that this engine spends 100% of its
 # allowance on EVERY move and has never once taken under a second, across 336
