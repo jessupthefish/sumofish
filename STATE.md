@@ -63,6 +63,16 @@ v7 (full / clean subset):
 A policy gain of 0.015 against v7's 0.139 over its predecessor: expect zero to
 a small win at the clock, as session 15 did.
 
+**Queued behind it: transient unit `sumofish-post-gate`**
+(`runs/matches/post-gate.window.sh`, log beside it). When the gate unit exits
+it drains the bot again, runs `tests/verify_softmax_real.py` and
+`scripts/batch_sweep.py` (JSON to `runs/profiles/`), installs the reroot-fix
+core from `runs/wheels/reroot/` with an oracle spot-check (rollback wheel in
+`runs/wheels/a86a37f/`), switches `evaluate()` to the batched softmax only if
+the real-logit check passed (that edit is NOT committed by the script), and
+restarts the bot. After it: commit the call-site switch if it happened, read
+the sweep, and decide whether any batch earns a `--tc` match.
+
 **THE BOT IS BACK UP, ONE GAME AT A TIME, WITH PONDERING.** v7 is still the
 deployed net (`runs/value.pt`, fused 19M, step 1,185,000). `CHESSGPU_PONDER=1`
 and `CHESSGPU_PONDER_MAX_NODES=1000000` in `systemd/sumofish-bot.service`,
