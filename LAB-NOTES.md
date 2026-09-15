@@ -2599,3 +2599,28 @@ either derive it (what stops growth, and what number bounds it) or observe a
 whole game where the thing that frees memory is not happening. Growth that
 depends on whether the opponent does what you expected cannot be sampled
 safely from one opponent.
+
+## 2026-09-15: "100% of one core" was partly CUDA spin-waiting
+
+The live engine showed 100% CPU with the GPU at ~68%, and I wrote that into
+the plan as "the search is waiting on the host". Half true. py-spy --native
+put 37.4% of all samples on one line, `plogits[:n].cpu().numpy()`, inside
+libcuda: the synchronising copy busy-waits, so a host that is WAITING for the
+card reads as a host that is busy. The real host costs were Python softmax
+(21%), the Rust tree (17%) and torch dispatch (11%).
+
+What to do differently: `top` and `nvidia-smi` cannot tell a CPU bottleneck
+from a spin-wait. Profile with native frames and read the deepest Python line
+before designing around a CPU number. And GPU utilisation, not CPU, bounds
+what removing host work can buy: at 68% busy the ceiling is 1/0.68 = 1.47x.
+
+Two traps in the same session, both in `scripts/profile_engine.py`'s
+docstring: py-spy --native at 250 Hz slowed the engine ~2x, and a driver that
+asks the engine to move from the position after its own move is zero plies
+past the ponder root, so reroot declines and reuse never appears in the
+profile.
+
+One more, from the same drain window: a waiter that greps the bot log for
+`for game` after `Game over` matches the finished game's own trailing lines
+(`btime ... for game <id>`) and cries "new game". Compare game ids, not the
+phrase.

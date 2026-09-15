@@ -39,6 +39,15 @@ See `PHILOSOPHY.md` for why the project is shaped the way it is.
 **The ordered plan is `docs/PLAN-2026-09-15.md`** (throughput, time management,
 ponder pricing, then the net). Read it before choosing work.
 
+**Phase 0 is DONE (2026-09-15 afternoon).** A repeated root is no longer game
+over (a86a37f; the core was rebuilt and installed in a drain window at 11:19,
+new inode, no live process touched). The two finished training units are
+unlinked. `scripts/ponder_report.py` reads pondering per game. The profile
+(`scripts/profile_engine.py`, data in `runs/profiles/2026-09-15/`) says the
+host is 37% waiting on the GPU, 21% Python softmax, 17% Rust tree; the plan
+file has the table and the Phase 2 order it implies. Next is Phase 1, which
+needs the bot down.
+
 **THE BOT IS BACK UP, ONE GAME AT A TIME, WITH PONDERING.** v7 is still the
 deployed net (`runs/value.pt`, fused 19M, step 1,185,000). `CHESSGPU_PONDER=1`
 and `CHESSGPU_PONDER_MAX_NODES=1000000` in `systemd/sumofish-bot.service`,
