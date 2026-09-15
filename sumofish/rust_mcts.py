@@ -150,6 +150,9 @@ def make_evaluator(policy, value_policy, compile_nets: bool = False,
         rows = plogits[:n].cpu().numpy()      # float32, as `.float()` gives
         values = value_policy.hl.expectation(vlogits[:n]).cpu().numpy()
 
+        # `_softmax_over_legal_batch` is bit-identical on CPU
+        # (tests/verify_softmax_batch.py) and waits on `identity_engine.py`
+        # with the real nets before it replaces this line (PLAN-2026-09-15).
         priors = [_softmax_over_legal(rows[i], actions[i]) for i in range(n)]
         return priors, [float(v) for v in values]
 
@@ -173,6 +176,50 @@ def _softmax_over_legal(row: np.ndarray, actions: list[int]) -> list[float]:
     )
     exp = np.exp(scores - scores.max())
     return (exp / exp.sum()).tolist()
+
+
+_NEG = np.float32(-1e9)
+
+
+def _softmax_over_legal_batch(rows: np.ndarray, actions: list[list[int]]) -> list[list[float]]:
+    """`_softmax_over_legal` for a whole batch, bit for bit.
+
+    The per-row version spent 0.43 ms of a 4.6 ms search cycle at batch 64,
+    most of it building `scores` one Python index at a time (profile and host
+    timing, 2026-09-15). This does the gather, the mask, the max, the
+    subtraction and the `exp` once over a padded matrix, and keeps only the
+    sum and the division per row.
+
+    Why each step is still identical, since a 1-ULP prior is exactly the error
+    an end-to-end test misses (see `tests/verify_softmax.py`):
+      - gather, `where`, `max` and subtraction are exact operations, so layout
+        cannot change them. Padding is `-inf`, which never wins a `max` over a
+        row holding at least one finite score.
+      - `exp` is elementwise. numpy's float32 SIMD `exp` is not correctly
+        rounded, but it is the same function of the input wherever the element
+        sits, verified over every row length 1-218 in
+        `tests/verify_softmax_batch.py`. Padding exps to 0.0 and is never read.
+      - the SUM is where layout would matter: numpy's pairwise sum groups
+        elements by position, so summing a padded row regroups them. Each row
+        is therefore summed on its own unpadded, contiguous slice, which is the
+        same 1-D reduction the per-row version performs.
+    """
+    n = len(actions)
+    lens = [len(a) for a in actions]
+    width = max(lens)
+    idx = np.zeros((n, width), dtype=np.intp)
+    for i, a in enumerate(actions):
+        idx[i, :lens[i]] = a
+    valid = np.arange(width) < np.asarray(lens)[:, None]
+    scores = np.take_along_axis(rows, np.maximum(idx, 0), axis=1)
+    scores = np.where(idx >= 0, scores, _NEG)
+    scores = np.where(valid, scores, np.float32(-np.inf)).astype(np.float32, copy=False)
+    exp = np.exp(scores - scores.max(axis=1, keepdims=True))
+    out = []
+    for i in range(n):
+        e = exp[i, :lens[i]]
+        out.append((e / e.sum()).tolist())
+    return out
 
 
 class RustMCTS:
