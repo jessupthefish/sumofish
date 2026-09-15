@@ -48,6 +48,21 @@ host is 37% waiting on the GPU, 21% Python softmax, 17% Rust tree; the plan
 file has the table and the Phase 2 order it implies. Next is Phase 1, which
 needs the bot down.
 
+**Phase 1 is RUNNING (started 12:13, bot down).** Transient unit
+`sumofish-phase1-gate` runs `runs/matches/fused-data-gate.window.sh` (log
+beside it): held-out eval, then `runs/matches/fused-data-gate`, the pe2-gate
+config with seed 20260915, then it restarts the bot on v7 whatever the result.
+Promotion, if earned, is by hand. ~63 s a game, 600-game cap, so it ends by
+~22:45 unless the SPRT concludes first. Held-out, best.pt (step 1,175,000) vs
+v7 (full / clean subset):
+
+    value head   2.08652 vs 2.08321  clean 2.15295 vs 2.15613  (0.2x the floor: no difference)
+    policy head  1.43709 vs 1.45227  clean 1.49635 vs 1.51540  (1.1x the floor: better)
+    calibration  brier 0.00333 vs 0.00343, ece 0.0021 vs 0.0014
+
+A policy gain of 0.015 against v7's 0.139 over its predecessor: expect zero to
+a small win at the clock, as session 15 did.
+
 **THE BOT IS BACK UP, ONE GAME AT A TIME, WITH PONDERING.** v7 is still the
 deployed net (`runs/value.pt`, fused 19M, step 1,185,000). `CHESSGPU_PONDER=1`
 and `CHESSGPU_PONDER_MAX_NODES=1000000` in `systemd/sumofish-bot.service`,
